@@ -75,6 +75,7 @@ export default function App() {
     if (auth.status === "invalid" || auth.status === "error") {
       try {
         sessionStorage.setItem("authError", auth.error || "Sign-in failed");
+        sessionStorage.setItem("authUnlockUrl", auth.result?.unlockUrl || "");
         const email =
           auth.account?.email || sessionStorage.getItem("authEmail") || "";
         if (email) sessionStorage.setItem("authEmail", email);

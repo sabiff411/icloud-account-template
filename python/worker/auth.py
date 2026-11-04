@@ -13,10 +13,12 @@ import shutil
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 try:
     from pyicloud import PyiCloudService
     from pyicloud.exceptions import (
+        PyiCloudAccountLockedException,
         PyiCloudConnectionException,
         PyiCloudException,
         PyiCloudFailedLoginException,
@@ -31,6 +33,9 @@ except Exception:  # pyicloud is optional for the non-auth parts of the worker
         pass
 
     class PyiCloudConnectionException(PyiCloudException):
+        pass
+
+    class PyiCloudAccountLockedException(PyiCloudException):
         pass
 
 from . import inventory, twofa
@@ -147,6 +152,30 @@ def _restore(saved: dict[str, Path]) -> None:
                 shutil.copy2(backup, source)
         except OSError:
             pass
+
+
+UNLOCK_URL = (
+    "https://iforgot.apple.com/password/verify/appleid"
+    "?returnUrl=https%3A%2F%2Fwww.icloud.com%2F"
+    "&prs_account_nm={email}&unlock=true"
+)
+
+
+def _locked_payload(account: dict, error: Exception) -> dict:
+    """One shape for a locked account, whatever layer caught it."""
+    code = str(getattr(error, "code", "") or "")
+    email = str(account.get("email") or "")
+    log.warning("Apple Account locked: %s (code %s)", email, code or "unknown")
+    return {
+        "status": "error",
+        "reason": "locked",
+        "code": code,
+        "unlockUrl": UNLOCK_URL.format(email=quote(email, safe="")),
+        "message": (
+            "This Apple Account has been locked for security reasons. "
+            "Unlock it at iforgot.apple.com, then try again."
+        ),
+    }
 
 
 def _authenticate(api, ctx: JobContext):
@@ -388,6 +417,10 @@ def run_auth(ctx: JobContext) -> None:
                 api, session_dir = _service(ctx, password)
                 ctx.api = api
                 _apply_proxy(api, ctx)
+            except PyiCloudAccountLockedException as error:
+                ctx.emit("job:result", _locked_payload(ctx.account, error))
+                _restore(saved)
+                return
             except PyiCloudFailedLoginException:
                 ctx.emit("job:result", {"status": "invalid", "message": "Incorrect Apple Account or password."})
                 _restore(saved)
@@ -423,6 +456,9 @@ def run_auth(ctx: JobContext) -> None:
             trusted = True
 
         _finish(ctx, api, reused=False, trusted=trusted)
+    except PyiCloudAccountLockedException as error:
+        ctx.emit("job:result", _locked_payload(ctx.account, error))
+        _restore(saved)
     except Exception as error:
         log.warning("auth failed: %s", type(error).__name__)
         ctx.emit("job:result", {"status": "error", "message": type(error).__name__})

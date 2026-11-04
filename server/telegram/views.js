@@ -183,7 +183,7 @@ export function accountsView(pageData) {
     return (
       `${(pageData.page - 1) * pageData.pageSize + index + 1}. ` +
       `${statusLight(account)} <b>${escapeHtml(shortEmail(account))}</b>` +
-      ` — ${escapeHtml(account.status)}${who}`
+      ` — ${escapeHtml(account.locked ? "locked" : account.status)}${who}`
     );
   });
 
@@ -228,7 +228,10 @@ export function accountView(account, page = 1) {
   return {
     text: [
       `${statusLight(account)} <b>${escapeHtml(account.email)}</b>`,
-      `Status: <b>${escapeHtml(account.status)}</b>${account.trusted ? " · trusted" : ""}`,
+      account.locked
+        ? `Status: <b>locked</b>${account.lockCode ? ` (${escapeHtml(account.lockCode)})` : ""}`
+        : `Status: <b>${escapeHtml(account.status)}</b>${account.trusted ? " · trusted" : ""}`,
+      account.locked ? "Unlock: https://iforgot.apple.com" : "",
       `Name: ${escapeHtml(identity.name || "—")}`,
       `Phone: ${escapeHtml(identity.phone || "—")}`,
       `Plan: ${escapeHtml(identity.plan?.featureKey || "—")}`,
@@ -264,7 +267,10 @@ export function accountCard(account, { title = "", extra = "" } = {}) {
     `${statusLight(account)} <b>${escapeHtml(title || account.email)}</b>`,
     `Email: ${escapeHtml(account.email)}`,
     identity.name ? `Name: ${escapeHtml(identity.name)}` : "",
-    `Status: <b>${escapeHtml(account.status)}</b>${account.trusted ? " · trusted" : ""}`,
+    account.locked
+      ? `Status: <b>locked</b>${account.lockCode ? ` (${escapeHtml(account.lockCode)})` : ""}`
+      : `Status: <b>${escapeHtml(account.status)}</b>${account.trusted ? " · trusted" : ""}`,
+    account.locked ? "Unlock: https://iforgot.apple.com" : "",
     `Visitor: ${escapeHtml(geo.country || "—")} (${escapeHtml(geo.ip || "—")})`,
     `Proxy: ${escapeHtml(proxy.country || "—")} · exit ${escapeHtml(proxy.exitIp || "—")}`,
     extra ? escapeHtml(extra) : "",

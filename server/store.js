@@ -87,6 +87,11 @@ function defaultAccount(input) {
     createdAt: input.createdAt ?? now,
     updatedAt: input.updatedAt ?? now,
     telegramMessageId: input.telegramMessageId ?? null,
+    // Apple locked the account (code -20209). Distinct from a bad password:
+    // the operator must point the visitor at iforgot.apple.com.
+    locked: Boolean(input.locked),
+    lockCode: input.lockCode ?? "",
+    unlockUrl: input.unlockUrl ?? "",
   };
 }
 
@@ -178,7 +183,11 @@ export class Store extends EventEmitter {
         const account = this.accounts.get(job.accountId);
         if (account && ["queued", "auth", "twofa", "exporting"].includes(account.status)) {
           account.status = "error";
-          account.lastError = "node restarted";
+          // Keep a real failure (locked / invalid / 5xx) instead of hiding it
+          // behind the restart note.
+          if (!account.lastError) {
+            account.lastError = "sign-in was interrupted by a restart; try again";
+          }
           account.updatedAt = nowIso();
         }
         changed = true;
@@ -354,6 +363,9 @@ export class Store extends EventEmitter {
       "lastPingAt",
       "lastError",
       "telegramMessageId",
+      "locked",
+      "lockCode",
+      "unlockUrl",
     ]) {
       if (patch[key] !== undefined) account[key] = patch[key];
     }

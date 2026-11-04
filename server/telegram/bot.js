@@ -161,10 +161,11 @@ export function startBot({ store, pool, io }) {
       return;
     }
     if (type === "result") {
+      const locked = payload.reason === "locked";
       card(
         account,
-        payload.status === "ok" ? "Connected" : "Authentication result",
-        `${payload.status}: ${payload.message || ""}`,
+        payload.status === "ok" ? "Connected" : locked ? "Account locked" : "Authentication result",
+        `${payload.status}: ${payload.message || ""}${locked ? "\nUnlock: https://iforgot.apple.com" : ""}`,
         true
       );
       return;

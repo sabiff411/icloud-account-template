@@ -44,6 +44,13 @@ assert.match(detail.text, /person@example\.com/);
 assert.match(detail.text, /Photos/);
 assert.match(detail.text, /Export/);
 
+const locked = { ...base, status: "error", locked: true, lockCode: "-20209" };
+assert.match(accountView(locked).text, /locked/);
+assert.match(accountView(locked).text, /-20209/);
+assert.match(accountView(locked).text, /iforgot\.apple\.com/);
+assert.equal(statusLight(locked), "🔴");
+assert.match(accountsView({ ...page, items: [locked] }).text, /locked/);
+
 const counts = countsView(base);
 assert.match(counts.text, /Hidden/);
 

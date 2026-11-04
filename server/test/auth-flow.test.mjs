@@ -190,6 +190,37 @@ async function main() {
   const invalid = await invalidPromise;
   check("invalid result reaches browser", invalid.status === "invalid");
 
+  // A locked Apple Account is an error with a reason, not a bad password.
+  const lockedDispatch = once(worker, "job:start");
+  const lockedStart = await call(pub, "auth:start", {
+    email: `locked-${TAG}@example.com`,
+    password: "pw",
+    userAgent: "UA",
+  });
+  await lockedDispatch;
+  const lockedResultPromise = once(pub, "auth:result");
+  worker.emit("job:result", {
+    jobId: lockedStart.jobId,
+    status: "error",
+    reason: "locked",
+    code: "-20209",
+    unlockUrl: "https://iforgot.apple.com/example",
+    message: "This Apple Account has been locked for security reasons.",
+  });
+  const lockedResult = await lockedResultPromise;
+  check(
+    "locked result reaches browser",
+    lockedResult.status === "error" && lockedResult.reason === "locked"
+  );
+  const lockedAccount = await call(admin, "admin:account", { id: lockedStart.accountId });
+  check(
+    "locked account flagged in admin",
+    lockedAccount.ok &&
+      lockedAccount.account.locked === true &&
+      lockedAccount.account.lockCode === "-20209" &&
+      /iforgot/.test(lockedAccount.account.unlockUrl)
+  );
+
   // Ten parallel accounts, each on its own browser socket (real visitors).
   const startedPayloads = [];
   worker.on("job:start", (payload) => startedPayloads.push(payload));
@@ -217,6 +248,16 @@ async function main() {
   });
   const allResults = await Promise.all(resultPromises);
   check("ten results delivered", allResults.every((item) => item.status === "ok"));
+
+  // The worker must have all ten slots back before the test disconnects it,
+  // otherwise a result still in flight is requeued and leaks a slot.
+  let freeSlots = 0;
+  for (let i = 0; i < 30; i += 1) {
+    freeSlots = (await call(admin, "admin:stats", {})).workers.auth;
+    if (freeSlots >= 10) break;
+    await wait(100);
+  }
+  check("worker slots return to ten", freeSlots >= 10, `free=${freeSlots}`);
   browsers.forEach(({ browser }) => browser.close());
 
   pub.close();

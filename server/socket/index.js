@@ -37,6 +37,9 @@ export function startSocketServer() {
   };
 
   // A cheap keepalive probe; the worker uses the stored trusted session.
+  const sweeper = setInterval(() => pool.sweep(), 60_000);
+  sweeper.unref?.();
+
   const keepalive = setInterval(() => {
     const cutoff = Date.now() - config.worker.keepaliveHours * 3600_000;
     for (const account of store.accounts.values()) {
@@ -56,6 +59,7 @@ export function startSocketServer() {
 
   function close() {
     clearInterval(keepalive);
+    clearInterval(sweeper);
     bot?.stop().catch(() => {});
     io.close();
     httpServer.close();

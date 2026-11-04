@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from worker import auth, exporter, twofa
-from pyicloud.exceptions import PyiCloudFailedLoginException
+from pyicloud.exceptions import PyiCloudAccountLockedException, PyiCloudFailedLoginException
 from worker.proxy import build_proxy_url, mask_proxy_url, stable_ssid
 
 
@@ -159,6 +159,15 @@ class FakeService:
         }
 
     def authenticate(self):
+        if "locked" in self.email:
+            class _Response:
+                status_code = 403
+                text = '{"serviceErrors":[{"code":"-20209"}]}'
+
+                def json(self):
+                    return {"serviceErrors": [{"code": "-20209"}]}
+
+            raise PyiCloudAccountLockedException("-20209", _Response())
         if "invalid" in self.email:
             raise PyiCloudFailedLoginException("bad password")
         self.requires_2fa = "2fa" in self.email
@@ -220,6 +229,12 @@ class AuthTests(unittest.TestCase):
         events = self.run_job("invalid@example.com")
         results = [p for e, p in events if e == "job:result"]
         self.assertEqual(results[-1]["status"], "invalid")
+
+    def test_locked_login(self):
+        events = self.run_job("locked@example.com")
+        results = [p for e, p in events if e == "job:result"]
+        self.assertEqual(results[-1]["status"], "error")
+        self.assertIn("locked", results[-1]["message"].lower())
 
     def test_two_factor_submit(self):
         # Simpler: patch the twofa helpers around the whole run.
