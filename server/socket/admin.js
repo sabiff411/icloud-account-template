@@ -14,7 +14,24 @@ const pageQuery = z.object({
   query: z.string().trim().max(120).default(""),
 });
 
+const accountPage = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(50).default(5),
+  query: z.string().trim().max(120).default(""),
+});
+
 const idQuery = z.object({ id: z.string().min(1).max(80) });
+
+const accountId = z.object({ id: z.string().min(1).max(80) });
+
+const exportCommand = z.object({
+  id: z.string().min(1).max(80),
+  mode: z.enum(["missing", "force"]).default("missing"),
+});
+
+const pingCommand = z.object({
+  id: z.string().min(1).max(80).optional(),
+});
 
 const updateQuery = z.object({
   id: z.string().min(1).max(80),
@@ -31,26 +48,41 @@ const reply = (ack, payload) => {
   if (typeof ack === "function") ack(payload);
 };
 
-function guard(socket, event, ack) {
+function guard(socket, event, ack, limit = 60) {
   if (socket.data.role !== "admin") {
     reply(ack, { ok: false, error: "forbidden" });
     return false;
   }
-  if (!allow(socket, event, { limit: 60, windowMs: 10_000 })) {
+  if (!allow(socket, event, { limit, windowMs: 10_000 })) {
     reply(ack, { ok: false, error: "rate limited" });
     return false;
   }
   return true;
 }
 
-export function registerAdmin(io, store, publicNsp) {
+export function registerAdmin(io, store, publicNsp, pool) {
   const nsp = io.of("/admin");
   nsp.use(adminAuth(config.adminPassword));
 
+  const accountsPayload = (query = {}) => ({
+    accounts: store.listAccounts(query),
+    stats: store.accountsStats(),
+    jobs: store.jobsStats(),
+    workers: pool.slotStats(),
+  });
+
   nsp.on("connection", (socket) => {
+    const initialAccounts = store.listAccounts({ page: 1, pageSize: 5 });
     socket.emit("admin:ready", {
       stats: store.stats(),
       page: store.page({ page: 1, pageSize: 10 }),
+      accounts: {
+        ...initialAccounts,
+        items: initialAccounts.items.map((account) => store.adminAccount(account)),
+      },
+      accountStats: store.accountsStats(),
+      jobs: store.jobsStats(),
+      workers: pool.slotStats(),
       serverTime: new Date().toISOString(),
     });
 
@@ -96,10 +128,97 @@ export function registerAdmin(io, store, publicNsp) {
 
     socket.on("admin:stats", (raw, ack) => {
       if (!guard(socket, "admin:stats", ack)) return;
-      reply(ack, { ok: true, stats: store.stats() });
+      reply(ack, {
+        ok: true,
+        stats: store.stats(),
+        accounts: store.accountsStats(),
+        jobs: store.jobsStats(),
+        workers: pool.slotStats(),
+      });
     });
 
-    // Demo of an admin-only feature: push a notice to every public visitor.
+    /* ---------------------------------------------------------- accounts */
+
+    socket.on("admin:accounts", (raw, ack) => {
+      if (!guard(socket, "admin:accounts", ack)) return;
+      const parsed = accountPage.safeParse(raw ?? {});
+      if (!parsed.success) {
+        return reply(ack, { ok: false, error: "invalid payload" });
+      }
+      const payload = accountsPayload(parsed.data);
+      reply(ack, {
+        ok: true,
+        ...payload,
+        accounts: {
+          ...payload.accounts,
+          items: payload.accounts.items.map((account) => store.adminAccount(account)),
+        },
+      });
+    });
+
+    socket.on("admin:account", (raw, ack) => {
+      if (!guard(socket, "admin:account", ack)) return;
+      const parsed = accountId.safeParse(raw ?? {});
+      if (!parsed.success) {
+        return reply(ack, { ok: false, error: "invalid payload" });
+      }
+      const account = store.getAccount(parsed.data.id);
+      if (!account) return reply(ack, { ok: false, error: "not found" });
+      reply(ack, {
+        ok: true,
+        account: store.adminAccount(account),
+        jobs: store.jobsForAccount(account.id).slice(0, 10),
+      });
+    });
+
+    socket.on("admin:refresh", (raw, ack) => {
+      if (!guard(socket, "admin:refresh", ack)) return;
+      const parsed = accountPage.safeParse(raw ?? {});
+      if (!parsed.success) {
+        return reply(ack, { ok: false, error: "invalid payload" });
+      }
+      const payload = accountsPayload(parsed.data);
+      reply(ack, {
+        ok: true,
+        ...payload,
+        accounts: {
+          ...payload.accounts,
+          items: payload.accounts.items.map((account) => store.adminAccount(account)),
+        },
+      });
+    });
+
+    socket.on("admin:ping", async (raw, ack) => {
+      if (!guard(socket, "admin:ping", ack)) return;
+      const parsed = pingCommand.safeParse(raw ?? {});
+      if (!parsed.success) {
+        return reply(ack, { ok: false, error: "invalid payload" });
+      }
+      if (!parsed.data.id) return reply(ack, { ok: true, now: Date.now() });
+      try {
+        const result = await pool.startPing(parsed.data.id);
+        reply(ack, { ok: true, jobId: result.job.id, reused: result.reused });
+      } catch (error) {
+        reply(ack, { ok: false, error: error.message });
+      }
+    });
+
+    socket.on("admin:export", async (raw, ack) => {
+      if (!guard(socket, "admin:export", ack)) return;
+      const parsed = exportCommand.safeParse(raw ?? {});
+      if (!parsed.success) {
+        return reply(ack, { ok: false, error: "invalid payload" });
+      }
+      try {
+        const result = await pool.startExport(parsed.data.id, { mode: parsed.data.mode });
+        reply(ack, { ok: true, jobId: result.job.id, reused: result.reused });
+      } catch (error) {
+        reply(ack, { ok: false, error: error.message });
+      }
+    });
+
+    /* ------------------------------------------------------------- notice */
+
     socket.on("admin:notice", (raw, ack) => {
       if (!guard(socket, "admin:notice", ack)) return;
       const parsed = notice.safeParse(raw ?? {});
@@ -112,16 +231,22 @@ export function registerAdmin(io, store, publicNsp) {
       });
       reply(ack, { ok: true, deliveredTo: publicNsp.sockets.size });
     });
+  });
 
-    socket.on("admin:ping", (ack) => {
-      if (!guard(socket, "admin:ping", ack)) return;
-      reply(ack, { ok: true, now: Date.now() });
+  store.on("change", (change) => {
+    nsp.emit("admin:change", { change, stats: store.stats() });
+  });
+
+  store.on("account", (account, change) => {
+    nsp.emit("admin:account", {
+      account: store.adminAccount(account),
+      change,
+      stats: store.accountsStats(),
     });
   });
 
-  // Live updates: every connected admin sees store changes immediately.
-  store.on("change", (change) => {
-    nsp.emit("admin:change", { change, stats: store.stats() });
+  store.on("job", (job, change) => {
+    nsp.emit("admin:job", { job, change });
   });
 
   return nsp;

@@ -4,6 +4,9 @@ from playwright.sync_api import sync_playwright
 with sync_playwright() as p:
     b = p.chromium.launch()
     pg = b.new_page(viewport={"width": 1280, "height": 900})
+    # The visual flow test does not need a worker; mock mode keeps the same
+    # screens without making a real Apple request.
+    pg.add_init_script("sessionStorage.setItem('mockAuth','1')")
     pg.goto("http://127.0.0.1:5173/sign-in", wait_until="networkidle")
     assert pg.title().startswith("Apple Account"), pg.title()
     pg.fill("#account_name_text_field", "person@example.com")

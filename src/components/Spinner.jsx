@@ -23,15 +23,20 @@ export function NibSpinner({ className = "" }) {
   );
 }
 
-export function LoadingVeil() {
+export function LoadingVeil({ slow = false }) {
   return (
     <div
       role="status"
       aria-live="polite"
       aria-label="Signing in"
-      className="tk-load fixed inset-0 z-[2147483646] flex cursor-progress select-none items-center justify-center bg-[rgba(255,255,255,0.82)] opacity-0 [backdrop-filter:saturate(180%)_blur(10px)] animate-veil-in motion-reduce:animate-none motion-reduce:opacity-100"
+      className="tk-load fixed inset-0 z-[2147483646] flex cursor-progress select-none flex-col items-center justify-center bg-[rgba(255,255,255,0.82)] opacity-0 [backdrop-filter:saturate(180%)_blur(10px)] animate-veil-in motion-reduce:animate-none motion-reduce:opacity-100"
     >
       <NibSpinner />
+      {slow ? (
+        <p className="absolute top-[calc(50%+34px)] text-[14px] leading-5 tracking-[-0.224px] text-[#6e6e73]">
+          This is taking a little longer…
+        </p>
+      ) : null}
     </div>
   );
 }

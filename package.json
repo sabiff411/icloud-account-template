@@ -17,7 +17,14 @@
     "compare:width": "sh compare/py.sh compare/width_check.py",
     "compare:chrome": "sh compare/py.sh compare/chrome_check.py",
     "compare:responsive": "sh compare/py.sh compare/responsive_check.py",
-    "test:socket": "node server/test/socket.test.mjs"
+    "test:socket": "node server/test/socket.test.mjs",
+    "worker": "PYTHONPATH=python python3 -m worker",
+    "all": "concurrently -k -n web,socket,worker -c blue,magenta,green \"node server/index.js\" \"node server/socket/index.js\" \"PYTHONPATH=python python3 -m worker\"",
+    "mock-worker": "node server/test/mock-worker.mjs",
+    "test:auth": "node server/test/auth-flow.test.mjs",
+    "test:py": "PYTHONPATH=python python/.venv/bin/python -m unittest discover -s python/tests -v",
+    "test:store": "node server/test/store.test.mjs",
+    "test:views": "node server/test/views.test.mjs"
   },
   "keywords": [],
   "author": "",

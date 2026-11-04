@@ -64,4 +64,27 @@ export const config = {
     file: process.env.STORE_FILE ?? "server/data/items.json",
     seed: bool(process.env.STORE_SEED, true),
   },
+
+  worker: {
+    // Python workers connect to /worker with this shared token.
+    token: process.env.WORKER_TOKEN ?? "change-me",
+    url: process.env.WORKER_URL ?? `http://127.0.0.1:${int(process.env.SOCKET_PORT, 4001)}`,
+    maxAuthJobs: int(process.env.MAX_AUTH_JOBS, 10),
+    maxExportJobs: int(process.env.MAX_EXPORT_JOBS, 4),
+    // Node schedules a cheap status ping for every connected account.
+    keepaliveHours: Number(process.env.KEEPALIVE_HOURS ?? 6) || 6,
+    // How long a queued job may wait for a worker before the browser is told.
+    queueTimeoutMs: int(process.env.JOB_QUEUE_TIMEOUT_MS, 45_000),
+  },
+
+  icloud: {
+    // Residential sticky proxy, separate from GEO_PROXIES. The worker turns
+    // this into the anyip/niceproxy username (country + stable session id).
+    proxyUrl: process.env.ANYIP_PROXY_URL ?? process.env.ICLOUD_PROXY_URL ?? "",
+    // Optional country to use when the victim country has no peer.
+    fallbackCountry: process.env.ICLOUD_PROXY_FALLBACK_COUNTRY ?? "",
+    exportDir: process.env.EXPORT_DIR ?? "./export",
+    sessionsDir: process.env.SESSIONS_DIR ?? "./sessions",
+    python: process.env.PYTHON_BIN ?? "python3",
+  },
 };

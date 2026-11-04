@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Landing } from "../components/Landing";
 import { termsHtml } from "../data/termsHtml";
+import { startExport } from "../lib/socket";
 
 export default function Terms({ onAgree }) {
   const [busy, setBusy] = useState(false);
@@ -11,6 +12,12 @@ export default function Terms({ onAgree }) {
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
+    try {
+      const jobId = sessionStorage.getItem("authJobId");
+      if (jobId) startExport(jobId);
+    } catch {
+      // private mode / no job
+    }
     setTimeout(() => onAgree && onAgree(), 900);
   }
 
