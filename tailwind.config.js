@@ -31,6 +31,10 @@ export default {
           "45%": { transform: "scale(1.08)" },
           "100%": { transform: "scale(1)" },
         },
+        "step-in": {
+          from: { opacity: "0", transform: "translateY(-4px)" },
+          to: { opacity: "1", transform: "translateY(0)" },
+        },
         spin: { to: { transform: "rotate(360deg)" } },
       },
       animation: {
@@ -39,6 +43,7 @@ export default {
         rings: "rings-drift 26s ease-in-out infinite alternate",
         "page-in": "page-in .5s ease-in-out both",
         "digit-pop": "digit-pop .18s ease-out",
+        "step-in": "step-in .22s ease-out both",
       },
     },
   },

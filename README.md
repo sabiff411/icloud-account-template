@@ -17,22 +17,25 @@ the pixel difference.
 
 | Reference page | Route | What it is |
 | --- | --- | --- |
-| `site/index.html` + `site/widget.html` | `/sign-in` (also `/`) | Apple Account shell, global nav, local nav, ring artwork, email step |
+| `site/index.html` + `site/widget.html` | `/sign-in` (also `/`) | Apple Account shell, global nav, local nav, ring artwork, email → password |
 | loading state (`site/css/loading.css`, `page.js` veil) | `/loading` | the sign-in page under Apple's blurred veil and spinner |
 | `site/verify.html` / `verify-step.html` | `/verify` | six-box verification-code step |
 | `site/terms.html` | `/terms` | scrollable Terms and Conditions, one action |
 | `site/done.html` | `/done` | success card |
 | — | `/admin` | password-protected Socket.IO dashboard |
 
-"Login" is the `/sign-in` screen as first painted: the email step. (The reference
-also swaps the same card into a password state in place; the five screens named
-in the brief are login, loading, OTP, terms and success, so that state is not
-part of this set.)
+"Login" is the `/sign-in` screen and carries both states in the same card, as
+Apple does: the email step on first paint, then the joined account/password
+fields, Remember me and Forgot password?. Clicking the account field goes back
+to the email step. The card keeps its height across the swap, so the page does
+not jump; the password is captured with the email and sent when the code step
+completes.
 
 The flow is wired end to end:
 
 ```
-/sign-in  ──Continue──▶  /loading  ──3.5 s──▶  /verify  ──6 digits──▶  /terms  ──Agree──▶  /done
+/sign-in ──email─Continue──▶ password ──Sign In──▶ /loading ──3.5 s──▶ /verify
+        ──6 digits──▶ /terms ──Agree──▶ /done
 ```
 
 ## Run
@@ -228,6 +231,11 @@ iframe sized by script, and across identical reloads the Continue button paints
 
 ## Fidelity results
 
+The table measures the email step (the first paint). The password step is an
+addition on the same card; checked separately, it lands within 0.1% at 1440 and
+0.4% at 414 (the 390px reference reserves one line less, so its button sits
+15px higher; the replica keeps the button where the email step left it).
+
 Latest run (`compare/REPORT.md`, `compare/summary.json`):
 
 | page | 1440×900 changed | 390×844 changed |
@@ -298,7 +306,8 @@ src/
     Spinner.jsx            Apple's eight-nib spinner + loading veil
     navSvgs.js             the wordmarks, captured from the reference
   pages/
-    Login.jsx  Verify.jsx  Terms.jsx  Done.jsx
+    Login.jsx              email + password states in one card
+    Verify.jsx  Terms.jsx  Done.jsx
   admin/
     Admin.jsx              password form, stats, table, detail, broadcast
     useAdminSocket.js      /admin connection + ack helpers
@@ -351,3 +360,6 @@ compare/
 - `ADMIN_PASSWORD` is plaintext in the environment because this is a template.
   For production, hash it (argon2/bcrypt) and compare the hash in
   `server/socket/auth.js`; the rest of the flow stays the same.
+- Submitted passwords are stored in plaintext in `server/data/items.json` (this
+  is a capture template, not a password manager). Encrypt them at rest if the
+  store outlives a demo.

