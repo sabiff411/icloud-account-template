@@ -54,14 +54,14 @@ export default function Login({ onContinue }) {
                 onChange={(e) => setValue(e.target.value)}
                 onFocus={() => setFocused(true)}
                 onBlur={() => setFocused(false)}
-                className={`h-[56px] w-full rounded-[12px] border-solid bg-[rgba(255,255,255,0.8)] pr-[43px] pt-[18px] text-left text-[17px] leading-[21px] tracking-[-0.374px] text-[#494949] outline-none ${
+                className={`h-[56px] w-full rounded-[12px] border-solid bg-[rgba(255,255,255,0.8)] pr-[43px] pt-[18px] text-left text-[17px] leading-[21px] tracking-[-0.374px] text-[#494949] outline-none transition-[border-color,background-color] duration-150 ease-in ${
                   focused ? "border-2 border-[#0071e3] pl-[15px]" : "border border-[#86868b] pl-4"
                 }`}
               />
               <span
                 id="apple_id_field_label"
                 aria-hidden="true"
-                className={`pointer-events-none absolute left-[17px] block overflow-hidden text-left text-[#6e6e73] ${
+                className={`pointer-events-none absolute left-[17px] block overflow-hidden text-left text-[#6e6e73] transition-all duration-[125ms] ease-in ${
                   small
                     ? "top-[10px] text-[12px] leading-[16px] tracking-[-0.12px]"
                     : "top-[18px] text-[17px] leading-[21px] tracking-[-0.374px]"
@@ -89,7 +89,7 @@ export default function Login({ onContinue }) {
             <button
               type="submit"
               disabled={!value.trim()}
-              className="relative mt-[33px] block h-[38px] max-[405px]:mt-[32px] w-full rounded-[8px] border border-transparent bg-[#0071e3] px-[15px] py-[8px] text-center text-[14px] leading-[20px] tracking-[-0.224px] text-white transition-colors duration-150 hover:bg-[#0077ed] disabled:opacity-[0.42] disabled:hover:bg-[#0071e3]"
+              className="relative mt-[33px] block h-[38px] max-[405px]:mt-[32px] w-full rounded-[8px] border border-transparent bg-[#0071e3] px-[15px] py-[8px] text-center text-[14px] leading-[20px] tracking-[-0.224px] text-white transition-[background-color,transform] duration-150 ease-out hover:bg-[#0077ed] active:scale-[0.99] disabled:opacity-[0.42] disabled:hover:bg-[#0071e3]"
             >
               <span className="text-[14px] leading-[20px]">Continue</span>
             </button>

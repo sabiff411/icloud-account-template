@@ -49,7 +49,9 @@ export default function Verify({ onContinue }) {
                   <input
                     key={i}
                     ref={(el) => { refs.current[i] = el; }}
-                    className={`box-border h-[46px] w-[44px] rounded-[12px] bg-[rgba(255,255,255,0.8)] text-center font-display text-[22px] leading-[29.3351px] tracking-[0.198px] text-[#1d1d1f] outline-none max-[734px]:rounded-[8px] ${
+                    className={`box-border h-[46px] w-[44px] rounded-[12px] bg-[rgba(255,255,255,0.8)] text-center font-display text-[22px] leading-[29.3351px] tracking-[0.198px] text-[#1d1d1f] outline-none transition-[border-color,background-color] duration-150 ease-out max-[734px]:rounded-[8px] ${
+                      digit ? "animate-digit-pop" : ""
+                    } ${
                       focusIdx === i ? "border-2 border-[#0071e3]" : "border border-[#86868b]"
                     }`}
                     type="tel"
@@ -88,7 +90,7 @@ export default function Verify({ onContinue }) {
                 submitCode(digits.join(""));
                 onContinue?.();
               }}
-              className="h-[36px] w-full rounded-[8px] border border-transparent bg-[#0071e3] px-[15px] py-[8px] text-center text-[14px] leading-[18px] tracking-[-0.224px] text-white [text-rendering:optimizeLegibility] disabled:opacity-[0.42]"
+              className="h-[36px] w-full rounded-[8px] border border-transparent bg-[#0071e3] px-[15px] py-[8px] text-center text-[14px] leading-[18px] tracking-[-0.224px] text-white [text-rendering:optimizeLegibility] transition-[opacity,transform] duration-150 ease-out active:scale-[0.99] disabled:opacity-[0.42]"
             >
               <span className="text-[14px] leading-[18px]">Continue</span>
             </button>

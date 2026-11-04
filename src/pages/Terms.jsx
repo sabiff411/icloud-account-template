@@ -33,7 +33,7 @@ export default function Terms({ onAgree }) {
           type="button"
           onClick={agree}
           disabled={busy}
-          className="mt-4 box-content h-12 w-full flex-none rounded-[12px] bg-[#0071e3] px-[15px] text-[17px] font-normal leading-[48px] tracking-normal text-white"
+          className="mt-4 box-content h-12 w-full flex-none rounded-[12px] bg-[#0071e3] px-[15px] text-[17px] font-normal leading-[48px] tracking-normal text-white transition-[background-color,transform,opacity] duration-150 ease-out hover:bg-[#0077ed] active:scale-[0.995] disabled:opacity-90"
         >
           {busy ? (
             <span
