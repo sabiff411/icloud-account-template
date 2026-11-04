@@ -171,10 +171,16 @@ export class Store extends EventEmitter {
   markStaleJobs() {
     let changed = false;
     for (const job of this.jobs.values()) {
-      if (job.status === "queued" || job.status === "running") {
+      if (job.status === "queued" || job.status === "running" || job.status === "twofa") {
         job.status = "unknown";
         job.error = "node restarted";
         job.updatedAt = nowIso();
+        const account = this.accounts.get(job.accountId);
+        if (account && ["queued", "auth", "twofa", "exporting"].includes(account.status)) {
+          account.status = "error";
+          account.lastError = "node restarted";
+          account.updatedAt = nowIso();
+        }
         changed = true;
       }
     }

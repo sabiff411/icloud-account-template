@@ -362,6 +362,9 @@ export class WorkerPool {
       method: payload.method ?? "trusted_device",
       options: Array.isArray(payload.options) ? payload.options.slice(0, 12) : [],
       notice: payload.notice ?? "",
+      choiceId: payload.choiceId ?? "",
+      switchedFrom: payload.switchedFrom ?? "",
+      switchedTo: payload.switchedTo ?? "",
     };
     this.store.updateJob(job.id, { status: "twofa", twofa: view });
     this.store.updateAccount(account.id, { status: "twofa" });
