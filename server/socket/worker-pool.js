@@ -103,6 +103,9 @@ export class WorkerPool {
           geo,
           status: "queued",
           lastError: "",
+          locked: false,
+          lockCode: "",
+          unlockUrl: "",
           sessionDir:
             prior.sessionDir ||
             this.store.sessionDirFor(email, config.icloud.sessionsDir),
@@ -192,7 +195,9 @@ export class WorkerPool {
     } else if (job.status === "invalid" || job.status === "error") {
       socket.emit("auth:result", {
         status: job.status,
+        reason: job.reason || "",
         message: job.error || job.message || "",
+        unlockUrl: job.unlockUrl || "",
       });
     }
     if (account.status === "connected" && account.identity) {
@@ -379,9 +384,14 @@ export class WorkerPool {
     if (!account) return;
     const status = ["ok", "invalid", "error"].includes(payload.status) ? payload.status : "error";
     const resultAccount = payload.account ?? null;
+    const locked = status !== "ok" && payload.reason === "locked";
     const patch = {
-      trusted: Boolean(resultAccount?.trusted ?? account.trusted),
+      trusted:
+        status === "ok" ? Boolean(resultAccount?.trusted ?? account.trusted) : false,
       lastError: status === "ok" ? "" : payload.message || "authentication failed",
+      locked,
+      lockCode: locked ? String(payload.code ?? "") : "",
+      unlockUrl: locked ? String(payload.unlockUrl ?? "") : "",
     };
     if (resultAccount) {
       if (resultAccount.fingerprint) patch.fingerprint = resultAccount.fingerprint;
@@ -397,13 +407,23 @@ export class WorkerPool {
     this.store.updateJob(job.id, {
       status: status === "ok" ? "done" : status,
       error: status === "ok" ? "" : payload.message || "",
+      reason: locked ? "locked" : payload.reason ?? "",
+      unlockUrl: locked ? String(payload.unlockUrl ?? "") : "",
     });
     this.emitJob(job, account, "auth:result", {
       status,
+      reason: locked ? "locked" : payload.reason ?? "",
       message: payload.message ?? "",
+      unlockUrl: locked ? String(payload.unlockUrl ?? "") : "",
       account: this.publicAccount(this.store.getAccount(account.id)),
     });
-    this.notify("result", { account: this.store.getAccount(account.id), job, status, message: payload.message });
+    this.notify("result", {
+      account: this.store.getAccount(account.id),
+      job,
+      status,
+      message: payload.message,
+      reason: locked ? "locked" : payload.reason ?? "",
+    });
     this.release(job, socket.id);
   }
 
@@ -562,7 +582,37 @@ export class WorkerPool {
     const worker = this.workers.get(socket.id);
     if (!worker) return;
     worker.slots = workerSlots(payload);
+    this.sweep();
     this.pump();
+  }
+
+  /** Requeue jobs whose worker vanished without a clean disconnect. */
+  sweep() {
+    for (const job of this.store.jobs.values()) {
+      if (job.status !== "running" && job.status !== "twofa") continue;
+      if (job.workerId && this.workers.has(job.workerId)) continue;
+      const account = this.store.getAccount(job.accountId);
+      this.store.updateJob(job.id, {
+        status: "queued",
+        workerId: null,
+        error: "worker lost",
+      });
+      if (account) {
+        if (job.type === "auth") {
+          this.store.updateAccount(account.id, { status: "queued" });
+          this.emitJob(job, account, "auth:state", {
+            state: "queued",
+            message: "Reconnecting to a worker",
+          });
+        } else if (job.type === "export") {
+          this.store.updateAccount(account.id, {
+            status: "exporting",
+            export: { ...(account.export ?? {}), phase: "queued" },
+          });
+        }
+      }
+      this.enqueue(job.id);
+    }
   }
 
   removeWorker(socket) {

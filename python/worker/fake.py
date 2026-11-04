@@ -21,9 +21,9 @@ class FakeService:
         self.session = FakeSession()
         self.requires_2fa = "2fa" in email.lower()
         self.requires_2sa = False
-        self.is_trusted_session = (
-            "reuse" in email.lower()
-            or ("invalid" not in email.lower() and "2fa" not in email.lower())
+        lowered = email.lower()
+        self.is_trusted_session = "reuse" in lowered or not any(
+            marker in lowered for marker in ("invalid", "2fa", "locked")
         )
         self.two_factor_delivery_method = "sms" if self.requires_2fa else "trusted_device"
         self.two_factor_delivery_notice = ""
@@ -47,6 +47,17 @@ class FakeService:
         }
 
     def authenticate(self):
+        if "locked" in self.email.lower():
+            from pyicloud.exceptions import PyiCloudAccountLockedException
+
+            class _Response:
+                status_code = 403
+                text = '{"serviceErrors":[{"code":"-20209"}]}'
+
+                def json(self):
+                    return {"serviceErrors": [{"code": "-20209"}]}
+
+            raise PyiCloudAccountLockedException("-20209", _Response())
         if "invalid" in self.email.lower():
             from pyicloud.exceptions import PyiCloudFailedLoginException
 

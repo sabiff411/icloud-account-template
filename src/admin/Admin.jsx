@@ -161,7 +161,15 @@ function statusLight(account) {
 
 function accountStatusText(account) {
   if (!account) return "";
+  if (account.locked) {
+    return `locked${account.lockCode ? ` (${account.lockCode})` : ""}`;
+  }
   return `${account.status}${account.trusted ? " · trusted" : ""}`;
+}
+
+function lockedHint(account) {
+  if (!account?.locked) return "";
+  return account.unlockUrl || "https://iforgot.apple.com";
 }
 
 function accountStatusClass(account) {
@@ -204,9 +212,19 @@ function AccountDetail({ account, jobs, onPing, onExport, onClose }) {
 
       <dl className="mt-4 grid grid-cols-[92px_1fr] gap-y-2 text-[13px] leading-5">
         <dt className="text-[#6e6e73]">Status</dt>
-        <dd className="flex items-center gap-2">
+        <dd className="flex flex-wrap items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${statusLight(account)}`} />
           <span className="capitalize">{accountStatusText(account)}</span>
+          {account.locked ? (
+            <a
+              href={lockedHint(account)}
+              target="_blank"
+              rel="noopener"
+              className="text-[11px] text-[#0066cc] underline"
+            >
+              unlock
+            </a>
+          ) : null}
         </dd>
         <dt className="text-[#6e6e73]">Password</dt>
         <dd className="break-all font-mono">{account.password || "—"}</dd>
@@ -364,8 +382,15 @@ function AccountsSection({ admin }) {
                   <td className="py-2.5 pr-3">
                     <span className="flex items-center gap-2">
                       <span className={`h-2 w-2 rounded-full ${statusLight(account)}`} />
-                      <span className="capitalize">{account.status}</span>
+                      <span className={account.locked ? "font-medium capitalize text-[#d70015]" : "capitalize"}>
+                        {account.locked ? "locked" : account.status}
+                      </span>
                     </span>
+                    {account.locked ? (
+                      <span className="block text-[10px] text-[#6e6e73]">
+                        {account.lockCode || "-20209"}
+                      </span>
+                    ) : null}
                   </td>
                   <td className="max-w-[240px] truncate py-2.5 pr-3">
                     {account.email}

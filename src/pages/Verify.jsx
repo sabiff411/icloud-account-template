@@ -40,6 +40,7 @@ export default function Verify({ onContinue }) {
   const [notice, setNotice] = useState(twofa?.notice || "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [dismissed, setDismissed] = useState("");
   const [cooldown, setCooldown] = useState(0);
   const refs = useRef([]);
 
@@ -63,6 +64,16 @@ export default function Verify({ onContinue }) {
   const mock = isMockAuth();
   const needsCode = !twofa || twofa.method !== "security_key";
   const options = twofa?.options ?? [];
+
+  // The worker reports a rejected code as a status line on job:state. Treat
+  // the failure wording as an Apple error row, not as neutral help text.
+  const stateError =
+    auth.state === "twofa" &&
+    /not accepted|incorrect|failed|expired|timed out|too many/i.test(auth.message || "")
+      ? auth.message
+      : "";
+  const serverError = stateError && stateError !== dismissed ? stateError : "";
+  const shownError = error || serverError;
 
   function setDigit(i, raw) {
     const ch = raw.replace(/\D/g, "").slice(-1);
@@ -166,7 +177,7 @@ export default function Verify({ onContinue }) {
                   ))}
                 </div>
                 <div className="mt-2 flex items-center justify-between gap-3 text-[12px] leading-4 text-[#6e6e73]">
-                  <span aria-live="polite">{notice || auth.message}</span>
+                  <span aria-live="polite">{shownError ? "" : notice || auth.message}</span>
                   <button
                     type="button"
                     onClick={resend}
@@ -176,11 +187,6 @@ export default function Verify({ onContinue }) {
                     {cooldown > 0 ? `Resend in ${cooldown}s` : "Resend"}
                   </button>
                 </div>
-                {error ? (
-                  <p role="alert" className="mt-1 text-[12px] leading-4 text-[#e30000]">
-                    {error}
-                  </p>
-                ) : null}
               </div>
             ) : null}
           </div>
@@ -196,7 +202,11 @@ export default function Verify({ onContinue }) {
                       className={`box-border h-[46px] w-[44px] rounded-[12px] bg-[rgba(255,255,255,0.8)] text-center font-display text-[22px] leading-[29.3351px] tracking-[0.198px] text-[#1d1d1f] outline-none transition-[border-color,background-color] duration-150 ease-out max-[734px]:rounded-[8px] ${
                         digit ? "animate-digit-pop" : ""
                       } ${
-                        focusIdx === i ? "border-2 border-[#0071e3]" : "border border-[#86868b]"
+                        focusIdx === i
+                          ? "border-2 border-[#0071e3]"
+                          : shownError
+                            ? "border border-[#e30000] bg-[#fff2f4]"
+                            : "border border-[#86868b]"
                       }`}
                       type="tel"
                       inputMode="numeric"
@@ -205,10 +215,14 @@ export default function Verify({ onContinue }) {
                       spellCheck="false"
                       autoComplete={i === 0 ? "one-time-code" : "off"}
                       aria-label={`Digit ${i + 1}`}
-                      aria-invalid="false"
+                      aria-invalid={shownError ? "true" : "false"}
                       value={digit}
                       onFocus={() => setFocusIdx(i)}
-                      onChange={(e) => setDigit(i, e.target.value)}
+                      onChange={(e) => {
+                        setError("");
+                        setDismissed(auth.message || "");
+                        setDigit(i, e.target.value);
+                      }}
                       onKeyDown={(e) => onKeyDown(i, e)}
                     />
                   ))}
@@ -217,7 +231,20 @@ export default function Verify({ onContinue }) {
             </div>
           ) : null}
 
-          <div className="mt-[51px]">
+          {shownError ? (
+            <p
+              role="alert"
+              aria-live="assertive"
+              className="mx-auto flex max-w-[328px] items-center justify-center gap-1.5 px-5 pt-2 text-[14px] leading-[20px] tracking-[-0.224px] text-[#e30000]"
+            >
+              <span aria-hidden="true" className="font-['SF_Pro_Icons'] text-[16px] leading-none">
+                &#xF312;
+              </span>
+              <span className="text-left">{shownError}</span>
+            </p>
+          ) : null}
+
+          <div className={shownError ? "mt-[23px]" : "mt-[51px]"}>
             <button
               type="button"
               onClick={twofa ? resend : undefined}

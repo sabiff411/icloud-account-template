@@ -186,6 +186,10 @@ validated with Zod and rate-limited per socket.
 4. Otherwise pyicloud logs in with the visitor's UA/language through the
    country-matched residential proxy. `PyiCloudFailedLoginException` → invalid;
    network/5xx → one retry; terms accepted automatically.
+   `PyiCloudAccountLockedException` (Apple code `-20209`) is a distinct
+   `locked` result with the iforgot unlock URL — never a wrong password. The
+   store, admin dashboard and Telegram card show `locked · -20209`, and the
+   worker logs one warning with the code.
 5. HSA2: options include the trusted-device push, each trusted phone (masked to
    the last four digits) and security keys. `sms:<n>` switches delivery through
    Apple's `verify/phone` path. A code is accepted up to three times; then
