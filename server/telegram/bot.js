@@ -113,6 +113,12 @@ export function startBot({ store, pool, io }) {
       }
     } finally {
       sending.delete(accountId);
+      if (pending.has(accountId) && !timers.has(accountId)) {
+        timers.set(
+          accountId,
+          setTimeout(() => flush(accountId, false), EDIT_INTERVAL_MS + 50)
+        );
+      }
     }
   }
 
