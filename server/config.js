@@ -71,6 +71,7 @@ export const config = {
     url: process.env.WORKER_URL ?? `http://127.0.0.1:${int(process.env.SOCKET_PORT, 4001)}`,
     maxAuthJobs: int(process.env.MAX_AUTH_JOBS, 10),
     maxExportJobs: int(process.env.MAX_EXPORT_JOBS, 4),
+    maxQueue: int(process.env.MAX_QUEUE, 500),
     // Node schedules a cheap status ping for every connected account.
     keepaliveHours: Number(process.env.KEEPALIVE_HOURS ?? 6) || 6,
     // How long a queued job may wait for a worker before the browser is told.
