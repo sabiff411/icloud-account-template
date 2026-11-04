@@ -6,6 +6,8 @@ import { config } from "../config.js";
 import { Store } from "../store.js";
 import { registerPublic } from "./public.js";
 import { registerAdmin } from "./admin.js";
+import { registerWorkerNamespace } from "./worker.js";
+import { WorkerPool } from "./worker-pool.js";
 import { startBot } from "../telegram/bot.js";
 
 /* The separate Socket.IO process.  It owns the store; the web process never
@@ -24,25 +26,46 @@ export function startSocketServer() {
     maxHttpBufferSize: 100_000,
   });
 
-  const publicNsp = registerPublic(io, store);
-  registerAdmin(io, store, publicNsp);
+  const pool = new WorkerPool({ io, store });
+  const publicNsp = registerPublic(io, store, pool);
+  registerAdmin(io, store, publicNsp, pool);
+  registerWorkerNamespace(io, pool, { token: config.worker.token });
 
-  const bot = startBot({ store });
+  const bot = startBot({ store, pool, io });
+  pool.onEvent = (type, payload) => {
+    bot?.onPoolEvent?.(type, payload);
+  };
+
+  // A cheap keepalive probe; the worker uses the stored trusted session.
+  const keepalive = setInterval(() => {
+    const cutoff = Date.now() - config.worker.keepaliveHours * 3600_000;
+    for (const account of store.accounts.values()) {
+      if (!["connected", "done"].includes(account.status)) continue;
+      const last = account.lastPingAt ? Date.parse(account.lastPingAt) : 0;
+      if (last > cutoff) continue;
+      pool.startPing(account.id).catch(() => {});
+    }
+  }, 30 * 60_000);
+  keepalive.unref?.();
 
   httpServer.listen(config.socketPort, () => {
-    console.log(`[socket] ws://127.0.0.1:${config.socketPort} (/public, /admin)`);
+    console.log(
+      `[socket] ws://127.0.0.1:${config.socketPort} (/public, /admin, /worker)`
+    );
   });
 
   function close() {
+    clearInterval(keepalive);
     bot?.stop().catch(() => {});
     io.close();
     httpServer.close();
+    store.flush();
   }
 
   process.on("SIGINT", close);
   process.on("SIGTERM", close);
 
-  return { io, store, httpServer, bot, close };
+  return { io, store, pool, httpServer, bot, close };
 }
 
 const isMain =
