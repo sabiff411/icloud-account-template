@@ -82,6 +82,8 @@ function defaultAccount(input) {
       total: 0,
       bytes: 0,
     },
+    verify: input.verify ?? null,
+    scan: input.scan ?? null,
     lastPingAt: input.lastPingAt ?? null,
     lastError: input.lastError ?? "",
     createdAt: input.createdAt ?? now,
@@ -369,7 +371,7 @@ export class Store extends EventEmitter {
     ]) {
       if (patch[key] !== undefined) account[key] = patch[key];
     }
-    for (const key of ["fingerprint", "geo", "proxy", "identity", "counts", "export"]) {
+    for (const key of ["fingerprint", "geo", "proxy", "identity", "counts", "export", "verify", "scan"]) {
       if (patch[key] !== undefined) {
         account[key] = { ...(account[key] ?? {}), ...patch[key] };
       }

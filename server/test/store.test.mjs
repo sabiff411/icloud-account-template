@@ -16,6 +16,8 @@ const account = store.createAccount({
   status: "queued",
   sessionDir: "sessions/abc",
   fingerprint: { userAgent: "UA" },
+  verify: { finishedAt: "2026-11-05T09:00:00Z", areas: { photos: { live: 3, exported: 2, missing: 1 } } },
+  scan: { finishedAt: "2026-11-05T09:05:00Z", tiers: { minimum: 1, medium: 0, high: 2, valid: 2 } },
   geo: { ip: "203.0.113.1", country: "Germany", countryCode: "DE" },
 });
 const job = store.createJob({ accountId: account.id, type: "auth" });
@@ -26,6 +28,12 @@ const reloaded = new Store({ file, seed: false });
 assert.equal(reloaded.accounts.size, 1);
 assert.equal(reloaded.getAccount(account.id).email, "persist@example.com");
 assert.equal(reloaded.getAccountByEmail("PERSIST@example.com").id, account.id);
+assert.equal(
+  reloaded.getAccount(account.id).verify.areas.photos.missing,
+  1,
+  "verify survives a reload"
+);
+assert.equal(reloaded.getAccount(account.id).scan.tiers.valid, 2, "scan survives a reload");
 assert.equal(reloaded.getJob(job.id).status, "unknown", "stale jobs are marked unknown");
 
 reloaded.updateAccount(account.id, { status: "connected", trusted: true });
