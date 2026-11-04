@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { accountUrl, bytes, fileUrl, getJson } from "./api.js";
-import { Empty, Spinner } from "./ui.jsx";
+import { Empty, Spinner, displayName } from "./ui.jsx";
 
 const ROOT = "Drive";
 
@@ -103,7 +103,7 @@ export default function DriveTab({ account }) {
             ) : (
               <span className="text-[16px]">📄</span>
             )}
-            <span className="min-w-0 flex-1 truncate text-[13px]">{file.name}</span>
+            <span className="min-w-0 flex-1 truncate text-[13px]" title={file.name}>{displayName(file.name)}</span>
             <span className="text-[11px] text-[#6e6e73]">{bytes(file.size)}</span>
             <a
               href={fileUrl(account.id, file.path, true)}

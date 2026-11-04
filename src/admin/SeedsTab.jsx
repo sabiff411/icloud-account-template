@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { accountUrl, fileUrl, getJson } from "./api.js";
-import { Badge, Empty, Spinner } from "./ui.jsx";
+import { Badge, Empty, Spinner, displayName } from "./ui.jsx";
 import Lightbox from "./Lightbox.jsx";
 
 const TIERS = [
@@ -122,7 +122,7 @@ export default function SeedsTab({ account }) {
                   </p>
                   <div className="mt-2 flex items-center justify-between gap-2">
                     <span className="truncate text-[10px] text-[#6e6e73]" title={seed.path}>
-                      {seed.name || seed.path}
+                      {displayName(seed.name || seed.path)}
                     </span>
                     <button
                       type="button"

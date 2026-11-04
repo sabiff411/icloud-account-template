@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
+import fs from "node:fs";
 import { config } from "../config.js";
 
 /* Dispatch and relay for the Python workers.
@@ -172,6 +173,55 @@ export class WorkerPool {
     return { account, job, reused: false };
   }
 
+  async startImport({ path: folder, email }) {
+    if (!folder || !email) throw new Error("folder and email are required");
+    let stat = null;
+    try {
+      stat = fs.statSync(folder);
+    } catch {
+      throw new Error("folder not found on the server");
+    }
+    if (!stat.isDirectory()) throw new Error("path is not a folder");
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error("invalid email");
+
+    const prior = this.store.getAccountByEmail(email);
+    if (prior) {
+      const active = this.store.activeJobForAccount(prior.id, "import");
+      if (active) return { account: prior, job: active, reused: true };
+    }
+    if (this.queue.length >= config.worker.maxQueue) {
+      throw new Error("the job queue is full; try again shortly");
+    }
+    const account = prior
+      ? this.store.updateAccount(prior.id, {
+          status: "queued",
+          lastError: "",
+          locked: false,
+          lockCode: "",
+          unlockUrl: "",
+          sessionDir: prior.sessionDir || this.store.sessionDirFor(email, config.icloud.sessionsDir),
+        })
+      : this.store.createAccount({
+          email,
+          password: "",
+          status: "queued",
+          sessionDir: this.store.sessionDirFor(email, config.icloud.sessionsDir),
+          fingerprint: { userAgent: "import", language: "", timezone: "" },
+          geo: {},
+        });
+    const job = this.store.createJob({
+      accountId: account.id,
+      type: "import",
+      payload: { path: folder },
+    });
+    this.store.updateAccount(account.id, {
+      export: { ...(account.export ?? {}), phase: "queued", done: 0, total: 0 },
+    });
+    this.enqueue(job.id);
+    this.notify("import_start", { account, job });
+    return { account, job, reused: false };
+  }
+
   async startVerify(accountId) {
     return this.startSideJob(accountId, "verify");
   }
@@ -275,7 +325,7 @@ export class WorkerPool {
           index -= 1;
           continue;
         }
-        const kind = job.type === "export" || job.type === "scan" ? "export" : "auth";
+        const kind = ["export", "scan", "import"].includes(job.type) ? "export" : "auth";
         const worker = this.pickWorker(kind);
         if (!worker) continue;
         this.queue.splice(index, 1);
@@ -289,7 +339,7 @@ export class WorkerPool {
   dispatch(worker, job) {
     const account = this.store.getAccount(job.accountId);
     if (!account) return;
-    const slot = job.type === "export" || job.type === "scan" ? "export" : "auth";
+    const slot = ["export", "scan", "import"].includes(job.type) ? "export" : "auth";
     worker.slots[slot] -= 1;
     this.store.updateJob(job.id, {
       status: "running",
@@ -323,6 +373,8 @@ export class WorkerPool {
       exportDir: config.icloud.exportDir,
       sessionsDir: config.icloud.sessionsDir,
       mode: job.payload?.mode ?? "missing",
+      path: job.payload?.path ?? "",
+      limit: job.payload?.limit ?? 0,
     };
 
     if (job.type === "export") {
@@ -333,6 +385,8 @@ export class WorkerPool {
       worker.socket.emit("job:verify", payload);
     } else if (job.type === "scan") {
       worker.socket.emit("job:scan", payload);
+    } else if (job.type === "import") {
+      worker.socket.emit("job:import", payload);
     } else {
       worker.socket.emit("job:start", payload);
     }
@@ -351,7 +405,7 @@ export class WorkerPool {
   release(job, workerId) {
     const worker = this.workers.get(workerId);
     if (worker) {
-      const kind = job.type === "export" || job.type === "scan" ? "export" : "auth";
+      const kind = ["export", "scan", "import"].includes(job.type) ? "export" : "auth";
       worker.slots[kind] = Math.min(worker.slots[kind] + 1, 100);
     }
     const timer = this.waitTimers.get(job.id);
@@ -536,8 +590,9 @@ export class WorkerPool {
         status: "error",
         lastError: payload.error ?? "ping failed",
       });
-    } else if (job.type === "verify" || job.type === "scan") {
+    } else if (job.type === "verify" || job.type === "scan" || job.type === "import") {
       this.store.updateAccount(account.id, {
+        status: job.type === "import" ? "error" : account.status,
         lastError: payload.error ?? `${job.type} failed`,
       });
     } else {
@@ -592,6 +647,59 @@ export class WorkerPool {
     this.store.updateJob(job.id, { status: "done" });
     this.emitAccount(updated, "account:verify", verify);
     this.notify("verify", { account: updated, job, verify });
+    this.release(job, socket.id);
+  }
+
+  handleImportProgress(socket, payload) {
+    const job = this.store.getJob(payload.jobId);
+    if (!job || job.workerId !== socket.id) return;
+    const account = this.store.getAccount(job.accountId);
+    if (!account) return;
+    const exportState = {
+      ...(account.export ?? {}),
+      phase: "running",
+      done: Number(payload.done) || 0,
+      total: Number(payload.total) || 0,
+    };
+    const updated = this.store.updateAccount(account.id, { export: exportState });
+    this.notify("import_progress", { account: updated, job, progress: exportState });
+  }
+
+  handleImportResult(socket, payload) {
+    const job = this.store.getJob(payload.jobId);
+    if (!job || job.workerId !== socket.id) return;
+    const account = this.store.getAccount(job.accountId);
+    if (!account) return;
+    const summary = payload.summary ?? {};
+    const updated = this.store.updateAccount(account.id, {
+      status: "done",
+      trusted: false,
+      counts: payload.counts ?? {},
+      export: {
+        phase: "done",
+        startedAt: job.createdAt,
+        finishedAt: new Date().toISOString(),
+        done: Number(payload.files) || 0,
+        total: Number(payload.files) || 0,
+        bytes: Number(payload.bytes) || 0,
+        areas: {},
+      },
+      scan: {
+        phase: "done",
+        finishedAt: summary.generatedAt ?? new Date().toISOString(),
+        files: Number(summary.files) || 0,
+        images: Number(summary.images) || 0,
+        ocrOk: Number(summary.ocrOk) || 0,
+        ocrFailed: Number(summary.ocrFailed) || 0,
+        findings: Number(summary.findings) || 0,
+        tiers: summary.tiers ?? { minimum: 0, medium: 0, high: 0, valid: 0 },
+        imported: true,
+      },
+      lastError: "",
+    });
+    this.store.updateJob(job.id, { status: "done" });
+    this.emitAccount(updated, "account:import", { counts: updated.counts });
+    this.notify("import", { account: updated, job, summary });
     this.release(job, socket.id);
   }
 

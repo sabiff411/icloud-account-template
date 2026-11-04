@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { accountUrl, bytes, fileUrl, getJson, getText } from "./api.js";
-import { Empty, Spinner } from "./ui.jsx";
+import { Empty, Spinner, displayName } from "./ui.jsx";
 
 export default function NotesTab({ account }) {
   const [files, setFiles] = useState([]);
@@ -83,7 +83,7 @@ export default function NotesTab({ account }) {
                 selected === file.path ? "bg-[#eef5ff]" : "hover:bg-[#fafafa]"
               }`}
             >
-              <div className="truncate text-[12px] font-medium text-[#1d1d1f]">{file.name}</div>
+              <div className="truncate text-[12px] font-medium text-[#1d1d1f]">{displayName(file.name)}</div>
               <div className="text-[10px] text-[#6e6e73]">{bytes(file.size)}</div>
             </button>
           ))}

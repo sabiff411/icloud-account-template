@@ -273,6 +273,23 @@ The web console is the single operator surface; Telegram only sends alerts.
 Panel session settings: `ADMIN_SESSION_HOURS` (168), optional
 `ADMIN_SESSION_SECRET`, and `PANEL_URL` for the Telegram link.
 
+### Import an existing harvest
+
+If you already have a sibling harvester output (`out/photos`, `out/hidden`,
+`out/notes`, `out/drive`, `out/ocr`), the panel can adopt it — no login and no
+re-download. Click **＋ Import** in the sidebar, or:
+
+```bash
+PYTHONPATH=python python/.venv/bin/python -m worker.import_out \
+  /path/to/out --email example@icloud.com
+```
+
+The importer dedupes HEIC/JPG and live-photo twins, lays the files out under
+`export/<email>/`, reuses the existing OCR text (no second OCR run), writes
+`Scan/index.json`, `Scan/findings.json`, thumbnails and a `manifest.sqlite3`
+so the live check has exported counts. Re-importing is idempotent. The demo
+account `example.harvest@icloud.com` in this checkout was created this way.
+
 ### Telegram bot
 
 grammY is the async-first Telegram framework used here (maintained successor to

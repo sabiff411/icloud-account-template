@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { accountUrl, fileUrl, getJson } from "./api.js";
-import { Badge, Empty, Spinner } from "./ui.jsx";
+import { Badge, Empty, Spinner, displayName } from "./ui.jsx";
 import Lightbox from "./Lightbox.jsx";
 
 const IMAGE = /\.(jpe?g|png|gif|webp|bmp|tiff?|heic|heif)$/i;
@@ -89,7 +89,7 @@ export default function SearchTab({ account }) {
                     />
                   </div>
                   <div className="p-2">
-                    <div className="truncate text-[11px] font-medium">{item.name}</div>
+                    <div className="truncate text-[11px] font-medium">{displayName(item.name)}</div>
                     {item.snippet ? (
                       <div className="mt-0.5 line-clamp-2 text-[10px] leading-4 text-[#6e6e73]">
                         {item.snippet}
@@ -106,7 +106,7 @@ export default function SearchTab({ account }) {
               {(data.notes || []).map((note, index) => (
                 <div key={`${note.path}-${index}`} className="rounded-[10px] border border-[#e5e5ea] bg-white p-3">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-[12px] font-medium">{note.name}</span>
+                    <span className="truncate text-[12px] font-medium">{displayName(note.name)}</span>
                     <a
                       href={fileUrl(account.id, note.path, true)}
                       className="shrink-0 text-[11px] text-[#0066cc] hover:underline"
@@ -142,7 +142,7 @@ export default function SearchTab({ account }) {
               {(data.files || []).map((file, index) => (
                 <div key={`${file.path}-${index}`} className="flex items-center gap-2 border-b border-[#f4f4f6] px-3 py-2 last:border-0">
                   <span className="text-[14px]">📄</span>
-                  <span className="min-w-0 flex-1 truncate text-[12px]">{file.name}</span>
+                  <span className="min-w-0 flex-1 truncate text-[12px]">{displayName(file.name)}</span>
                   <a
                     href={fileUrl(account.id, file.path, true)}
                     className="text-[11px] text-[#0066cc] hover:underline"

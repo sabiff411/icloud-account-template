@@ -64,6 +64,37 @@ class SequenceTests(unittest.TestCase):
         found = scan.find_sequences(grid, self.words)
         self.assertTrue(any(item["words"] == 12 and item["checksum"] for item in found), found)
 
+    def test_interleaved_grid_with_missing_number(self):
+        # Real OCR from a MetaMask backup screen: two columns, one number lost.
+        text = (
+            "1relax\n7civil\n2 arrive\n8loud\nmidnight\n3\n9code\n"
+            "4 interest\n10 action\n5spice\n11erode\n6 eye\n12 warrior"
+        )
+        found = scan.find_sequences(text, self.words)
+        valid = [item for item in found if item["checksum"]]
+        self.assertEqual(len(valid), 1, found)
+        self.assertEqual(
+            valid[0]["phrase"],
+            "relax arrive midnight interest spice eye civil loud code action erode warrior",
+        )
+
+    def test_five_gaps_reconstructs_the_one_valid_permutation(self):
+        text = (
+            "SecretKey\nWrite down yourbackup\n"
+            "monster\ncapital\n2 rebel\n8\nyou\n3 fame\n9phone\n"
+            "10 camera\ncanoe\n5wire\n11 song\nmoral\n12 arrive"
+        )
+        found = scan.find_sequences(text, self.words)
+        valid = [item for item in found if item["checksum"]]
+        self.assertEqual(len(valid), 1, found)
+        # Text-only OCR cannot order four unnumbered words uniquely; any
+        # arrangement that passes the checksum is a candidate, and the panel
+        # shows the source image beside it.
+        self.assertEqual(
+            sorted(valid[0]["phrase"].split()),
+            sorted("monster rebel fame canoe wire moral capital you phone camera song arrive".split()),
+        )
+
     def test_dedup_same_phrase(self):
         text = f"{VALID_12}\nand again:\n{VALID_12}"
         found = scan.find_sequences(text, self.words)

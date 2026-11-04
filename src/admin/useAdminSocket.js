@@ -296,6 +296,15 @@ export function useAdminSocket() {
     [emit, note]
   );
 
+  const importAccount = useCallback(
+    async (path, email) => {
+      const result = await emit("admin:import", { path, email });
+      note(result.reused ? "import already running" : "import queued");
+      return result;
+    },
+    [emit, note]
+  );
+
   const verifyAccount = useCallback(
     async (id) => {
       try {
@@ -371,6 +380,7 @@ export function useAdminSocket() {
     clearAccount,
     pingAccount,
     exportAccount,
+    importAccount,
     verifyAccount,
     scanAccount,
     refreshAll,

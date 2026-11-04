@@ -39,6 +39,8 @@ export function registerWorkerNamespace(io, pool, { token }) {
     socket.on("job:error", (payload) => pool.handleError(socket, payload ?? {}));
     socket.on("job:ping_result", (payload) => pool.handlePingResult(socket, payload ?? {}));
     socket.on("job:verify_result", (payload) => pool.handleVerifyResult(socket, payload ?? {}));
+    socket.on("job:import_progress", (payload) => pool.handleImportProgress(socket, payload ?? {}));
+    socket.on("job:import_result", (payload) => pool.handleImportResult(socket, payload ?? {}));
     socket.on("job:scan_progress", (payload) => pool.handleScanProgress(socket, payload ?? {}));
     socket.on("job:scan_done", (payload) => pool.handleScanDone(socket, payload ?? {}));
 
