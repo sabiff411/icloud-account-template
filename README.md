@@ -290,6 +290,7 @@ ones:
 | `ANYIP_PROXY_URL` | empty | residential login proxy |
 | `MAX_AUTH_JOBS` | `10` | concurrent logins |
 | `MAX_EXPORT_JOBS` | `4` | concurrent exports |
+| `MAX_QUEUE` | `500` | queued jobs before "busy" |
 | `EXPORT_DIR` | `./export` | export root |
 | `SESSIONS_DIR` | `./sessions` | cookie/session root |
 | `KEEPALIVE_HOURS` | `6` | status ping interval |

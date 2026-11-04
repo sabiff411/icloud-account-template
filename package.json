@@ -24,7 +24,8 @@
     "test:auth": "node server/test/auth-flow.test.mjs",
     "test:py": "PYTHONPATH=python python/.venv/bin/python -m unittest discover -s python/tests -v",
     "test:store": "node server/test/store.test.mjs",
-    "test:views": "node server/test/views.test.mjs"
+    "test:views": "node server/test/views.test.mjs",
+    "worker:venv": "PYTHONPATH=python python/.venv/bin/python -m worker"
   },
   "keywords": [],
   "author": "",

@@ -55,7 +55,7 @@
   "bbox": [
    239,
    13,
-   878,
+   926,
    1031
   ],
   "changed_px": 681,
@@ -209,12 +209,12 @@
   "bbox": [
    0,
    0,
-   383,
-   794
+   370,
+   601
   ],
   "changed_px": 0,
   "changed_pct": 0.0,
-  "mean_abs_pct": 0.008,
+  "mean_abs_pct": 0.002,
   "page": "loading",
   "viewport": "390",
   "status": "ok"

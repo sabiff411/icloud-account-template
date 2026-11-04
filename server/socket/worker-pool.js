@@ -91,6 +91,9 @@ export class WorkerPool {
       if (password) this.store.updateAccount(account.id, { password });
       return { account, job, reused: true };
     }
+    if (this.queue.length >= config.worker.maxQueue) {
+      throw new Error("the sign-in queue is full; try again shortly");
+    }
 
     const prior = this.store.getAccountByEmail(email);
     const account = prior
@@ -135,6 +138,9 @@ export class WorkerPool {
   }
 
   async startExport(accountId, { mode = "missing", parentJobId = null } = {}) {
+    if (this.queue.length >= config.worker.maxQueue) {
+      throw new Error("the export queue is full; try again shortly");
+    }
     const account = this.store.getAccount(accountId);
     if (!account) throw new Error("account not found");
     const active = this.store.activeJobForAccount(accountId, "export");
