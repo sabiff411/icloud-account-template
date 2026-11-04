@@ -1,0 +1,227 @@
+[
+ {
+  "size_a": [
+   600,
+   963
+  ],
+  "size_b": [
+   600,
+   963
+  ],
+  "changed_px": 85,
+  "changed_pct": 0.015,
+  "mean_abs_pct": 0.0016,
+  "page": "login",
+  "width": 600
+ },
+ {
+  "size_a": [
+   600,
+   983
+  ],
+  "size_b": [
+   600,
+   983
+  ],
+  "changed_px": 24,
+  "changed_pct": 0.004,
+  "mean_abs_pct": 0.0006,
+  "page": "verify",
+  "width": 600
+ },
+ {
+  "size_a": [
+   600,
+   1063
+  ],
+  "size_b": [
+   600,
+   1063
+  ],
+  "changed_px": 800,
+  "changed_pct": 0.125,
+  "mean_abs_pct": 0.0128,
+  "page": "terms",
+  "width": 600
+ },
+ {
+  "size_a": [
+   600,
+   1093
+  ],
+  "size_b": [
+   600,
+   1093
+  ],
+  "changed_px": 24,
+  "changed_pct": 0.004,
+  "mean_abs_pct": 0.0003,
+  "page": "done",
+  "width": 600
+ },
+ {
+  "size_a": [
+   600,
+   963
+  ],
+  "size_b": [
+   600,
+   963
+  ],
+  "changed_px": 0,
+  "changed_pct": 0.0,
+  "mean_abs_pct": 0.0014,
+  "page": "loading",
+  "width": 600
+ },
+ {
+  "size_a": [
+   768,
+   985
+  ],
+  "size_b": [
+   768,
+   985
+  ],
+  "changed_px": 116,
+  "changed_pct": 0.015,
+  "mean_abs_pct": 0.0016,
+  "page": "login",
+  "width": 768
+ },
+ {
+  "size_a": [
+   768,
+   1005
+  ],
+  "size_b": [
+   768,
+   1005
+  ],
+  "changed_px": 38,
+  "changed_pct": 0.005,
+  "mean_abs_pct": 0.0007,
+  "page": "verify",
+  "width": 768
+ },
+ {
+  "size_a": [
+   768,
+   1243
+  ],
+  "size_b": [
+   768,
+   1243
+  ],
+  "changed_px": 705,
+  "changed_pct": 0.074,
+  "mean_abs_pct": 0.007,
+  "page": "terms",
+  "width": 768
+ },
+ {
+  "size_a": [
+   768,
+   1115
+  ],
+  "size_b": [
+   768,
+   1115
+  ],
+  "changed_px": 24,
+  "changed_pct": 0.003,
+  "mean_abs_pct": 0.0003,
+  "page": "done",
+  "width": 768
+ },
+ {
+  "size_a": [
+   768,
+   985
+  ],
+  "size_b": [
+   768,
+   985
+  ],
+  "changed_px": 0,
+  "changed_pct": 0.0,
+  "mean_abs_pct": 0.0011,
+  "page": "loading",
+  "width": 768
+ },
+ {
+  "size_a": [
+   834,
+   942
+  ],
+  "size_b": [
+   834,
+   942
+  ],
+  "changed_px": 92,
+  "changed_pct": 0.012,
+  "mean_abs_pct": 0.0012,
+  "page": "login",
+  "width": 834
+ },
+ {
+  "size_a": [
+   834,
+   962
+  ],
+  "size_b": [
+   834,
+   962
+  ],
+  "changed_px": 11,
+  "changed_pct": 0.001,
+  "mean_abs_pct": 0.0004,
+  "page": "verify",
+  "width": 834
+ },
+ {
+  "size_a": [
+   834,
+   1200
+  ],
+  "size_b": [
+   834,
+   1200
+  ],
+  "changed_px": 681,
+  "changed_pct": 0.068,
+  "mean_abs_pct": 0.0065,
+  "page": "terms",
+  "width": 834
+ },
+ {
+  "size_a": [
+   834,
+   1072
+  ],
+  "size_b": [
+   834,
+   1072
+  ],
+  "changed_px": 0,
+  "changed_pct": 0.0,
+  "mean_abs_pct": 0.0,
+  "page": "done",
+  "width": 834
+ },
+ {
+  "size_a": [
+   834,
+   942
+  ],
+  "size_b": [
+   834,
+   942
+  ],
+  "changed_px": 0,
+  "changed_pct": 0.0,
+  "mean_abs_pct": 0.0002,
+  "page": "loading",
+  "width": 834
+ }
+]

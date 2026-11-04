@@ -1,0 +1,222 @@
+[
+ {
+  "orig_size": [
+   1440,
+   922
+  ],
+  "mine_size": [
+   1440,
+   922
+  ],
+  "bbox": [
+   239,
+   13,
+   950,
+   621
+  ],
+  "changed_px": 92,
+  "changed_pct": 0.007,
+  "mean_abs_pct": 0.0008,
+  "page": "login",
+  "viewport": "1440",
+  "status": "ok"
+ },
+ {
+  "orig_size": [
+   1440,
+   941
+  ],
+  "mine_size": [
+   1440,
+   941
+  ],
+  "bbox": [
+   239,
+   13,
+   887,
+   788
+  ],
+  "changed_px": 0,
+  "changed_pct": 0.0,
+  "mean_abs_pct": 0.0002,
+  "page": "verify",
+  "viewport": "1440",
+  "status": "ok"
+ },
+ {
+  "orig_size": [
+   1440,
+   1179
+  ],
+  "mine_size": [
+   1440,
+   1179
+  ],
+  "bbox": [
+   239,
+   13,
+   926,
+   1031
+  ],
+  "changed_px": 681,
+  "changed_pct": 0.04,
+  "mean_abs_pct": 0.0038,
+  "page": "terms",
+  "viewport": "1440",
+  "status": "ok"
+ },
+ {
+  "orig_size": [
+   1440,
+   1051
+  ],
+  "mine_size": [
+   1440,
+   1051
+  ],
+  "bbox": [
+   239,
+   13,
+   878,
+   558
+  ],
+  "changed_px": 0,
+  "changed_pct": 0.0,
+  "mean_abs_pct": 0.0,
+  "page": "done",
+  "viewport": "1440",
+  "status": "ok"
+ },
+ {
+  "orig_size": [
+   1440,
+   922
+  ],
+  "mine_size": [
+   1440,
+   922
+  ],
+  "bbox": [
+   473,
+   10,
+   956,
+   641
+  ],
+  "changed_px": 0,
+  "changed_pct": 0.0,
+  "mean_abs_pct": 0.0001,
+  "page": "loading",
+  "viewport": "1440",
+  "status": "ok"
+ },
+ {
+  "orig_size": [
+   390,
+   1016
+  ],
+  "mine_size": [
+   390,
+   1016
+  ],
+  "bbox": [
+   25,
+   19,
+   374,
+   582
+  ],
+  "changed_px": 84,
+  "changed_pct": 0.021,
+  "mean_abs_pct": 0.0022,
+  "page": "login",
+  "viewport": "390",
+  "status": "ok"
+ },
+ {
+  "orig_size": [
+   390,
+   1041
+  ],
+  "mine_size": [
+   390,
+   1041
+  ],
+  "bbox": [
+   41,
+   19,
+   374,
+   757
+  ],
+  "changed_px": 30,
+  "changed_pct": 0.007,
+  "mean_abs_pct": 0.0011,
+  "page": "verify",
+  "viewport": "390",
+  "status": "ok"
+ },
+ {
+  "orig_size": [
+   390,
+   1044
+  ],
+  "mine_size": [
+   390,
+   1044
+  ],
+  "bbox": [
+   24,
+   68,
+   368,
+   795
+  ],
+  "changed_px": 680,
+  "changed_pct": 0.167,
+  "mean_abs_pct": 0.0157,
+  "page": "terms",
+  "viewport": "390",
+  "status": "ok"
+ },
+ {
+  "orig_size": [
+   390,
+   1096
+  ],
+  "mine_size": [
+   390,
+   1096
+  ],
+  "bbox": [
+   350,
+   19,
+   374,
+   76
+  ],
+  "changed_px": 24,
+  "changed_pct": 0.006,
+  "mean_abs_pct": 0.0005,
+  "page": "done",
+  "viewport": "390",
+  "status": "ok"
+ },
+ {
+  "orig_size": [
+   390,
+   1016
+  ],
+  "mine_size": [
+   390,
+   1016
+  ],
+  "bbox": [
+   0,
+   0,
+   370,
+   601
+  ],
+  "changed_px": 0,
+  "changed_pct": 0.0,
+  "mean_abs_pct": 0.002,
+  "page": "loading",
+  "viewport": "390",
+  "status": "ok"
+ }
+]
