@@ -18,7 +18,7 @@ export function Landing({ children, hideRingsOnMobile = false }) {
     <div className="overflow-hidden pt-[60px]">
       <div className="relative flex flex-col items-center px-[90px] text-center max-[734px]:px-[30px]">
         <Rings hiddenOnMobile={hideRingsOnMobile} />
-        <div className="relative w-full max-w-[980px] max-[734px]:w-screen max-[734px]:max-w-none">
+        <div className="relative w-full max-w-[980px] animate-page-in max-[734px]:w-screen max-[734px]:max-w-none">
           {children}
         </div>
       </div>

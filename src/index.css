@@ -59,6 +59,19 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Motion is decoration: anyone who asked the OS for less of it gets the same
+ * page without the entrance, ring drift, digit pop or spinner animation. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 @layer base {
   html {
     -webkit-text-size-adjust: 100%;

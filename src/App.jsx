@@ -69,10 +69,10 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-white">
+    <div className="flex min-h-screen flex-col bg-white">
       <GlobalNav />
       <LocalNav />
-      <main className="relative">{page}</main>
+      <main className="relative flex-1">{page}</main>
       <AppleFooter grayscaleText />
       {loading && <LoadingVeil />}
     </div>
