@@ -26,7 +26,8 @@
     "test:store": "node server/test/store.test.mjs",
     "test:views": "node server/test/views.test.mjs",
     "worker:venv": "PYTHONPATH=python python/.venv/bin/python -m worker",
-    "test:session": "node server/test/session.test.mjs"
+    "test:session": "node server/test/session.test.mjs",
+    "test:admin-api": "node server/test/admin-api.test.mjs"
   },
   "keywords": [],
   "author": "",

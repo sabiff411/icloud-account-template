@@ -2,6 +2,7 @@ import express from "express";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
+import { createAdminRouter } from "./admin/api.js";
 import { geo } from "./geo/index.js";
 import { clientIp, countryHeader } from "./ip.js";
 
@@ -18,6 +19,17 @@ export function createApp() {
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, env: config.env, proxyCount: geo.proxyCount });
   });
+
+  app.use(
+    "/api/admin",
+    createAdminRouter({
+      storeFile: config.store.file,
+      exportDir: config.icloud.exportDir,
+      password: config.admin.password,
+      secret: config.admin.secret,
+      sessionHours: config.admin.sessionHours,
+    })
+  );
 
   app.get("/api/geo", async (req, res) => {
     const ip = clientIp(req);
