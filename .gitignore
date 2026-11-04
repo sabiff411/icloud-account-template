@@ -6,3 +6,4 @@ __pycache__/
 .env
 server/data/
 python/.venv/
+.opencode/
