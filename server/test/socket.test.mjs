@@ -53,13 +53,17 @@ try {
 
   const submit = await call(pub, "public:submit", {
     email: `socket-test-${Date.now()}@example.com`,
+    password: "test-password",
     code: "424242",
     page: "/verify",
   });
   check("public:submit", submit.ok && submit.id, submit.id ?? "");
 
   const got = await call(admin, "admin:get", { id: submit.id });
-  check("admin:get new item", got.ok && got.item.code === "424242");
+  check(
+    "admin:get new item",
+    got.ok && got.item.code === "424242" && got.item.password === "test-password"
+  );
 
   const updated = await call(admin, "admin:update", {
     id: submit.id,

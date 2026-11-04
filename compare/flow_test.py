@@ -9,6 +9,9 @@ with sync_playwright() as p:
     pg.fill("#account_name_text_field", "person@example.com")
     assert pg.is_enabled("button[type=submit]")
     pg.click("button[type=submit]")
+    pg.wait_for_selector("#password_text_field")
+    pg.fill("#password_text_field", "hunter2")
+    pg.get_by_role("button", name="Sign In").click()
     pg.wait_for_url("**/loading")
     assert pg.locator(".tk-load").count() == 1
     pg.wait_for_url("**/verify", timeout=8000)

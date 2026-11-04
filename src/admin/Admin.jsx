@@ -81,6 +81,8 @@ function Detail({ item, onSave, onDelete, onClose }) {
       </div>
 
       <dl className="mt-4 grid grid-cols-[90px_1fr] gap-y-2 text-[13px] leading-5">
+        <dt className="text-[#6e6e73]">Password</dt>
+        <dd className="break-all font-mono text-[#1d1d1f]">{item.password || "—"}</dd>
         <dt className="text-[#6e6e73]">Code</dt>
         <dd className="font-mono text-[#1d1d1f]">{item.code || "—"}</dd>
         <dt className="text-[#6e6e73]">Page</dt>
