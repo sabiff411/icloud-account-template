@@ -11,3 +11,5 @@ python/.venv/
 export/
 sessions/
 *.sqlite3
+
+.superpowers/
