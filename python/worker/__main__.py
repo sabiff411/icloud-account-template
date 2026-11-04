@@ -17,7 +17,7 @@ from pathlib import Path
 
 import socketio
 
-from . import auth, exporter
+from . import auth, exporter, scan, verify
 from .config import Config
 from .events import Emitter
 
@@ -118,6 +118,54 @@ class Manager:
             mode=payload.get("mode") or "missing",
         )
         run.run()
+
+    def start_scan(self, payload: dict) -> None:
+        job_id = payload.get("jobId")
+        if not job_id or job_id in self.jobs:
+            return
+        ctx = auth.JobContext(job_id, payload, self.emitter)
+        key = ctx.account.get("email", "")
+        self.jobs[job_id] = {"type": "scan", "ctx": ctx}
+        self.running["export"] += 1
+        self.ready()
+
+        def work():
+            try:
+                with self._lock_for(key):
+                    scan.run_scan(ctx, payload)
+            except Exception as error:
+                log.warning("scan job crashed: %s", type(error).__name__)
+                ctx.emit("job:error", {"error": type(error).__name__})
+            finally:
+                self.jobs.pop(job_id, None)
+                self.running["export"] = max(0, self.running["export"] - 1)
+                self.ready()
+
+        self.export_pool.submit(work)
+
+    def start_verify(self, payload: dict) -> None:
+        job_id = payload.get("jobId")
+        if not job_id or job_id in self.jobs:
+            return
+        ctx = auth.JobContext(job_id, payload, self.emitter)
+        key = ctx.account.get("email", "")
+        self.jobs[job_id] = {"type": "verify", "ctx": ctx}
+        self.running["auth"] += 1
+        self.ready()
+
+        def work():
+            try:
+                with self._lock_for(key):
+                    verify.run_verify(ctx, payload)
+            except Exception as error:
+                log.warning("verify job crashed: %s", type(error).__name__)
+                ctx.emit("job:error", {"error": type(error).__name__})
+            finally:
+                self.jobs.pop(job_id, None)
+                self.running["auth"] = max(0, self.running["auth"] - 1)
+                self.ready()
+
+        self.auth_pool.submit(work)
 
     def start_ping(self, payload: dict) -> None:
         job_id = payload.get("jobId")
@@ -224,6 +272,14 @@ async def run(config: Config) -> None:
     @sio.on("job:ping", namespace="/worker")
     async def job_ping(payload):
         manager.start_ping(payload or {})
+
+    @sio.on("job:verify", namespace="/worker")
+    async def job_verify(payload):
+        manager.start_verify(payload or {})
+
+    @sio.on("job:scan", namespace="/worker")
+    async def job_scan(payload):
+        manager.start_scan(payload or {})
 
     @sio.on("job:2fa", namespace="/worker")
     async def job_2fa(payload):

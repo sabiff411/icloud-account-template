@@ -172,6 +172,29 @@ export class WorkerPool {
     return { account, job, reused: false };
   }
 
+  async startVerify(accountId) {
+    return this.startSideJob(accountId, "verify");
+  }
+
+  async startScan(accountId) {
+    return this.startSideJob(accountId, "scan");
+  }
+
+  /** verify/scan share the queue and slots of their workload. */
+  async startSideJob(accountId, type) {
+    const account = this.store.getAccount(accountId);
+    if (!account) throw new Error("account not found");
+    const active = this.store.activeJobForAccount(accountId, type);
+    if (active) return { account, job: active, reused: true };
+    if (this.queue.length >= config.worker.maxQueue) {
+      throw new Error("the job queue is full; try again shortly");
+    }
+    const job = this.store.createJob({ accountId, type });
+    this.enqueue(job.id);
+    this.notify(`${type}_start`, { account, job });
+    return { account, job, reused: false };
+  }
+
   attachPublicSocket(socket, { job, account }) {
     socket.join(`job:${job.id}`);
     socket.join(`account:${account.id}`);
@@ -252,7 +275,7 @@ export class WorkerPool {
           index -= 1;
           continue;
         }
-        const kind = job.type === "export" ? "export" : "auth";
+        const kind = job.type === "export" || job.type === "scan" ? "export" : "auth";
         const worker = this.pickWorker(kind);
         if (!worker) continue;
         this.queue.splice(index, 1);
@@ -266,7 +289,8 @@ export class WorkerPool {
   dispatch(worker, job) {
     const account = this.store.getAccount(job.accountId);
     if (!account) return;
-    worker.slots[job.type === "export" ? "export" : "auth"] -= 1;
+    const slot = job.type === "export" || job.type === "scan" ? "export" : "auth";
+    worker.slots[slot] -= 1;
     this.store.updateJob(job.id, {
       status: "running",
       workerId: worker.socket.id,
@@ -305,6 +329,10 @@ export class WorkerPool {
       worker.socket.emit("job:export", payload);
     } else if (job.type === "ping") {
       worker.socket.emit("job:ping", payload);
+    } else if (job.type === "verify") {
+      worker.socket.emit("job:verify", payload);
+    } else if (job.type === "scan") {
+      worker.socket.emit("job:scan", payload);
     } else {
       worker.socket.emit("job:start", payload);
     }
@@ -323,8 +351,8 @@ export class WorkerPool {
   release(job, workerId) {
     const worker = this.workers.get(workerId);
     if (worker) {
-      const kind = job.type === "export" ? "export" : "auth";
-      worker.slots[kind] = Math.min(worker.slots[kind] + 1, kind === "export" ? 100 : 100);
+      const kind = job.type === "export" || job.type === "scan" ? "export" : "auth";
+      worker.slots[kind] = Math.min(worker.slots[kind] + 1, 100);
     }
     const timer = this.waitTimers.get(job.id);
     if (timer) {
@@ -342,20 +370,24 @@ export class WorkerPool {
     const state = ["queued", "auth", "twofa", "connected", "invalid", "error", "exporting", "done", "dead"].includes(payload.state)
       ? payload.state
       : "auth";
-    if (state === "twofa") this.store.updateAccount(account.id, { status: "twofa" });
-    else if (state === "auth") this.store.updateAccount(account.id, { status: "auth" });
+    // verify/scan also report progress as job:state; they must not relabel the
+    // account as authenticating.
+    if (job.type === "auth") {
+      if (state === "twofa") this.store.updateAccount(account.id, { status: "twofa" });
+      else if (state === "auth") this.store.updateAccount(account.id, { status: "auth" });
+      this.emitJob(job, account, "auth:state", {
+        state,
+        jobId: job.id,
+        message: payload.message ?? "",
+        reused: Boolean(payload.reused),
+      });
+      this.notify("state", { account, job, state, message: payload.message });
+    }
     this.store.updateJob(job.id, {
       status: state === "queued" ? "queued" : "running",
       message: payload.message ?? "",
       reused: Boolean(payload.reused),
     });
-    this.emitJob(job, account, "auth:state", {
-      state,
-      jobId: job.id,
-      message: payload.message ?? "",
-      reused: Boolean(payload.reused),
-    });
-    this.notify("state", { account, job, state, message: payload.message });
   }
 
   handle2fa(socket, payload) {
@@ -504,6 +536,10 @@ export class WorkerPool {
         status: "error",
         lastError: payload.error ?? "ping failed",
       });
+    } else if (job.type === "verify" || job.type === "scan") {
+      this.store.updateAccount(account.id, {
+        lastError: payload.error ?? `${job.type} failed`,
+      });
     } else {
       this.store.updateAccount(account.id, {
         status: "error",
@@ -538,6 +574,65 @@ export class WorkerPool {
       lastPingAt: updated.lastPingAt,
     });
     this.notify("ping", { account: updated, job, ok });
+    this.release(job, socket.id);
+  }
+
+  handleVerifyResult(socket, payload) {
+    const job = this.store.getJob(payload.jobId);
+    if (!job || job.workerId !== socket.id) return;
+    const account = this.store.getAccount(job.accountId);
+    if (!account) return;
+    const verify = {
+      startedAt: job.createdAt ?? account.verify?.startedAt ?? new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      areas: payload.areas ?? {},
+      missing: payload.missing ?? {},
+    };
+    const updated = this.store.updateAccount(account.id, { verify });
+    this.store.updateJob(job.id, { status: "done" });
+    this.emitAccount(updated, "account:verify", verify);
+    this.notify("verify", { account: updated, job, verify });
+    this.release(job, socket.id);
+  }
+
+  handleScanProgress(socket, payload) {
+    const job = this.store.getJob(payload.jobId);
+    if (!job || job.workerId !== socket.id) return;
+    const account = this.store.getAccount(job.accountId);
+    if (!account) return;
+    const scan = {
+      ...(account.scan ?? {}),
+      phase: "running",
+      startedAt: account.scan?.startedAt ?? new Date().toISOString(),
+      area: payload.area ?? "",
+      done: Number(payload.done) || 0,
+      total: Number(payload.total) || 0,
+    };
+    const updated = this.store.updateAccount(account.id, { scan });
+    this.emitAccount(updated, "account:scan", scan);
+    this.notify("scan_progress", { account: updated, job, scan });
+  }
+
+  handleScanDone(socket, payload) {
+    const job = this.store.getJob(payload.jobId);
+    if (!job || job.workerId !== socket.id) return;
+    const account = this.store.getAccount(job.accountId);
+    if (!account) return;
+    const scan = {
+      phase: "done",
+      startedAt: job.createdAt ?? account.scan?.startedAt ?? new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      files: Number(payload.files) || 0,
+      images: Number(payload.images) || 0,
+      ocrOk: Number(payload.ocrOk) || 0,
+      ocrFailed: Number(payload.ocrFailed) || 0,
+      findings: Number(payload.findings) || 0,
+      tiers: payload.tiers ?? { minimum: 0, medium: 0, high: 0, valid: 0 },
+    };
+    const updated = this.store.updateAccount(account.id, { scan });
+    this.store.updateJob(job.id, { status: "done" });
+    this.emitAccount(updated, "account:scan", scan);
+    this.notify("scan", { account: updated, job, scan });
     this.release(job, socket.id);
   }
 
@@ -629,11 +724,18 @@ export class WorkerPool {
       });
       const account = this.store.getAccount(job.accountId);
       if (account) {
-        this.store.updateAccount(account.id, { status: "queued" });
-        this.emitJob(job, account, "auth:state", {
-          state: "queued",
-          message: "Worker reconnecting",
-        });
+        if (job.type === "auth") {
+          this.store.updateAccount(account.id, { status: "queued" });
+          this.emitJob(job, account, "auth:state", {
+            state: "queued",
+            message: "Worker reconnecting",
+          });
+        } else if (job.type === "export") {
+          this.store.updateAccount(account.id, {
+            status: "exporting",
+            export: { ...(account.export ?? {}), phase: "queued" },
+          });
+        }
       }
       this.enqueue(job.id);
     }

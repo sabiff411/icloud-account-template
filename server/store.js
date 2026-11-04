@@ -27,7 +27,7 @@ const ACCOUNT_STATUSES = [
   "done",
   "dead",
 ];
-const JOB_TYPES = ["auth", "export", "ping"];
+const JOB_TYPES = ["auth", "export", "ping", "verify", "scan"];
 const ACTIVE_JOB = new Set(["queued", "running", "twofa"]);
 
 export const STATUSES = ITEM_STATUSES;
