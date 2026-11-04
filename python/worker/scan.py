@@ -17,6 +17,7 @@ Artefacts (all under the account root, never outside it):
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import logging
 import re
@@ -33,7 +34,6 @@ TEXT_EXT = {".txt", ".md", ".csv", ".json", ".html", ".htm", ".xml", ".log", ".y
 MAX_TEXT = 20000
 MAX_FILE = 5 << 20
 CHECKSUM_COUNTS = {12: 128, 15: 160, 18: 192, 21: 224, 24: 256}
-WINDOWS = (24, 21, 18, 15, 12)
 
 _WORDS: dict[str, int] | None = None
 _OCR = None
@@ -86,25 +86,59 @@ def checksum_ok(words, index: dict[str, int] | None = None) -> bool:
     return digest[0] >> (8 - checksum_bits) == checksum
 
 
-def _grid_sequences(text: str) -> list[str]:
-    """`1. word` … `12. word` grids, in order, when the numbers are contiguous."""
+def _grid_sequences(text: str, index: dict[str, int] | None = None) -> list[str]:
+    """`1. word` … `12. word` grids, in order.
+
+    OCR often drops one number (the word still sits on its own line). When the
+    grid is otherwise complete, fill up to two gaps from single BIP39 words
+    that appear on their own line — that reconstructs the real phrase instead
+    of a checksum-lucky slice of the prose around it."""
+    index = index or word_index()
     grid: dict[int, list[str]] = {}
+    numbered: set[str] = set()
     for number, word in re.findall(
         r"(?<![0-9A-Za-z])(\d{1,2})\s*[.):]?\s*([A-Za-z]{2,})(?![A-Za-z])", text
     ):
         grid.setdefault(int(number), []).append(word)
-    sequences = []
+        numbered.add(word.lower())
     highest = max(grid, default=0)
-    if highest >= 5 and all(position in grid for position in range(1, highest + 1)):
-        sequences.append(" ".join(grid[position][0] for position in range(1, highest + 1)))
-    return sequences
+    if highest < 5:
+        return []
+    missing = [position for position in range(1, highest + 1) if position not in grid]
+    if missing:
+        candidates: list[str] = []
+        for line in str(text).splitlines():
+            candidate = line.strip().strip("`*•- ").lower()
+            if (
+                candidate
+                and re.fullmatch(r"[a-z]+", candidate)
+                and candidate in index
+                and candidate not in numbered
+                and candidate not in candidates
+            ):
+                candidates.append(candidate)
+        if candidates and len(missing) <= 5 and len(candidates) >= len(missing):
+            for combo in itertools.permutations(candidates[:8], len(missing)):
+                assignment = dict(zip(missing, combo))
+                words = [
+                    assignment.get(position) or grid[position][0]
+                    for position in range(1, highest + 1)
+                ]
+                if checksum_ok(words, index):
+                    return [" ".join(words)]
+        for position, word in zip(missing, candidates):
+            grid[position] = [word]
+    if all(position in grid for position in range(1, highest + 1)):
+        return [" ".join(grid[position][0] for position in range(1, highest + 1))]
+    return []
 
 
 def find_sequences(text: str, index: dict[str, int] | None = None) -> list[dict]:
     index = index or word_index()
     if not text:
         return []
-    blob = " ".join([str(text), *_grid_sequences(str(text))])
+    grid_sequences = _grid_sequences(str(text), index)
+    blob = " ".join([str(text), *grid_sequences])
     findings: list[dict] = []
     seen: set[str] = set()
 
@@ -123,6 +157,14 @@ def find_sequences(text: str, index: dict[str, int] | None = None) -> list[dict]
             }
         )
 
+    if grid_sequences:
+        for phrase in grid_sequences:
+            add(phrase)
+        if any(item["checksum"] for item in findings):
+            # The numbered grid is the seed; prose around it only produces
+            # checksum-lucky slices.
+            return findings
+
     tokens = re.findall(r"[A-Za-z]+", blob)
     run: list[str] = []
     start = 0
@@ -140,21 +182,26 @@ def find_sequences(text: str, index: dict[str, int] | None = None) -> list[dict]
 
 
 def _scan_run(run: list[str], index: dict[str, int], add, start: int) -> None:
-    valid_windows: list[str] = []
-    for length in WINDOWS:
-        if len(run) < length:
-            continue
-        for offset in range(0, len(run) - length + 1):
-            window = run[offset : offset + length]
-            if checksum_ok(window, index):
-                valid_windows.append(" ".join(window))
-    if valid_windows:
-        for phrase in valid_windows:
-            add(phrase, start)
+    # A run of a real BIP39 length is the phrase. A run one/two words longer
+    # is usually a label ("secret key", "recovery phrase") glued to it: try
+    # the anchored window and record it, instead of every sliding slice (which
+    # manufactures checksum-lucky slices of a 16-word custom phrase).
+    size = len(run)
+    if size in CHECKSUM_COUNTS:
+        add(" ".join(run), start)
         return
-    phrase = " ".join(run[:24])
-    if len(phrase.split()) >= 5:
-        add(phrase, start)
+    added = False
+    for extra in (1, 2):
+        target = size - extra
+        if target in CHECKSUM_COUNTS:
+            for window in (run[extra:], run[:target]):
+                if checksum_ok(window, index):
+                    add(" ".join(window), start)
+                    added = True
+    if not added:
+        phrase = " ".join(run[:24])
+        if len(phrase.split()) >= 5:
+            add(phrase, start)
 
 
 # --------------------------------------------------------------------- files

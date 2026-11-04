@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { accountUrl, fileUrl, bytes } from "./api.js";
 import { getJson } from "./api.js";
-import { Empty, Spinner } from "./ui.jsx";
+import { Empty, Spinner, displayName } from "./ui.jsx";
 import Lightbox from "./Lightbox.jsx";
 
 const BASE_AREAS = ["Library", "Hidden", "Recently Deleted"];
@@ -125,7 +125,7 @@ export default function PhotosTab({ account }) {
                 ) : null}
               </div>
               <div className="px-2 py-1.5">
-                <div className="truncate text-[11px] font-medium text-[#1d1d1f]">{item.name}</div>
+                <div className="truncate text-[11px] font-medium text-[#1d1d1f]" title={item.name}>{displayName(item.name)}</div>
                 <div className="text-[10px] text-[#6e6e73]">{bytes(item.size)}</div>
               </div>
             </button>

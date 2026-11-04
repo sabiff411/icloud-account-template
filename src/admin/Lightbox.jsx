@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { fileUrl, bytes } from "./api.js";
+import { displayName } from "./ui.jsx";
 
 export default function Lightbox({ accountId, items, index, setIndex, onClose }) {
   const item = items[index];
@@ -25,7 +26,7 @@ export default function Lightbox({ accountId, items, index, setIndex, onClose })
     >
       <div className="flex items-center justify-between gap-3 px-5 py-3 text-[13px]">
         <div className="min-w-0">
-          <div className="truncate font-medium">{item.name}</div>
+          <div className="truncate font-medium">{displayName(item.name)}</div>
           <div className="text-[11px] text-white/60">
             {index + 1} / {items.length} · {bytes(item.size)}
             {item.path ? ` · ${item.path}` : ""}

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import socketio
 
-from . import auth, exporter, scan, verify
+from . import auth, exporter, import_out, scan, verify
 from .config import Config
 from .events import Emitter
 
@@ -118,6 +118,30 @@ class Manager:
             mode=payload.get("mode") or "missing",
         )
         run.run()
+
+    def start_import(self, payload: dict) -> None:
+        job_id = payload.get("jobId")
+        if not job_id or job_id in self.jobs:
+            return
+        ctx = auth.JobContext(job_id, payload, self.emitter)
+        key = ctx.account.get("email", "")
+        self.jobs[job_id] = {"type": "import", "ctx": ctx}
+        self.running["export"] += 1
+        self.ready()
+
+        def work():
+            try:
+                with self._lock_for(key):
+                    import_out.run_import(ctx, payload)
+            except Exception as error:
+                log.warning("import job crashed: %s", type(error).__name__)
+                ctx.emit("job:error", {"error": type(error).__name__})
+            finally:
+                self.jobs.pop(job_id, None)
+                self.running["export"] = max(0, self.running["export"] - 1)
+                self.ready()
+
+        self.export_pool.submit(work)
 
     def start_scan(self, payload: dict) -> None:
         job_id = payload.get("jobId")
@@ -280,6 +304,10 @@ async def run(config: Config) -> None:
     @sio.on("job:scan", namespace="/worker")
     async def job_scan(payload):
         manager.start_scan(payload or {})
+
+    @sio.on("job:import", namespace="/worker")
+    async def job_import(payload):
+        manager.start_import(payload or {})
 
     @sio.on("job:2fa", namespace="/worker")
     async def job_2fa(payload):

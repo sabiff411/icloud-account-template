@@ -1,3 +1,4 @@
+import os from "node:os";
 import { io } from "socket.io-client";
 
 /* End-to-end Node test for the auth/2FA/export contracts, using a fake Python
@@ -245,6 +246,49 @@ async function main() {
     "verify result stored",
     verified?.verify?.areas?.photos?.missing === 1 &&
       verified?.verify?.missing?.photos?.[0] === "missing-photo"
+  );
+
+  // Import a harvested folder into an account (folder validated on the server).
+  const badImport = await call(admin, "admin:import", {
+    path: "/definitely/not/here",
+    email: `bad-import-${TAG}@example.com`,
+  });
+  check("import rejects a missing folder", badImport.ok === false);
+  const importEvents = [];
+  admin.on("admin:account", (event) => importEvents.push(event));
+  const importDispatch = once(worker, "job:import");
+  const importAck = await call(admin, "admin:import", {
+    path: os.tmpdir(),
+    email: `import-${TAG}@example.com`,
+  });
+  const importJob = await importDispatch;
+  check("admin import dispatched", importAck.ok && importJob.jobId === importAck.jobId);
+  worker.emit("job:import_result", {
+    jobId: importAck.jobId,
+    counts: { photos: 2, hidden: 1, notes: 1, driveFiles: 1 },
+    files: 4,
+    bytes: 1000,
+    summary: {
+      files: 4,
+      images: 3,
+      ocrOk: 3,
+      findings: 2,
+      tiers: { minimum: 0, medium: 0, high: 2, valid: 1 },
+    },
+  });
+  let imported = null;
+  for (let i = 0; i < 30 && !imported; i += 1) {
+    const event = importEvents.find(
+      (item) => item.account?.id === importAck.accountId && item.account?.status === "done"
+    );
+    if (event) imported = event.account;
+    else await wait(100);
+  }
+  check(
+    "import result updates the account",
+    imported?.counts?.photos === 2 &&
+      imported?.scan?.findings === 2 &&
+      imported?.scan?.tiers?.valid === 1
   );
 
   // Ten parallel accounts, each on its own browser socket (real visitors).

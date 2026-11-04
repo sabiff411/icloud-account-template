@@ -102,3 +102,13 @@ export function Bar({ value, total, className = "" }) {
 export function bytes(value) {
   return formatBytes(value);
 }
+
+/** Harvested names carry the asset UUID: show the human part in the panel. */
+export function displayName(name) {
+  const raw = String(name ?? "");
+  return (
+    raw
+      .replace(/^[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}[_-]/, "")
+      .replace(/^(original_|livephoto-mov_)/, "") || raw
+  );
+}

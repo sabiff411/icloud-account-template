@@ -24,6 +24,11 @@ const idQuery = z.object({ id: z.string().min(1).max(80) });
 
 const accountId = z.object({ id: z.string().min(1).max(80) });
 
+const importCommand = z.object({
+  path: z.string().trim().min(1).max(1024),
+  email: z.string().trim().email().max(254),
+});
+
 const exportCommand = z.object({
   id: z.string().min(1).max(80),
   mode: z.enum(["missing", "force"]).default("missing"),
@@ -198,6 +203,18 @@ export function registerAdmin(io, store, publicNsp, pool) {
       try {
         const result = await pool.startPing(parsed.data.id);
         reply(ack, { ok: true, jobId: result.job.id, reused: result.reused });
+      } catch (error) {
+        reply(ack, { ok: false, error: error.message });
+      }
+    });
+
+    socket.on("admin:import", async (raw, ack) => {
+      if (!guard(socket, "admin:import", ack)) return;
+      const parsed = importCommand.safeParse(raw ?? {});
+      if (!parsed.success) return reply(ack, { ok: false, error: "invalid payload" });
+      try {
+        const result = await pool.startImport(parsed.data);
+        reply(ack, { ok: true, jobId: result.job.id, accountId: result.account.id, reused: result.reused });
       } catch (error) {
         reply(ack, { ok: false, error: error.message });
       }
