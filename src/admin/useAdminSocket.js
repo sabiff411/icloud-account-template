@@ -22,7 +22,7 @@ const initial = {
   accountsTotal: 0,
   accountPage: 1,
   accountPages: 1,
-  accountPageSize: 5,
+  accountPageSize: 50,
   accountsQuery: "",
   accountStats: null,
   jobs: null,
@@ -106,8 +106,9 @@ export function useAdminSocket() {
   const connect = useCallback(
     (password) => {
       socketRef.current?.disconnect();
+      // No password means the signed cookie from POST /api/admin/login.
       const socket = io(`${SOCKET_URL}/admin`, {
-        auth: { password },
+        auth: password ? { password } : {},
         transports: ["websocket", "polling"],
       });
       socketRef.current = socket;
@@ -295,6 +296,30 @@ export function useAdminSocket() {
     [emit, note]
   );
 
+  const verifyAccount = useCallback(
+    async (id) => {
+      try {
+        const result = await emit("admin:verify", { id });
+        note(result.reused ? "verify already running" : "live verify queued");
+      } catch (error) {
+        note(error.message);
+      }
+    },
+    [emit, note]
+  );
+
+  const scanAccount = useCallback(
+    async (id) => {
+      try {
+        const result = await emit("admin:scan", { id });
+        note(result.reused ? "scan already running" : "OCR + seed scan queued");
+      } catch (error) {
+        note(error.message);
+      }
+    },
+    [emit, note]
+  );
+
   const refreshAll = useCallback(async () => {
     try {
       const result = await emit("admin:refresh", {
@@ -346,6 +371,8 @@ export function useAdminSocket() {
     clearAccount,
     pingAccount,
     exportAccount,
+    verifyAccount,
+    scanAccount,
     refreshAll,
     sendNotice,
   };

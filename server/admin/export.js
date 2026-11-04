@@ -311,7 +311,14 @@ export async function search(
           String(item.name || "").toLowerCase().includes(lower)
       );
     }
-    result.seeds = findings.slice(0, size);
+    const slice = findings.slice(0, size);
+    result.seeds = await Promise.all(
+      slice.map(async (item) => ({
+        ...item,
+        path: item.file || item.path || "",
+        thumb: item.file ? await thumbFor(root, item.file) : "",
+      }))
+    );
     if (kind === "seed") return result;
     result.seedTotal = findings.length;
   }
