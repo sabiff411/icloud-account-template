@@ -249,6 +249,23 @@ layers, which switches Chromium between LCD and grayscale antialiasing), the
 terms button label's subpixel baseline, and the final 1 px of the reference's
 own iframe jitter.
 
+## Motion and footer
+
+- **Rings:** the reference's own `rings-drift` (26 s, ease-in-out, infinite
+  alternate, 0.92–1 opacity).
+- **Page entrance:** content fades and rises 6 px in 500 ms; it re-runs on each
+  step. The comparison harness freezes animation, so measured geometry is
+  unchanged.
+- **Fields and buttons:** the email label uses the reference's 125 ms ease-in
+  glide; inputs and buttons transition border/background over 150 ms; a typed
+  OTP digit pops once; buttons press down slightly on click.
+- **Accessibility:** everything above turns off under
+  `prefers-reduced-motion: reduce`.
+- **Footer:** the app shell is a `min-h-screen` flex column with `main` as
+  `flex-1`, so a tall window pins the footer to the bottom edge instead of
+  leaving white space under it. At 900 px height the chrome boxes are identical
+  to the reference (0 mismatches).
+
 ## Layout
 
 ```
