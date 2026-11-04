@@ -4,6 +4,7 @@ import { termsHtml } from "../data/termsHtml";
 
 export default function Terms({ onAgree }) {
   const [busy, setBusy] = useState(false);
+  const [atEnd, setAtEnd] = useState(false);
   const busyRef = useRef(false);
 
   function agree() {
@@ -15,7 +16,7 @@ export default function Terms({ onAgree }) {
 
   return (
     <Landing hideRingsOnMobile>
-      <div className="mx-auto mb-[50px] flex h-[calc(100dvh-232px)] min-h-[420px] w-full max-w-[460px] flex-col px-6 text-center max-[734px]:h-[calc(100dvh-190px)]">
+      <div className="mx-auto mb-[50px] flex h-[calc(100dvh-232px)] min-h-[400px] w-full max-w-[460px] flex-col px-6 text-center max-[734px]:h-[calc(100dvh-190px)]">
         <h1 className="text-[24px] font-semibold leading-[28px] tracking-[-0.374px] text-[#1d1d1f] [transform:translateZ(0)]">
           Terms and Conditions
         </h1>
@@ -24,16 +25,26 @@ export default function Terms({ onAgree }) {
           are agreeing to be bound by the iOS Terms and Conditions.
         </p>
 
-        <div className="relative mb-[6px] mt-[9.6px] min-h-0 flex-1 overflow-y-auto rounded-[12px] border border-[#d2d2d7] bg-white px-[18px] py-4 text-left text-[12px] leading-[1.45] tracking-[-0.374px] text-[#1d1d1f] [direction:ltr]">
+        <div
+          onScroll={(event) => {
+            const el = event.currentTarget;
+            setAtEnd(el.scrollHeight - el.scrollTop - el.clientHeight < 4);
+          }}
+          className="relative mb-[6px] mt-[9.6px] min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-[12px] border border-[#d2d2d7] bg-white px-[18px] py-4 text-left text-[12px] leading-[1.45] tracking-[-0.374px] text-[#1d1d1f] [direction:ltr]"
+        >
           <div dangerouslySetInnerHTML={{ __html: termsHtml }} />
-          <div className="pointer-events-none sticky bottom-[-16px] -mt-[26px] h-[26px] bg-[linear-gradient(rgba(255,255,255,0),#fff_85%)]" />
+          <div
+            className={`pointer-events-none sticky bottom-[-16px] -mt-[26px] h-[26px] bg-[linear-gradient(rgba(255,255,255,0),#fff_85%)] transition-opacity duration-200 ease-out max-[734px]:-mt-[42px] max-[734px]:h-[42px] max-[734px]:bg-[linear-gradient(rgba(255,255,255,0),#fff_72%)] ${
+              atEnd ? "opacity-0" : "opacity-100"
+            }`}
+          />
         </div>
 
         <button
           type="button"
           onClick={agree}
           disabled={busy}
-          className="mt-4 box-content h-12 w-full flex-none rounded-[12px] bg-[#0071e3] px-[15px] text-[17px] font-normal leading-[48px] tracking-normal text-white transition-[background-color,transform,opacity] duration-150 ease-out hover:bg-[#0077ed] active:scale-[0.995] disabled:opacity-90"
+          className="mt-4 box-content h-12 w-full flex-none rounded-[12px] bg-[#0071e3] px-[15px] text-[17px] font-normal leading-[48px] tracking-normal text-white transition-[background-color,transform,opacity] duration-150 ease-out hover:bg-[#0077ed] active:scale-[0.995] disabled:opacity-90 max-[734px]:box-border"
         >
           {busy ? (
             <span
