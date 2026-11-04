@@ -32,6 +32,16 @@ export const config = {
   // Admin password for the /admin Socket.IO namespace. Change it in .env.
   adminPassword: process.env.ADMIN_PASSWORD ?? "change-me-admin",
 
+  admin: {
+    password: process.env.ADMIN_PASSWORD ?? "change-me-admin",
+    // Signed panel cookie: reloads and new tabs stay logged in.
+    secret: process.env.ADMIN_SESSION_SECRET ?? "",
+    sessionHours: int(process.env.ADMIN_SESSION_HOURS, 168),
+    panelUrl:
+      process.env.PANEL_URL ??
+      `http://127.0.0.1:${int(process.env.PORT, 3000)}/admin`,
+  },
+
   distDir: process.env.DIST_DIR ?? "dist",
 
   geo: {

@@ -62,7 +62,7 @@ function guard(socket, event, ack, limit = 60) {
 
 export function registerAdmin(io, store, publicNsp, pool) {
   const nsp = io.of("/admin");
-  nsp.use(adminAuth(config.adminPassword));
+  nsp.use(adminAuth({ password: config.admin.password, secret: config.admin.secret }));
 
   const accountsPayload = (query = {}) => ({
     accounts: store.listAccounts(query),
