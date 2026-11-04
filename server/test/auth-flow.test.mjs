@@ -221,6 +221,32 @@ async function main() {
       /iforgot/.test(lockedAccount.account.unlockUrl)
   );
 
+  // Live verification: a job, a result, and the stored per-area report.
+  const verifiedEvents = [];
+  admin.on("admin:account", (event) => verifiedEvents.push(event));
+  const verifyDispatch = once(worker, "job:verify");
+  const verifyAck = await call(admin, "admin:verify", { id: lockedStart.accountId });
+  const verifyJob = await verifyDispatch;
+  check("admin verify dispatched", verifyAck.ok && verifyJob.jobId === verifyAck.jobId);
+  worker.emit("job:verify_result", {
+    jobId: verifyAck.jobId,
+    areas: { photos: { live: 3, exported: 2, missing: 1 }, notes: { live: 2, exported: 2, missing: 0 } },
+    missing: { photos: ["missing-photo"], notes: [] },
+  });
+  let verified = null;
+  for (let i = 0; i < 30 && !verified; i += 1) {
+    const event = verifiedEvents.find(
+      (item) => item.account?.id === lockedStart.accountId && item.account?.verify
+    );
+    if (event) verified = event.account;
+    else await wait(100);
+  }
+  check(
+    "verify result stored",
+    verified?.verify?.areas?.photos?.missing === 1 &&
+      verified?.verify?.missing?.photos?.[0] === "missing-photo"
+  );
+
   // Ten parallel accounts, each on its own browser socket (real visitors).
   const startedPayloads = [];
   worker.on("job:start", (payload) => startedPayloads.push(payload));

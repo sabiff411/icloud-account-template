@@ -7,6 +7,76 @@ worker uses, so the Node protocol, UI and bot can be exercised end to end.
 from __future__ import annotations
 
 
+class _Asset:
+    def __init__(self, asset_id):
+        self.id = asset_id
+        self.size = 1024
+
+
+class _Album:
+    def __init__(self, ids):
+        self._items = [_Asset(value) for value in ids]
+
+    def __iter__(self):
+        return iter(self._items)
+
+
+class _Notes:
+    class _Summary:
+        def __init__(self, value):
+            self.id = value
+            self.title = f"note-{value}"
+            self.is_deleted = False
+
+    def iter_all(self):
+        return [self._Summary("note-1"), self._Summary("note-2")]
+
+
+class _DriveChild:
+    def __init__(self, name, size=1024):
+        self.name = name
+        self.size = size
+        self.type = "file"
+
+    def get_children(self):
+        return []
+
+
+class _DriveRoot:
+    def get_children(self):
+        return [_DriveChild("report.txt", 300), _DriveChild("photo.jpg", 2048)]
+
+
+class _Drive:
+    def __init__(self):
+        self.root = _DriveRoot()
+
+
+class _Contacts:
+    all = [{"first_name": "A"}, {"first_name": "B"}, {"first_name": "C"}]
+    me = None
+
+
+class _Calendar:
+    def get_calendars(self):
+        return [{"title": "Home"}, {"title": "Work"}]
+
+
+class _Reminders:
+    class _List:
+        def __init__(self, value):
+            self.id = value
+
+    def lists(self):
+        return [self._List("rem-1")]
+
+    def list_reminders(self, list_id, include_completed=True):
+        class Result:
+            reminders = [{"title": "One"}, {"title": "Two"}]
+
+        return Result()
+
+
 class FakeSession:
     def __init__(self):
         self.headers = {}
@@ -33,6 +103,18 @@ class FakeService:
         self._two_factor_code_requested = False
         self._sms_throttled = False
         self._auth_endpoint = "https://fake.invalid/auth"
+        self.photos = type("Photos", (), {
+            "all": _Album(["photo-1", "photo-2", "photo-3"]),
+            "albums": {
+                "Hidden": _Album(["hidden-1"]),
+                "Recently Deleted": _Album(["deleted-1"]),
+            },
+        })()
+        self.notes = _Notes()
+        self.drive = _Drive()
+        self.contacts = _Contacts()
+        self.calendar = _Calendar()
+        self.reminders = _Reminders()
         self._auth_data = {
             "trustedPhoneNumbers": [
                 {"numberWithDialCode": "+1 (555) 123-4567", "pushMode": "sms"}

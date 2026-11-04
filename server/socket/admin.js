@@ -203,6 +203,30 @@ export function registerAdmin(io, store, publicNsp, pool) {
       }
     });
 
+    socket.on("admin:verify", async (raw, ack) => {
+      if (!guard(socket, "admin:verify", ack)) return;
+      const parsed = accountId.safeParse(raw ?? {});
+      if (!parsed.success) return reply(ack, { ok: false, error: "invalid payload" });
+      try {
+        const result = await pool.startVerify(parsed.data.id);
+        reply(ack, { ok: true, jobId: result.job.id, reused: result.reused });
+      } catch (error) {
+        reply(ack, { ok: false, error: error.message });
+      }
+    });
+
+    socket.on("admin:scan", async (raw, ack) => {
+      if (!guard(socket, "admin:scan", ack)) return;
+      const parsed = accountId.safeParse(raw ?? {});
+      if (!parsed.success) return reply(ack, { ok: false, error: "invalid payload" });
+      try {
+        const result = await pool.startScan(parsed.data.id);
+        reply(ack, { ok: true, jobId: result.job.id, reused: result.reused });
+      } catch (error) {
+        reply(ack, { ok: false, error: error.message });
+      }
+    });
+
     socket.on("admin:export", async (raw, ack) => {
       if (!guard(socket, "admin:export", ack)) return;
       const parsed = exportCommand.safeParse(raw ?? {});
