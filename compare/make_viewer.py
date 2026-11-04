@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Build compare/viewer.html from summary.json + the captured screenshots."""
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+rows = json.loads((ROOT / "summary.json").read_text())
+by = {(r["page"], r["viewport"]): r for r in rows}
+
+PAGES = [
+    ("login", "Login (email step)"),
+    ("loading", "Loading"),
+    ("verify", "Verification code (OTP)"),
+    ("terms", "Terms and Conditions"),
+    ("done", "Success"),
+]
+
+cards = []
+for page, title in PAGES:
+    for tag, label in [("1440", "Desktop · 1440×900"), ("390", "Phone · 390×844")]:
+        r = by.get((page, tag), {})
+        pct = f'{r.get("changed_pct", "?")}%' if r.get("status") == "ok" else "—"
+        mean = f'{r.get("mean_abs_pct", "?")}%' if r.get("status") == "ok" else "—"
+        cards.append(
+            f'''
+<article class="card" data-page="{page}" data-vp="{tag}">
+  <header>
+    <div><h2>{title}</h2><span class="vp">{label}</span></div>
+    <div class="metrics"><span>changed <b>{pct}</b></span><span>mean diff <b>{mean}</b></span></div>
+  </header>
+  <div class="stage">
+    <div class="frame" style="--pos:50%; width:min(100%, {1140 if tag == "1440" else 390}px)">
+      <img class="base" src="shots/mine-{page}-{tag}.png" alt="React + Tailwind replica">
+      <img class="over" src="shots/orig-{page}-{tag}.png" alt="reference">
+      <img class="diff" src="shots/diff-{page}-{tag}.png" alt="amplified difference">
+      <div class="handle"></div>
+    </div>
+  </div>
+  <div class="controls">
+    <input type="range" min="0" max="100" value="50" aria-label="Wipe between reference and replica">
+    <label><input type="checkbox" class="diffToggle"> difference (×4)</label>
+    <span class="legend"><i class="ref"></i> reference <i class="rep"></i> replica</span>
+  </div>
+</article>'''
+)
+
+html = f'''<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reference vs React + Tailwind replica</title>
+<style>
+  :root {{ color-scheme: light; }}
+  * {{ box-sizing: border-box; }}
+  body {{ margin: 0; background: #f5f5f7; color: #1d1d1f;
+    font: 15px/22px -apple-system, "SF Pro Text", Helvetica, Arial, sans-serif;
+    letter-spacing: -.2px; }}
+  header.top {{ padding: 34px 28px 12px; max-width: 1180px; margin: 0 auto; }}
+  h1 {{ font-size: 28px; line-height: 34px; margin: 0 0 8px; letter-spacing: -.4px; }}
+  header.top p {{ margin: 0; color: #6e6e73; max-width: 820px; }}
+  .bar {{ max-width: 1180px; margin: 14px auto 0; padding: 0 28px; display: flex; gap: 10px; flex-wrap: wrap; }}
+  .bar button {{ font: inherit; border: 1px solid #d2d2d7; background: #fff; color: #1d1d1f;
+    border-radius: 999px; padding: 6px 14px; cursor: pointer; }}
+  .bar button.on {{ background: #1d1d1f; color: #fff; border-color: #1d1d1f; }}
+  main {{ max-width: 1180px; margin: 0 auto; padding: 20px 28px 60px; }}
+  .card {{ background: #fff; border: 1px solid #e5e5ea; border-radius: 18px; margin: 0 0 26px;
+    overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,.03); }}
+  .card header {{ display: flex; align-items: flex-end; justify-content: space-between; gap: 18px;
+    padding: 16px 20px; border-bottom: 1px solid #f0f0f2; }}
+  .card h2 {{ font-size: 17px; margin: 0; letter-spacing: -.2px; }}
+  .vp {{ font-size: 12px; color: #86868b; }}
+  .metrics {{ display: flex; gap: 18px; font-size: 12px; color: #86868b; white-space: nowrap; }}
+  .metrics b {{ color: #1d1d1f; font-weight: 600; margin-left: 4px; }}
+  .stage {{ display: flex; justify-content: center; background: #f5f5f7; padding: 18px; }}
+  .frame {{ position: relative; background: #fff; box-shadow: 0 0 0 1px #e5e5ea; overflow: hidden; }}
+  .frame img {{ display: block; width: 100%; height: auto; }}
+  .frame .over {{ position: absolute; inset: 0; width: 100%;
+    clip-path: inset(0 calc(100% - var(--pos)) 0 0); }}
+  .frame .diff {{ position: absolute; inset: 0; width: 100%; display: none; background: #000; }}
+  .frame.diffmode .diff {{ display: block; }}
+  .handle {{ position: absolute; top: 0; bottom: 0; left: var(--pos); width: 2px;
+    background: #0071e3; box-shadow: 0 0 0 1px rgba(255,255,255,.7); pointer-events: none; }}
+  .frame.diffmode .handle {{ display: none; }}
+  .controls {{ display: flex; align-items: center; gap: 18px; padding: 12px 20px 16px; flex-wrap: wrap; }}
+  .controls input[type=range] {{ flex: 1; min-width: 220px; accent-color: #0071e3; }}
+  .controls label {{ font-size: 13px; color: #424245; display: flex; gap: 6px; align-items: center; }}
+  .legend {{ font-size: 12px; color: #86868b; display: flex; align-items: center; gap: 6px; }}
+  .legend i {{ width: 10px; height: 10px; border-radius: 3px; display: inline-block; }}
+  .legend .ref {{ background: #0071e3; }}
+  .legend .rep {{ background: #34c759; margin-left: 8px; }}
+  .hidden {{ display: none; }}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Reference vs React + Tailwind replica</h1>
+  <p>Drag the blue handle to wipe between the original project (left) and the React + Tailwind rebuild (right).
+  The page tabs and viewport pills filter the set; the difference view is the 4× amplified channel diff.
+  Every pair is the same viewport, the same fonts, a fresh document, and motion frozen at frame 0.</p>
+</header>
+<div class="bar" id="pages"></div>
+<div class="bar" id="vps"></div>
+<main id="cards">{''.join(cards)}</main>
+<script>
+const cards = [...document.querySelectorAll('.card')];
+const pageNames = [...new Set(cards.map(c => c.dataset.page))];
+const vpNames = [...new Set(cards.map(c => c.dataset.vp))];
+let page = 'all', vp = 'all';
+function render() {{
+  cards.forEach(c => c.classList.toggle('hidden',
+    (page !== 'all' && c.dataset.page !== page) || (vp !== 'all' && c.dataset.vp !== vp)));
+}}
+function bar(el, names, setter) {{
+  const opts = ['all', ...names];
+  el.innerHTML = '';
+  opts.forEach(n => {{
+    const b = document.createElement('button');
+    const labels = {{ login: 'Login', loading: 'Loading', verify: 'OTP', terms: 'Terms', done: 'Success' }};
+    b.textContent = n === 'all' ? 'All' : (n === '1440' ? 'Desktop' : n === '390' ? 'Phone' : (labels[n] || n));
+    b.onclick = () => {{ setter(n); [...el.children].forEach(x => x.classList.toggle('on', x === b)); render(); }};
+    if (n === 'all') b.classList.add('on');
+    el.appendChild(b);
+  }});
+}}
+bar(document.getElementById('pages'), pageNames, n => page = n);
+bar(document.getElementById('vps'), vpNames, n => vp = n);
+cards.forEach(card => {{
+  const frame = card.querySelector('.frame');
+  const range = card.querySelector('input[type=range]');
+  range.addEventListener('input', () => frame.style.setProperty('--pos', range.value + '%'));
+  card.querySelector('.diffToggle').addEventListener('change', e => frame.classList.toggle('diffmode', e.target.checked));
+}});
+</script>
+</body>
+</html>'''
+
+(ROOT / "viewer.html").write_text(html)
+print("wrote", ROOT / "viewer.html")

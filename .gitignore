@@ -1,0 +1,8 @@
+node_modules/
+dist/
+compare/shots/_ref-*
+compare/width_shots/
+__pycache__/
+.env
+server/data/
+python/.venv/

