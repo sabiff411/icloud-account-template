@@ -235,13 +235,21 @@ Latest run (`compare/REPORT.md`, `compare/summary.json`):
 | login | 0.007% | 0.021% |
 | loading | 0.000% | 0.000% |
 | verify | 0.000% | 0.007% |
-| terms | 0.040% | 0.167% |
+| terms | 0.040% | 1.282%* |
 | done | 0.000% | 0.006% |
+
+\* The mobile Terms page is a deliberate improvement, not drift: the reference
+draws its CTA 30 px wider than the legal box, so at phone widths the right
+corner is clipped by 6 px. The replica aligns the CTA to the legal box on
+`max-width: 734px`, gives the scroll fade more height, and hides the fade once
+the reader reaches the end so the last lines stay readable. Desktop Terms is
+unchanged (0.040%).
 
 Chrome check: **0 mismatches** across 40 page/width pairs (global header,
 local nav, footer, main and document height) at 320–1440. Width check at
-600/768/834: every diff ≤ 0.125%. Responsive check: **0 horizontal overflow
-cases** across 75 page/width pairs at 320–1920.
+768/834: every diff ≤ 0.075%; at 600 the only larger diff is the Terms CTA
+(0.978%, same mobile improvement), everything else ≤ 0.125%. Responsive check:
+**0 horizontal overflow cases** across 75 page/width pairs at 320–1920.
 
 "changed" counts pixels whose channel difference exceeds 8/255. The residue is
 sub-pixel text antialiasing (the reference renders some text through composited
@@ -265,6 +273,10 @@ own iframe jitter.
   `flex-1`, so a tall window pins the footer to the bottom edge instead of
   leaving white space under it. At 900 px height the chrome boxes are identical
   to the reference (0 mismatches).
+- **Mobile Terms:** the CTA matches the legal box width (no clipped corner),
+  the inner scroll uses `overscroll-contain`, and the bottom fade fades out at
+  the end so the last lines are never permanently covered. On wider screens the
+  reference geometry is kept.
 
 ## Layout
 

@@ -165,12 +165,12 @@
   "bbox": [
    24,
    68,
-   368,
-   795
+   390,
+   810
   ],
-  "changed_px": 680,
-  "changed_pct": 0.167,
-  "mean_abs_pct": 0.0157,
+  "changed_px": 5221,
+  "changed_pct": 1.282,
+  "mean_abs_pct": 0.405,
   "page": "terms",
   "viewport": "390",
   "status": "ok"
@@ -209,12 +209,12 @@
   "bbox": [
    0,
    0,
-   370,
-   601
+   383,
+   794
   ],
   "changed_px": 0,
   "changed_pct": 0.0,
-  "mean_abs_pct": 0.002,
+  "mean_abs_pct": 0.008,
   "page": "loading",
   "viewport": "390",
   "status": "ok"

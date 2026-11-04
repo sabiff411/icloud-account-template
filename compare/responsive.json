@@ -159,15 +159,8 @@
    "w": 320,
    "h": 820
   },
-  "overflowing": [
-   {
-    "tag": "BUTTON",
-    "cls": "mt-4 box-content h-12 w-full flex-none rounded-[12px] bg-[#0",
-    "left": 24,
-    "right": 326
-   }
-  ],
-  "overflowCount": 1,
+  "overflowing": [],
+  "overflowCount": 0,
   "page": "terms",
   "width": 320
  },
@@ -371,15 +364,8 @@
    "w": 360,
    "h": 820
   },
-  "overflowing": [
-   {
-    "tag": "BUTTON",
-    "cls": "mt-4 box-content h-12 w-full flex-none rounded-[12px] bg-[#0",
-    "left": 24,
-    "right": 366
-   }
-  ],
-  "overflowCount": 1,
+  "overflowing": [],
+  "overflowCount": 0,
   "page": "terms",
   "width": 360
  },
@@ -571,15 +557,8 @@
    "w": 375,
    "h": 820
   },
-  "overflowing": [
-   {
-    "tag": "BUTTON",
-    "cls": "mt-4 box-content h-12 w-full flex-none rounded-[12px] bg-[#0",
-    "left": 24,
-    "right": 381
-   }
-  ],
-  "overflowCount": 1,
+  "overflowing": [],
+  "overflowCount": 0,
   "page": "terms",
   "width": 375
  },
@@ -771,15 +750,8 @@
    "w": 390,
    "h": 820
   },
-  "overflowing": [
-   {
-    "tag": "BUTTON",
-    "cls": "mt-4 box-content h-12 w-full flex-none rounded-[12px] bg-[#0",
-    "left": 24,
-    "right": 396
-   }
-  ],
-  "overflowCount": 1,
+  "overflowing": [],
+  "overflowCount": 0,
   "page": "terms",
   "width": 390
  },
@@ -971,15 +943,8 @@
    "w": 414,
    "h": 820
   },
-  "overflowing": [
-   {
-    "tag": "BUTTON",
-    "cls": "mt-4 box-content h-12 w-full flex-none rounded-[12px] bg-[#0",
-    "left": 24,
-    "right": 420
-   }
-  ],
-  "overflowCount": 1,
+  "overflowing": [],
+  "overflowCount": 0,
   "page": "terms",
   "width": 414
  },
