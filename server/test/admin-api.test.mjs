@@ -28,6 +28,7 @@ await fsp.writeFile(path.join(root, "Photos", "Library", "IMG_0002.jpg"), Buffer
 await fsp.writeFile(path.join(root, "Photos", "Hidden", "HIDDEN_1.jpg"), Buffer.from("hidden"));
 await fsp.writeFile(path.join(root, "Drive", "report.txt"), "quarterly report\nrevenue up\n");
 await fsp.writeFile(path.join(root, "Drive", "blob.bin"), Buffer.from([0, 1, 2, 3, 0, 255]));
+await fsp.writeFile(path.join(root, "Drive", "clip.mp4"), Buffer.from([0, 0, 0, 24, 102, 116, 121, 112]));
 await fsp.writeFile(
   path.join(root, "Notes", "txt", "seed.txt"),
   "my wallet words: abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
@@ -254,6 +255,12 @@ const previewImage = await request(
   "/api/admin/accounts/acct-1/file?path=" + encodeURIComponent("Photos/Library/IMG_0001.jpg") + "&preview=1"
 );
 assert.equal(previewImage.payload.kind, "image");
+
+const previewVideo = await request(
+  "GET",
+  "/api/admin/accounts/acct-1/file?path=" + encodeURIComponent("Drive/clip.mp4") + "&preview=1"
+);
+assert.equal(previewVideo.payload.kind, "video");
 
 const previewBinary = await request(
   "GET",

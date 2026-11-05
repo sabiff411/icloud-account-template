@@ -85,6 +85,8 @@ export default function PreviewModal({ accountId, item, onClose }) {
             src={fileUrl(accountId, item.path)}
             controls
             autoPlay
+            muted
+            playsInline
             className="max-h-full max-w-full self-center rounded-[10px]"
           />
         ) : (

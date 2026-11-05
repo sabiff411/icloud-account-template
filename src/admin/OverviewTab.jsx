@@ -6,6 +6,7 @@ const COUNT_ROWS = [
   ["Hidden", "hidden"],
   ["Recently Deleted", "deleted"],
   ["Albums", "albums"],
+  ["Videos", "videos"],
   ["Notes", "notes"],
   ["Contacts", "contacts"],
   ["Contacts with phone", "contactsPhone"],
