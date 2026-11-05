@@ -91,6 +91,8 @@ export default function Lightbox({
             src={fileUrl(accountId, item.path)}
             controls
             autoPlay
+            muted
+            playsInline
             onClick={(event) => event.stopPropagation()}
             className="max-h-full max-w-full rounded-[10px] shadow-2xl"
           />

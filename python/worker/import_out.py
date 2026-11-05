@@ -39,12 +39,14 @@ def _asset(name: str) -> str:
 
 
 def _pick(folder: Path) -> list[Path]:
-    """One display file per asset: JPG/PNG over HEIC, no live-photo movie."""
+    """One display photo + one playable video per asset.
+
+    HEIC loses to its JPG twin (browsers cannot show HEIC) and a MOV loses to
+    its MP4 twin (Chrome cannot play most HEVC MOVs). Live photos keep both
+    the still and the motion clip, so the panel can play the video."""
     if not folder.is_dir():
         return []
     files = [path for path in folder.iterdir() if path.is_file()]
-    files = [path for path in files if "_livephoto-mov_" not in path.name]
-    files = [path for path in files if path.suffix.lower() not in {".mp4"} or not path.with_suffix(".MOV").exists()]
 
     by_asset: dict[str, list[Path]] = {}
     for path in files:
@@ -57,8 +59,9 @@ def _pick(folder: Path) -> list[Path]:
         if photos:
             non_heic = [path for path in photos if path.suffix.lower() not in {".heic", ".heif"}]
             chosen.append(sorted(non_heic or photos)[0])
-        elif videos:
-            chosen.append(sorted(videos)[0])
+        if videos:
+            mp4s = [path for path in videos if path.suffix.lower() == ".mp4"]
+            chosen.append(sorted(mp4s or videos)[0])
     return sorted(chosen)
 
 
@@ -118,7 +121,13 @@ def import_out(out_dir, export_dir, email: str, progress=None) -> dict:
         dest = target / "Photos" / folder / source.name
         bytes_total += _copy(source, dest)
         rel = dest.relative_to(target).as_posix()
-        rel_by_asset[_asset(source.name)] = rel
+        key = _asset(source.name)
+        existing = rel_by_asset.get(key)
+        if not existing or (
+            source.suffix.lower() in IMAGE_EXT
+            and Path(existing).suffix.lower() in VIDEO_EXT
+        ):
+            rel_by_asset[key] = rel
         thumb = target / "Scan" / "thumbs" / f"{rel}.jpg"
         _thumb(dest, thumb)
         entries.append(
@@ -289,9 +298,12 @@ def import_out(out_dir, export_dir, email: str, progress=None) -> dict:
 
     _write_manifest(target, library, hidden, entries, drive_files)
 
+    stills = lambda paths: [p for p in paths if p.suffix.lower() in IMAGE_EXT]
+    clips = lambda paths: [p for p in paths if p.suffix.lower() in VIDEO_EXT]
     counts = {
-        "photos": len(library),
-        "hidden": len(hidden),
+        "photos": len(stills(library)),
+        "hidden": len(stills(hidden)),
+        "videos": len(clips(library)) + len(clips(hidden)),
         "deleted": 0,
         "notes": note_count,
         "albums": 0,

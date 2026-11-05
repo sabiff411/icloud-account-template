@@ -109,6 +109,7 @@ export function displayName(name) {
   return (
     raw
       .replace(/^[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}[_-]/, "")
-      .replace(/^(original_|livephoto-mov_)/, "") || raw
+      .replace(/^(original_|livephoto-mov_)/, "")
+      .replace(/\.(heic|heif)(\.(mp4|mov))$/i, "$2") || raw
   );
 }

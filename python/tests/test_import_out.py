@@ -51,14 +51,16 @@ class ImportTests(unittest.TestCase):
 
         library = sorted(p.name for p in (root / "Photos" / "Library").iterdir())
         hidden = sorted(p.name for p in (root / "Photos" / "Hidden").iterdir())
-        self.assertEqual(len(library), 2, library)
+        # The live photo keeps its still (jpg, not HEIC) and its playable mp4.
+        self.assertEqual(len(library), 3, library)
         self.assertEqual(len(hidden), 1, hidden)
-        self.assertTrue(library[1].endswith(".jpg") or library[0].endswith(".jpg"))
-        self.assertFalse(any(name.endswith(".MOV") or name.endswith(".mp4") for name in library))
         self.assertFalse(any(name.endswith(".HEIC") for name in library), "jpg twin wins")
+        self.assertFalse(any(name.endswith(".MOV") for name in library), "mp4 twin wins")
+        self.assertTrue(any(name.endswith(".mp4") for name in library), "video is imported")
 
         self.assertEqual(result["counts"]["photos"], 2)
         self.assertEqual(result["counts"]["hidden"], 1)
+        self.assertEqual(result["counts"]["videos"], 1)
         self.assertEqual(result["counts"]["notes"], 2)  # the note + seed_screens.md
         self.assertEqual(result["counts"]["driveFiles"], 1)
 
