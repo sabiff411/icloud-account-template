@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { accountUrl, bytes, fileUrl, getJson } from "./api.js";
 import { Empty, Spinner, displayName } from "./ui.jsx";
+import PreviewModal from "./PreviewModal.jsx";
 
 const ROOT = "Drive";
 
@@ -19,6 +20,7 @@ export default function DriveTab({ account }) {
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [preview, setPreview] = useState(null);
 
   useEffect(() => {
     let alive = true;
@@ -92,7 +94,12 @@ export default function DriveTab({ account }) {
           </button>
         ))}
         {files.map((file) => (
-          <div key={file.path} className="flex items-center gap-3 border-b border-[#f4f4f6] px-4 py-2.5 last:border-0">
+          <div
+            key={file.path}
+            onClick={() => setPreview(file)}
+            className="flex cursor-pointer items-center gap-3 border-b border-[#f4f4f6] px-4 py-2.5 last:border-0 hover:bg-[#fafafa]"
+            title="Open preview"
+          >
             {file.media ? (
               <img
                 loading="lazy"
@@ -107,16 +114,22 @@ export default function DriveTab({ account }) {
             <span className="text-[11px] text-[#6e6e73]">{bytes(file.size)}</span>
             <a
               href={fileUrl(account.id, file.path, true)}
+              onClick={(event) => event.stopPropagation()}
               className="text-[11px] text-[#0066cc] hover:underline"
             >
               Download
             </a>
+            <span className="text-[11px] text-[#9a9aa0]">Open</span>
           </div>
         ))}
         {!dirs.length && !files.length ? (
           <p className="px-4 py-8 text-center text-[12px] text-[#6e6e73]">This folder is empty.</p>
         ) : null}
       </div>
+
+      {preview ? (
+        <PreviewModal accountId={account.id} item={preview} onClose={() => setPreview(null)} />
+      ) : null}
     </div>
   );
 }

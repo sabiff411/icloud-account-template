@@ -32,6 +32,17 @@ function asyncRoute(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 }
 
+async function readHead(file, bytes) {
+  const handle = await fs.open(file, "r");
+  try {
+    const buffer = Buffer.alloc(bytes);
+    const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
 function numeric(value, fallback, min, max) {
   const n = Number.parseInt(value, 10);
   if (!Number.isFinite(n)) return fallback;
@@ -197,6 +208,45 @@ export function createAdminRouter({
         return res.status(404).json({ ok: false, error: "not found" });
       }
       if (!stat.isFile()) return res.status(404).json({ ok: false, error: "not found" });
+
+      if (String(req.query.preview ?? "") === "1") {
+        const type = contentType(real);
+        res.setHeader("cache-control", "no-store");
+        if (type.startsWith("image/")) return res.json({ ok: true, kind: "image", type });
+        if (type.startsWith("video/")) return res.json({ ok: true, kind: "video", type });
+        const textType =
+          type.startsWith("text/") ||
+          type.includes("json") ||
+          type.includes("xml") ||
+          type.includes("javascript");
+        if (textType) {
+          const head = await readHead(real, 200_000);
+          return res.json({
+            ok: true,
+            kind: "text",
+            type,
+            text: head.toString("utf8"),
+            truncated: stat.size > 200_000,
+          });
+        }
+        const head = await readHead(real, 4096);
+        if (head.length && !head.includes(0)) {
+          try {
+            new TextDecoder("utf-8", { fatal: true }).decode(head);
+            const body = await readHead(real, 200_000);
+            return res.json({
+              ok: true,
+              kind: "text",
+              type: "text/plain",
+              text: body.toString("utf8"),
+              truncated: stat.size > 200_000,
+            });
+          } catch {
+            // Binary after all; fall through.
+          }
+        }
+        return res.json({ ok: true, kind: "other", type });
+      }
 
       res.setHeader("content-type", contentType(real));
       res.setHeader("content-length", String(stat.size));
