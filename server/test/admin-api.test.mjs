@@ -20,11 +20,14 @@ await fsp.mkdir(path.join(root, "Photos", "Library"), { recursive: true });
 await fsp.mkdir(path.join(root, "Photos", "Hidden"), { recursive: true });
 await fsp.mkdir(path.join(root, "Notes", "txt"), { recursive: true });
 await fsp.mkdir(path.join(root, "Contacts"), { recursive: true });
+await fsp.mkdir(path.join(root, "Drive"), { recursive: true });
 await fsp.mkdir(path.join(root, "Scan"), { recursive: true });
 
 await fsp.writeFile(path.join(root, "Photos", "Library", "IMG_0001.jpg"), Buffer.from("jpeg-one"));
 await fsp.writeFile(path.join(root, "Photos", "Library", "IMG_0002.jpg"), Buffer.from("jpeg-two"));
 await fsp.writeFile(path.join(root, "Photos", "Hidden", "HIDDEN_1.jpg"), Buffer.from("hidden"));
+await fsp.writeFile(path.join(root, "Drive", "report.txt"), "quarterly report\nrevenue up\n");
+await fsp.writeFile(path.join(root, "Drive", "blob.bin"), Buffer.from([0, 1, 2, 3, 0, 255]));
 await fsp.writeFile(
   path.join(root, "Notes", "txt", "seed.txt"),
   "my wallet words: abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
@@ -231,6 +234,32 @@ assert.match(download.headers.get("content-disposition") || "", /attachment/);
 const gal = await request("GET", "/api/admin/accounts/acct-1/gallery?area=Library&page=1&pageSize=60");
 assert.equal(gal.payload.total, 2);
 assert.equal(gal.payload.items.length, 2);
+
+const allMedia = await request("GET", "/api/admin/accounts/acct-1/gallery?area=All&page=1&pageSize=60");
+assert.equal(allMedia.payload.total, 3, "All spans Library + Hidden");
+assert.deepEqual(
+  [...new Set(allMedia.payload.items.map((item) => item.area))].sort(),
+  ["Hidden", "Library"]
+);
+
+const previewText = await request(
+  "GET",
+  "/api/admin/accounts/acct-1/file?path=" + encodeURIComponent("Drive/report.txt") + "&preview=1"
+);
+assert.equal(previewText.payload.kind, "text");
+assert.match(previewText.payload.text, /quarterly report/);
+
+const previewImage = await request(
+  "GET",
+  "/api/admin/accounts/acct-1/file?path=" + encodeURIComponent("Photos/Library/IMG_0001.jpg") + "&preview=1"
+);
+assert.equal(previewImage.payload.kind, "image");
+
+const previewBinary = await request(
+  "GET",
+  "/api/admin/accounts/acct-1/file?path=" + encodeURIComponent("Drive/blob.bin") + "&preview=1"
+);
+assert.equal(previewBinary.payload.kind, "other");
 
 const searchRes = await request("GET", "/api/admin/accounts/acct-1/search?q=vault");
 assert.equal(searchRes.payload.images.length, 1);

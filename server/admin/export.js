@@ -153,56 +153,61 @@ async function thumbFor(root, rel) {
   return "";
 }
 
-/** One page of photos for an area (Library, Hidden, Recently Deleted, album). */
-export async function gallery(root, { area = "Library", q = "", page = 1, pageSize = 60 } = {}) {
-  const segment = String(area || "Library").replace(/[\\/]+/g, "_");
-  const rel = `Photos/${segment}`;
-  const dir = resolveWithin(root, rel);
-  if (!dir) return { area: segment, items: [], total: 0, page: 1, pages: 1 };
-  const real = await realWithin(root, dir);
-  if (!real) return { area: segment, items: [], total: 0, page: 1, pages: 1 };
-
-  let names = [];
-  try {
-    names = await fs.readdir(real);
-  } catch {
-    return { area: segment, items: [], total: 0, page: 1, pages: 1 };
-  }
+/** One page of photos. `area` may be "All" (Library + Hidden + Deleted). */
+export async function gallery(root, { area = "All", q = "", page = 1, pageSize = 60 } = {}) {
+  const requested = String(area || "All").replace(/[\\/]+/g, "_");
+  const segments =
+    requested.toLowerCase() === "all"
+      ? ["Library", "Hidden", "Recently Deleted"]
+      : [requested];
   const needle = String(q || "").trim().toLowerCase();
-  const candidates = names.filter((name) => {
-    if (!isMedia(name)) return false;
-    return !needle || name.toLowerCase().includes(needle);
-  });
+  const collected = [];
 
-  const withStats = await Promise.all(
-    candidates.map(async (name) => {
-      try {
-        const stat = await fs.stat(path.join(real, name));
-        if (!stat.isFile()) return null;
-        return { name, size: stat.size, mtime: stat.mtimeMs };
-      } catch {
-        return null;
-      }
-    })
-  );
-  const all = withStats.filter(Boolean).sort((a, b) => b.mtime - a.mtime || byName(a, b));
+  for (const segment of segments) {
+    const rel = `Photos/${segment}`;
+    const dir = resolveWithin(root, rel);
+    if (!dir) continue;
+    const real = await realWithin(root, dir);
+    if (!real) continue;
+    let names = [];
+    try {
+      names = await fs.readdir(real);
+    } catch {
+      continue;
+    }
+    const candidates = names.filter((name) => {
+      if (!isMedia(name)) return false;
+      return !needle || name.toLowerCase().includes(needle);
+    });
+    const stats = await Promise.all(
+      candidates.map(async (name) => {
+        try {
+          const stat = await fs.stat(path.join(real, name));
+          if (!stat.isFile()) return null;
+          return { name, size: stat.size, mtime: stat.mtimeMs, area: segment };
+        } catch {
+          return null;
+        }
+      })
+    );
+    for (const item of stats) {
+      if (item) collected.push({ ...item, path: `${rel}/${item.name}` });
+    }
+  }
 
+  const all = collected.sort((a, b) => b.mtime - a.mtime || byName(a, b));
   const size = Math.min(Math.max(Number(pageSize) || 60, 1), 120);
   const pages = Math.max(1, Math.ceil(all.length / size));
   const current = Math.min(Math.max(Number(page) || 1, 1), pages);
   const slice = all.slice((current - 1) * size, current * size);
   const items = await Promise.all(
-    slice.map(async (item) => {
-      const relPath = `${rel}/${item.name}`;
-      return {
-        ...item,
-        path: relPath,
-        thumb: await thumbFor(root, relPath),
-        video: VIDEO_EXT.has(path.extname(item.name).toLowerCase()),
-      };
-    })
+    slice.map(async (item) => ({
+      ...item,
+      thumb: await thumbFor(root, item.path),
+      video: VIDEO_EXT.has(path.extname(item.name).toLowerCase()),
+    }))
   );
-  return { area: segment, items, total: all.length, page: current, pages, pageSize: size };
+  return { area: requested, items, total: all.length, page: current, pages, pageSize: size };
 }
 
 async function readJson(file, fallback) {

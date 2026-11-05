@@ -257,9 +257,11 @@ The web console is the single operator surface; Telegram only sends alerts.
 - **Accounts** — searchable sidebar with live status, `All / Live / Locked /
   Issues` filters, workers/queue, real-time updates over `/admin`.
 - **Browse** — per account: Overview (profile, plan, storage, counts, export,
-  live check, scan, jobs), Photos (Library / Hidden / Recently Deleted /
-  albums, paged thumbnails, lightbox ←/→/Esc), Notes (list + reader), Drive
-  (tree + download), Contacts (searchable table), Calendar, Reminders.
+  live check, scan, jobs), Photos (**All** / Library / Hidden / Recently
+  Deleted / albums, paged thumbnails, large lightbox arrows; ←/→ continue
+  into the next page automatically), Notes (list + reader), Drive (tree,
+  inline text/image/video preview, download), Contacts (searchable table),
+  Calendar, Reminders.
 - **Live verify** — a worker job enumerates iCloud id-only and compares with
   `manifest.sqlite3`, showing `live / exported / missing` per area. Export
   missing downloads only the gap.

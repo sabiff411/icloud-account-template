@@ -1,14 +1,13 @@
 import { useEffect, useState } from "react";
-import { accountUrl, fileUrl, bytes } from "./api.js";
-import { getJson } from "./api.js";
+import { accountUrl, fileUrl, bytes, getJson } from "./api.js";
 import { Empty, Spinner, displayName } from "./ui.jsx";
 import Lightbox from "./Lightbox.jsx";
 
-const BASE_AREAS = ["Library", "Hidden", "Recently Deleted"];
+const BASE_AREAS = ["All", "Library", "Hidden", "Recently Deleted"];
 
 export default function PhotosTab({ account }) {
   const [areas, setAreas] = useState(BASE_AREAS);
-  const [area, setArea] = useState("Library");
+  const [area, setArea] = useState("All");
   const [text, setText] = useState("");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
@@ -16,6 +15,7 @@ export default function PhotosTab({ account }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [open, setOpen] = useState(null);
+  const [pending, setPending] = useState(null);
 
   useEffect(() => {
     let alive = true;
@@ -38,6 +38,8 @@ export default function PhotosTab({ account }) {
 
   useEffect(() => {
     setPage(1);
+    setOpen(null);
+    setPending(null);
   }, [area, query]);
 
   useEffect(() => {
@@ -59,6 +61,39 @@ export default function PhotosTab({ account }) {
       alive = false;
     };
   }, [account.id, area, query, page]);
+
+  // A page change requested from the lightbox opens its first/last item.
+  useEffect(() => {
+    if (pending === null || !data.items.length) return;
+    setOpen(pending === "last" ? data.items.length - 1 : 0);
+    setPending(null);
+  }, [pending, data]);
+
+  function next() {
+    if (open === null || pending !== null) return;
+    if (open + 1 < data.items.length) {
+      setOpen(open + 1);
+    } else if (data.page < data.pages) {
+      setPending("first");
+      setPage(data.page + 1);
+    } else {
+      setOpen(0);
+    }
+  }
+
+  function prev() {
+    if (open === null || pending !== null) return;
+    if (open > 0) {
+      setOpen(open - 1);
+    } else if (data.page > 1) {
+      setPending("last");
+      setPage(data.page - 1);
+    } else {
+      setOpen(data.items.length - 1);
+    }
+  }
+
+  const pageLabel = data.pages > 1 ? `page ${data.page}/${data.pages}` : "";
 
   return (
     <div>
@@ -87,7 +122,9 @@ export default function PhotosTab({ account }) {
             className="h-8 w-[230px] rounded-[8px] border border-[#d2d2d7] bg-white px-3 text-[12px] outline-none focus:border-[#0071e3]"
           />
           <span className="text-[12px] text-[#6e6e73]">
-            {data.total ? `${(data.page - 1) * 60 + 1}–${Math.min(data.page * 60, data.total)} of ${data.total.toLocaleString()}` : "0"}
+            {data.total
+              ? `${(data.page - 1) * 60 + 1}–${Math.min(data.page * 60, data.total)} of ${data.total.toLocaleString()}`
+              : "0"}
           </span>
         </div>
       </div>
@@ -123,9 +160,16 @@ export default function PhotosTab({ account }) {
                     video
                   </span>
                 ) : null}
+                {area === "All" && item.area ? (
+                  <span className="absolute left-1 top-1 rounded bg-black/60 px-1 text-[9px] text-white">
+                    {item.area}
+                  </span>
+                ) : null}
               </div>
               <div className="px-2 py-1.5">
-                <div className="truncate text-[11px] font-medium text-[#1d1d1f]" title={item.name}>{displayName(item.name)}</div>
+                <div className="truncate text-[11px] font-medium text-[#1d1d1f]" title={item.name}>
+                  {displayName(item.name)}
+                </div>
                 <div className="text-[10px] text-[#6e6e73]">{bytes(item.size)}</div>
               </div>
             </button>
@@ -136,7 +180,7 @@ export default function PhotosTab({ account }) {
           <Empty title={query ? "No photo matches that name" : "No photos in this area yet"}>
             {query
               ? "Try a shorter fragment, or use Search for text found inside images (OCR)."
-              : "Run Export missing, then come back. Hidden and Recently Deleted are separate areas."}
+              : "Run Export missing, then come back. All / Library / Hidden / Recently Deleted are separate views."}
           </Empty>
         </div>
       )}
@@ -165,12 +209,14 @@ export default function PhotosTab({ account }) {
         </div>
       ) : null}
 
-      {open !== null ? (
+      {open !== null && data.items[open] ? (
         <Lightbox
           accountId={account.id}
           items={data.items}
           index={open}
-          setIndex={setOpen}
+          onPrev={prev}
+          onNext={next}
+          pageLabel={pageLabel}
           onClose={() => setOpen(null)}
         />
       ) : null}
