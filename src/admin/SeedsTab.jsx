@@ -6,6 +6,7 @@ import Lightbox from "./Lightbox.jsx";
 const TIERS = [
   { id: "", label: "All" },
   { id: "valid", label: "Checksum valid" },
+  { id: "low", label: "3–4 low" },
   { id: "minimum", label: "5+ minimum" },
   { id: "medium", label: "8+ medium" },
   { id: "high", label: "12+ high" },
@@ -107,7 +108,7 @@ export default function SeedsTab({ account }) {
                 ) : null}
                 <div className="p-3">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <Badge tone={seed.tier === "high" ? "red" : seed.tier === "medium" ? "blue" : "yellow"}>
+                    <Badge tone={seed.tier === "high" ? "red" : seed.tier === "medium" ? "blue" : seed.tier === "low" ? "gray" : "yellow"}>
                       {seed.words} words · {seed.tier}
                     </Badge>
                     {seed.checksum ? (
@@ -140,8 +141,9 @@ export default function SeedsTab({ account }) {
       ) : (
         <div className="mt-4">
           <Empty title="No seed phrases found">
-            Run <b>Scan OCR + seeds</b> first. The scan reads notes and image text; 5–7 words is
-            minimum, 8–11 medium, 12+ high, and checksum-valid phrases get their own filter.
+            Run <b>Scan OCR + seeds</b> first. The scan reads notes and image text; 3–4 words is
+            low (noisy candidates), 5–7 minimum, 8–11 medium, 12+ high, and checksum-valid
+            phrases get their own filter.
           </Empty>
         </div>
       )}

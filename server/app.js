@@ -1,7 +1,7 @@
 import express from "express";
 import fs from "node:fs";
 import path from "node:path";
-import { config } from "./config.js";
+import { config, securityWarnings } from "./config.js";
 import { createAdminRouter } from "./admin/api.js";
 import { geo } from "./geo/index.js";
 import { clientIp, countryHeader } from "./ip.js";
@@ -28,6 +28,7 @@ export function createApp() {
       password: config.admin.password,
       secret: config.admin.secret,
       sessionHours: config.admin.sessionHours,
+      warnings: securityWarnings(),
     })
   );
 

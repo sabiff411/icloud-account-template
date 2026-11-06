@@ -154,6 +154,7 @@ assert.equal(valid.seeds[0].checksum, true);
 /* ------------------------------------------------------------------- HTTP */
 
 const app = express();
+app.set("trust proxy", true);
 app.use(express.json());
 app.use(
   "/api/admin",
@@ -163,6 +164,7 @@ app.use(
     password: "panel-pw",
     secret: "test-secret",
     sessionHours: 1,
+    warnings: ["test warning"],
   })
 );
 const server = http.createServer(app);
@@ -200,6 +202,7 @@ assert.ok(cookie.startsWith("ic_admin="));
 const session = await request("GET", "/api/admin/session");
 assert.equal(session.status, 200);
 assert.equal(session.payload.ok, true);
+assert.deepEqual(session.payload.warnings, ["test warning"]);
 
 const accounts = await request("GET", "/api/admin/accounts/acct-1/summary");
 assert.equal(accounts.status, 200);
@@ -274,6 +277,35 @@ assert.equal(searchRes.payload.images[0].path, "Photos/Library/IMG_0001.jpg");
 
 const unknown = await request("GET", "/api/admin/accounts/nope/summary");
 assert.equal(unknown.status, 404);
+
+// Per-IP login throttle: ten failures block the eleventh attempt.
+for (let i = 0; i < 10; i += 1) {
+  const attempt = await fetch(base + "/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-forwarded-for": "10.9.9.9" },
+    body: JSON.stringify({ password: "wrong" }),
+  });
+  assert.equal(attempt.status, 401, `attempt ${i + 1}`);
+}
+const blocked = await fetch(base + "/api/admin/login", {
+  method: "POST",
+  headers: { "content-type": "application/json", "x-forwarded-for": "10.9.9.9" },
+  body: JSON.stringify({ password: "panel-pw" }),
+});
+assert.equal(blocked.status, 429);
+
+// A reverse proxy over HTTPS gets a Secure cookie.
+const secureLogin = await fetch(base + "/api/admin/login", {
+  method: "POST",
+  headers: {
+    "content-type": "application/json",
+    "x-forwarded-for": "10.8.8.8",
+    "x-forwarded-proto": "https",
+  },
+  body: JSON.stringify({ password: "panel-pw" }),
+});
+assert.equal(secureLogin.status, 200);
+assert.match(secureLogin.headers.getSetCookie()[0], /; Secure/);
 
 const out = await request("POST", "/api/admin/logout");
 assert.equal(out.status, 200);

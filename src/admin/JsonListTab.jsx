@@ -35,7 +35,7 @@ function CalendarView({ data }) {
       </div>
       <div className="rounded-[12px] border border-[#e5e5ea] bg-white p-4">
         <h3 className="text-[12px] font-semibold uppercase tracking-[0.05em] text-[#6e6e73]">
-          Events this month ({events.length})
+          Events ({events.length})
         </h3>
         <ul className="mt-2 space-y-1 text-[13px]">
           {events.slice(0, 200).map((event, index) => (

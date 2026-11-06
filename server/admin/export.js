@@ -224,14 +224,17 @@ function scanSummary(root) {
 
 /** Parsed profile/contacts/calendar/reminders + scan summary. */
 export async function readSummary(root) {
-  const [account, contacts, calendars, reminders, scan] = await Promise.all([
-    readJson(path.join(root, "Account", "account.json"), null),
-    readJson(path.join(root, "Contacts", "contacts.json"), null),
-    readJson(path.join(root, "Calendar", "calendars.json"), null),
-    readJson(path.join(root, "Reminders", "reminders.json"), null),
-    scanSummary(root),
-  ]);
-  return { account, contacts, calendars, reminders, scan };
+  const [account, contacts, calendars, reminders, mail, mailIndex, scan] =
+    await Promise.all([
+      readJson(path.join(root, "Account", "account.json"), null),
+      readJson(path.join(root, "Contacts", "contacts.json"), null),
+      readJson(path.join(root, "Calendar", "calendars.json"), null),
+      readJson(path.join(root, "Reminders", "reminders.json"), null),
+      readJson(path.join(root, "Mail", "messages.json"), null),
+      readJson(path.join(root, "Mail", "index.json"), null),
+      scanSummary(root),
+    ]);
+  return { account, contacts, calendars, reminders, mail, mailIndex, scan };
 }
 
 async function loadIndex(root) {

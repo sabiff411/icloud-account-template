@@ -55,9 +55,29 @@ export function createAdminRouter({
   password,
   secret = "",
   sessionHours = 168,
+  warnings = [],
 }) {
   const router = express.Router();
   const ttlMs = Math.max(1, sessionHours) * 3600_000;
+  const failures = new Map(); // ip -> { count, until }
+  const MAX_FAILURES = 10;
+  const WINDOW_MS = 15 * 60_000;
+
+  function throttled(ip) {
+    const entry = failures.get(ip);
+    return Boolean(entry && entry.until > Date.now() && entry.count >= MAX_FAILURES);
+  }
+
+  function failed(ip) {
+    const now = Date.now();
+    const entry = failures.get(ip);
+    if (!entry || entry.until <= now) {
+      failures.set(ip, { count: 1, until: now + WINDOW_MS });
+    } else {
+      entry.count += 1;
+      entry.until = now + WINDOW_MS;
+    }
+  }
   let cache = { mtimeMs: 0, accounts: new Map() };
 
   async function accounts() {
@@ -87,15 +107,23 @@ export function createAdminRouter({
   }
 
   router.post("/login", (req, res) => {
+    const ip = req.ip || "unknown";
+    res.setHeader("cache-control", "no-store");
+    if (throttled(ip)) {
+      return res.status(429).json({ ok: false, error: "too many attempts; try again later" });
+    }
     const given = String(req.body?.password ?? "");
     if (!isAdminPassword(given, password)) {
+      failed(ip);
       return res.status(401).json({ ok: false, error: "wrong password" });
     }
+    failures.delete(ip);
     const token = signSession({ password, secret, ttlMs });
-    res.setHeader("Set-Cookie", sessionCookie(token, ttlMs / 1000));
-    res.setHeader("cache-control", "no-store");
+    const secure =
+      req.secure || String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim() === "https";
+    res.setHeader("Set-Cookie", sessionCookie(token, ttlMs / 1000, secure));
     const { exp } = verifySession(token, { password, secret }) ?? {};
-    res.json({ ok: true, expiresAt: exp ? new Date(exp).toISOString() : null });
+    res.json({ ok: true, expiresAt: exp ? new Date(exp).toISOString() : null, warnings });
   });
 
   router.post("/logout", (_req, res) => {
@@ -108,7 +136,7 @@ export function createAdminRouter({
     const session = current(req);
     if (!session.ok) return res.status(401).json({ ok: false });
     res.setHeader("cache-control", "no-store");
-    res.json({ ok: true, expiresAt: new Date(session.exp).toISOString() });
+    res.json({ ok: true, expiresAt: new Date(session.exp).toISOString(), warnings });
   });
 
   router.use(requireSession);

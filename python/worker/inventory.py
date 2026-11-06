@@ -91,6 +91,8 @@ def collect(api) -> dict[str, Any]:
         "driveBytes": 0,
         "reminders": 0,
         "calendars": 0,
+        "mailFolders": 0,
+        "mailMessages": 0,
     }
 
     account = getattr(api, "account", None)
@@ -127,6 +129,21 @@ def collect(api) -> dict[str, Any]:
     contacts = _safe("contacts.all", lambda: api.contacts.all, []) or []
     counts["contacts"] = len(contacts)
     counts["contactsPhone"], counts["contactsEmail"] = _contact_stats(contacts)
+
+    # MeCard can be missing (400 on some accounts); fall back to the first
+    # address-book card so the profile still has a name/phone.
+    if not identity["name"] and contacts:
+        first = contacts[0] if isinstance(contacts[0], dict) else {}
+        name = " ".join(
+            part for part in [
+                first.get("firstName") or first.get("first_name") or "",
+                first.get("lastName") or first.get("last_name") or "",
+            ] if part
+        )
+        identity["name"] = name
+        phones = first.get("phones") or []
+        if phones and isinstance(phones[0], dict):
+            identity["phone"] = phones[0].get("field", "")
 
     photos = getattr(api, "photos", None)
     if photos is not None:
@@ -166,5 +183,13 @@ def collect(api) -> dict[str, Any]:
     if calendar is not None:
         calendars = _safe("calendar.get_calendars", lambda: calendar.get_calendars(), []) or []
         counts["calendars"] = len(calendars)
+
+    mail = _safe("mail", lambda: getattr(api, "mail", None), None)
+    if mail is not None:
+        folders = _safe("mail.folders", lambda: mail.folders(), []) or []
+        counts["mailFolders"] = len(folders)
+        counts["mailMessages"] = sum(
+            int(getattr(folder, "message_count", 0) or 0) for folder in folders
+        )
 
     return {"identity": identity, "counts": counts}

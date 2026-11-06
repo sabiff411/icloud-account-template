@@ -1,9 +1,10 @@
 """OCR + BIP39 scan over one account's export.
 
 Text is extracted from images (RapidOCR), notes and filenames, indexed for
-search, and scanned for BIP39 word runs. A run of 5–7 words is `minimum`,
-8–11 `medium`, 12+ `high`; a 12/15/18/21/24-word window with a valid BIP39
-checksum is also marked `valid` (checksum only — no balance lookup).
+search, and scanned for BIP39 word runs. A run of 3–4 words is `low` (a
+short candidate, noisy by design), 5–7 `minimum`, 8–11 `medium`, 12+ `high`;
+a 12/15/18/21/24-word window with a valid BIP39 checksum is also marked
+`valid` (checksum only — no balance lookup).
 
 Artefacts (all under the account root, never outside it):
 
@@ -30,7 +31,7 @@ log = logging.getLogger("worker.scan")
 WORDLIST = Path(__file__).with_name("data") / "bip39_english.txt"
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".heic", ".heif", ".webp", ".bmp", ".tiff"}
 VIDEO_EXT = {".mov", ".mp4", ".m4v", ".3gp"}
-TEXT_EXT = {".txt", ".md", ".csv", ".json", ".html", ".htm", ".xml", ".log", ".yaml", ".yml"}
+TEXT_EXT = {".txt", ".md", ".csv", ".json", ".html", ".htm", ".xml", ".log", ".yaml", ".yml", ".eml"}
 MAX_TEXT = 20000
 MAX_FILE = 5 << 20
 CHECKSUM_COUNTS = {12: 128, 15: 160, 18: 192, 21: 224, 24: 256}
@@ -60,6 +61,10 @@ def tier_for(count: int) -> str:
         return "medium"
     if count >= 5:
         return "minimum"
+    if count >= 3:
+        # Short runs are kept as low-confidence candidates: enough signal to
+        # inspect next to the source image, too little to call a seed.
+        return "low"
     return "none"
 
 
@@ -144,7 +149,7 @@ def find_sequences(text: str, index: dict[str, int] | None = None) -> list[dict]
 
     def add(phrase: str, offset: int = 0):
         words = phrase.split()
-        if phrase in seen or len(words) < 5:
+        if phrase in seen or len(words) < 3:
             return
         seen.add(phrase)
         findings.append(
@@ -187,6 +192,11 @@ def _scan_run(run: list[str], index: dict[str, int], add, start: int) -> None:
     # the anchored window and record it, instead of every sliding slice (which
     # manufactures checksum-lucky slices of a 16-word custom phrase).
     size = len(run)
+    if size <= 4:
+        # Low-confidence: a short BIP39 run (often a product name or a line
+        # fragment). Keep it separate from the 5+ tiers so it stays filterable.
+        add(" ".join(run), start)
+        return
     if size in CHECKSUM_COUNTS:
         add(" ".join(run), start)
         return
@@ -214,7 +224,45 @@ def area_for(rel: str) -> str:
         return "notes"
     if rel.startswith("Drive/"):
         return "drive"
+    if rel.startswith("Contacts/"):
+        return "contacts"
+    if rel.startswith("Calendar/"):
+        return "calendar"
+    if rel.startswith("Reminders/"):
+        return "reminders"
+    if rel.startswith("Mail/"):
+        return "mail"
+    if rel.startswith("Account/"):
+        return "account"
     return "other"
+
+
+def json_text(text: str) -> str:
+    """Extract only JSON string values (not keys).
+
+    Contacts, calendar and mail exports are JSON; scanning the raw document
+    would make field names like ``"false"``/``"title"`` look like BIP39
+    candidates. The values (names, notes, subjects, bodies) are what matter.
+    """
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+    out: list[str] = []
+
+    def walk(value):
+        if isinstance(value, str):
+            if value:
+                out.append(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item)
+
+    walk(data)
+    return "\n".join(out)
 
 
 def kind_for(path: Path) -> str:
@@ -337,7 +385,7 @@ def scan_export(ctx, root: Path, *, limit: int = 0, progress=None) -> dict:
     entries: list[dict] = []
     findings: list[dict] = []
     images = ocr_ok = ocr_failed = 0
-    tiers = {"minimum": 0, "medium": 0, "high": 0, "valid": 0}
+    tiers = {"low": 0, "minimum": 0, "medium": 0, "high": 0, "valid": 0}
     total = len(files)
 
     for number, path in enumerate(files, 1):
@@ -355,21 +403,33 @@ def scan_export(ctx, root: Path, *, limit: int = 0, progress=None) -> dict:
                 if path.suffix.lower() in VIDEO_EXT:
                     video_thumb(path, thumb)
             try:
-                if path.suffix.lower() in VIDEO_EXT:
+                ocr_file = scan_dir / "ocr" / f"{rel}.txt"
+                # Reuse OCR text when the image has not changed. This makes a
+                # tier/rule change (e.g. adding the 3–4 word `low` tier) a
+                # cheap re-scan instead of a second full OCR pass.
+                cached = (
+                    ocr_file.exists()
+                    and ocr_file.stat().st_mtime >= mtime
+                    and path.suffix.lower() not in VIDEO_EXT
+                )
+                if cached:
+                    text = ocr_file.read_text(encoding="utf-8", errors="replace")
+                elif path.suffix.lower() in VIDEO_EXT:
                     text = ""
                 else:
                     text = ocr_image(path)
                 source = "ocr"
                 ocr_ok += 1
-                ocr_file = scan_dir / "ocr" / f"{rel}.txt"
                 ocr_file.parent.mkdir(parents=True, exist_ok=True)
-                if text:
+                if text and not cached:
                     ocr_file.write_text(text, encoding="utf-8")
             except Exception as error:
                 ocr_failed += 1
                 log.info("ocr failed for %s: %s", rel, type(error).__name__)
         elif path.suffix.lower() in TEXT_EXT or path.suffix.lower() in {".txt", ".md"}:
             text = read_text(path)
+            if path.suffix.lower() == ".json":
+                text = json_text(text)
             source = "note" if area == "notes" else "text"
 
         haystack = " ".join([path.name, text])
@@ -385,7 +445,13 @@ def scan_export(ctx, root: Path, *, limit: int = 0, progress=None) -> dict:
                     "words": item["words"],
                     "tier": item["tier"],
                     "checksum": item["checksum"],
-                    "source": source if source != "text" else "filename",
+                    "source": source if source != "text" else (
+                        "contact" if area == "contacts" else
+                        "calendar" if area == "calendar" else
+                        "reminder" if area == "reminders" else
+                        "mail" if area == "mail" else
+                        "filename"
+                    ),
                     "snippet": text[:180].strip(),
                 }
             )

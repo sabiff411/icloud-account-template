@@ -13,7 +13,9 @@ INVALID_12 = "abandon abandon abandon abandon abandon abandon abandon abandon ab
 
 class TierTests(unittest.TestCase):
     def test_tiers(self):
-        self.assertEqual(scan.tier_for(4), "none")
+        self.assertEqual(scan.tier_for(2), "none")
+        self.assertEqual(scan.tier_for(3), "low")
+        self.assertEqual(scan.tier_for(4), "low")
         self.assertEqual(scan.tier_for(5), "minimum")
         self.assertEqual(scan.tier_for(7), "minimum")
         self.assertEqual(scan.tier_for(8), "medium")
@@ -35,6 +37,17 @@ class ChecksumTests(unittest.TestCase):
 class SequenceTests(unittest.TestCase):
     def setUp(self):
         self.words = scan.word_index()
+
+    def test_three_word_low_candidate(self):
+        found = scan.find_sequences("candidate: abandon about zoo", self.words)
+        self.assertEqual(len(found), 1, found)
+        self.assertEqual(found[0]["words"], 3)
+        self.assertEqual(found[0]["tier"], "low")
+        self.assertFalse(found[0]["checksum"])
+
+        four = scan.find_sequences("abandon about zoo ability", self.words)
+        self.assertEqual(four[0]["words"], 4)
+        self.assertEqual(four[0]["tier"], "low")
 
     def test_five_and_eight(self):
         text = "backup: abandon abandon abandon abandon abandon"
@@ -101,9 +114,12 @@ class SequenceTests(unittest.TestCase):
         phrases = [item["phrase"] for item in found if item["words"] == 12]
         self.assertEqual(len(phrases), len(set(phrases)))
 
-    def test_none_for_prose(self):
+    def test_prose_only_produces_low_candidates(self):
+        # "quick brown fox" is three BIP39 words; with low-tier detection it
+        # is reported, but it must never be promoted to minimum/medium/high.
         found = scan.find_sequences("the quick brown fox jumps over the lazy dog", self.words)
-        self.assertEqual(found, [])
+        self.assertTrue(found)
+        self.assertTrue(all(item["tier"] == "low" for item in found), found)
 
 
 class WordlistTests(unittest.TestCase):

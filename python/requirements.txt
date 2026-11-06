@@ -1,6 +1,8 @@
 python-socketio[asyncio_client]>=5.12,<6
 requests>=2.31
-pyicloud>=2026.10.1
+# Mail export uses the experimental api.mail surface, which is on main only
+# until 2026.10.2 reaches PyPI. Pin the tested commit for reproducible installs.
+pyicloud @ git+https://github.com/timlaing/pyicloud.git@670f93dafb93b63e9e63679f410c5f0599c53d96
 
 # OCR + seed scan (optional for auth/export, required for "Scan OCR + seeds")
 numpy>=1.26

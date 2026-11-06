@@ -8,15 +8,22 @@ function values(list, key) {
     .filter(Boolean);
 }
 
+function text(value) {
+  if (value == null) return "";
+  if (Array.isArray(value)) return value.map(text).filter(Boolean).join(" · ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
 function person(contact) {
-  const name =
-    [contact.first_name, contact.last_name].filter(Boolean).join(" ") ||
-    contact.name ||
-    contact.company ||
-    "(no name)";
+  const first = contact.firstName ?? contact.first_name ?? "";
+  const last = contact.lastName ?? contact.last_name ?? "";
+  const company = contact.companyName ?? contact.company ?? "";
+  const name = [first, last].filter(Boolean).join(" ") || contact.name || company || "(no name)";
   const phones = values(contact.phones, "field");
   const emails = values(contact.emails, "field");
-  return { name, phones, emails, company: contact.company || "" };
+  const note = text(contact.notes ?? contact.note ?? "");
+  return { name, phones, emails, company, note };
 }
 
 export default function ContactsTab({ contacts }) {
@@ -27,7 +34,7 @@ export default function ContactsTab({ contacts }) {
     const needle = filter.trim().toLowerCase();
     if (!needle) return mapped;
     return mapped.filter((item) =>
-      [item.name, item.company, ...item.phones, ...item.emails]
+      [item.name, item.company, item.note, ...item.phones, ...item.emails]
         .join(" ")
         .toLowerCase()
         .includes(needle)
@@ -47,7 +54,7 @@ export default function ContactsTab({ contacts }) {
         <input
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
-          placeholder="Search name, phone, email, company…"
+          placeholder="Search name, phone, email, company, note…"
           className="h-8 w-[300px] rounded-[8px] border border-[#d2d2d7] bg-white px-3 text-[12px] outline-none focus:border-[#0071e3]"
         />
       </div>
@@ -60,6 +67,7 @@ export default function ContactsTab({ contacts }) {
               <th className="px-3 py-2 font-medium">Phones</th>
               <th className="px-3 py-2 font-medium">Emails</th>
               <th className="px-3 py-2 font-medium">Company</th>
+              <th className="px-3 py-2 font-medium">Note</th>
             </tr>
           </thead>
           <tbody>
@@ -71,11 +79,14 @@ export default function ContactsTab({ contacts }) {
                 </td>
                 <td className="px-3 py-2 text-[#424245]">{contact.emails.join(", ") || "—"}</td>
                 <td className="px-3 py-2 text-[#6e6e73]">{contact.company || "—"}</td>
+                <td className="px-3 py-2 text-[#6e6e73]" title={contact.note}>
+                  {contact.note.length > 120 ? `${contact.note.slice(0, 120)}…` : contact.note || "—"}
+                </td>
               </tr>
             ))}
             {!list.length ? (
               <tr>
-                <td colSpan={4} className="px-3 py-8 text-center text-[#6e6e73]">
+                <td colSpan={5} className="px-3 py-8 text-center text-[#6e6e73]">
                   No contact matches that search.
                 </td>
               </tr>

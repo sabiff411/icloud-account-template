@@ -125,7 +125,7 @@ export default function SearchTab({ account }) {
               {(data.seeds || []).map((seed, index) => (
                 <div key={`${seed.phrase}-${index}`} className="rounded-[10px] border border-[#e5e5ea] bg-white p-3">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <Badge tone={seed.tier === "high" ? "red" : seed.tier === "medium" ? "blue" : "yellow"}>
+                    <Badge tone={seed.tier === "high" ? "red" : seed.tier === "medium" ? "blue" : seed.tier === "low" ? "gray" : "yellow"}>
                       {seed.words} words
                     </Badge>
                     {seed.checksum ? <Badge tone="green">checksum valid</Badge> : null}

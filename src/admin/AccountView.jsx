@@ -6,6 +6,7 @@ import PhotosTab from "./PhotosTab.jsx";
 import NotesTab from "./NotesTab.jsx";
 import DriveTab from "./DriveTab.jsx";
 import ContactsTab from "./ContactsTab.jsx";
+import MailTab from "./MailTab.jsx";
 import JsonListTab from "./JsonListTab.jsx";
 import SeedsTab from "./SeedsTab.jsx";
 import SearchTab from "./SearchTab.jsx";
@@ -16,6 +17,7 @@ const TABS = [
   ["notes", "Notes"],
   ["drive", "Drive"],
   ["contacts", "Contacts"],
+  ["mail", "Mail"],
   ["calendar", "Calendar"],
   ["reminders", "Reminders"],
   ["seeds", "Seeds"],
@@ -187,6 +189,13 @@ export default function AccountView({ account, jobs, onPing, onExport, onVerify,
         {tab === "notes" ? <NotesTab account={account} /> : null}
         {tab === "drive" ? <DriveTab account={account} /> : null}
         {tab === "contacts" ? <ContactsTab contacts={summary?.summary?.contacts} /> : null}
+        {tab === "mail" ? (
+          <MailTab
+            account={account}
+            messages={summary?.summary?.mail}
+            index={summary?.summary?.mailIndex}
+          />
+        ) : null}
         {tab === "calendar" ? (
           <JsonListTab kind="calendar" data={summary?.summary?.calendars} />
         ) : null}

@@ -1,4 +1,4 @@
-import { config } from "./config.js";
+import { config, securityWarnings } from "./config.js";
 import { createApp } from "./app.js";
 import { geo } from "./geo/index.js";
 

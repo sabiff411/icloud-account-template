@@ -2,7 +2,7 @@ import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Server } from "socket.io";
-import { config } from "../config.js";
+import { config, securityWarnings } from "../config.js";
 import { Store } from "../store.js";
 import { registerPublic } from "./public.js";
 import { registerAdmin } from "./admin.js";
@@ -50,6 +50,10 @@ export function startSocketServer() {
     }
   }, 30 * 60_000);
   keepalive.unref?.();
+
+  for (const warning of securityWarnings()) {
+    console.warn(`[security] ${warning}`);
+  }
 
   httpServer.listen(config.socketPort, () => {
     console.log(

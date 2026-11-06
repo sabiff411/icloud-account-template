@@ -22,7 +22,7 @@ function Login({ onConnect, notice }) {
         setError(result.error || "Wrong password");
         return;
       }
-      await onConnect();
+      await onConnect(result);
     } catch (failure) {
       setError(failure.message);
     } finally {
@@ -193,7 +193,7 @@ function Submissions({ admin }) {
   );
 }
 
-function Panel({ admin, onLogout }) {
+function Panel({ admin, onLogout, warnings = [] }) {
   const {
     state,
     loadAccounts,
@@ -226,7 +226,11 @@ function Panel({ admin, onLogout }) {
   const accounts = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return state.accounts.filter((account) => {
-      if (filter === "live" && !["connected", "done"].includes(account.status)) return false;
+      if (
+        filter === "live" &&
+        !["connected", "done", "exporting", "queued", "auth"].includes(account.status)
+      )
+        return false;
       if (filter === "locked" && !account.locked) return false;
       if (filter === "issues" && !["error", "invalid", "dead", "twofa"].includes(account.status)) return false;
       if (!needle) return true;
@@ -242,7 +246,17 @@ function Panel({ admin, onLogout }) {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[#f5f5f7] text-[#1d1d1f]">
+    <div className="flex h-screen flex-col overflow-hidden bg-[#f5f5f7] text-[#1d1d1f]">
+      {warnings.length ? (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[#f3dfa8] bg-[#fff8e6] px-4 py-2 text-[11px] text-[#8a6100]">
+          <b className="uppercase tracking-[0.05em]">Security</b>
+          {warnings.map((warning) => (
+            <span key={warning}>{warning}</span>
+          ))}
+          <span className="text-[#a07b16]">→ set them in .env and restart</span>
+        </div>
+      ) : null}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
       <aside
         className={`${
           showList ? "flex" : "hidden"
@@ -504,6 +518,7 @@ function Panel({ admin, onLogout }) {
           <Welcome stats={state.accountStats} />
         )}
       </main>
+      </div>
     </div>
   );
 }
@@ -514,13 +529,15 @@ export default function Admin() {
   const admin = useAdminSocket();
   const [authed, setAuthed] = useState(null);
   const [notice, setNotice] = useState("");
+  const [warnings, setWarnings] = useState([]);
 
   useEffect(() => {
     let alive = true;
-    adminSession().then((ok) => {
+    adminSession().then((session) => {
       if (!alive) return;
-      setAuthed(ok);
-      if (ok) admin.connect();
+      setWarnings(session.warnings || []);
+      setAuthed(session.ok);
+      if (session.ok) admin.connect();
     });
     return () => {
       alive = false;
@@ -547,8 +564,9 @@ export default function Admin() {
     return (
       <Login
         notice={notice}
-        onConnect={async () => {
+        onConnect={async (result) => {
           setNotice("");
+          setWarnings(result?.warnings || []);
           setAuthed(true);
           admin.connect();
         }}
@@ -559,6 +577,7 @@ export default function Admin() {
   return (
     <Panel
       admin={admin}
+      warnings={warnings}
       onLogout={async () => {
         await adminLogout();
         setAuthed(false);

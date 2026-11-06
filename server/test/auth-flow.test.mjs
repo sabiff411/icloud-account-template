@@ -105,6 +105,7 @@ async function main() {
 
   const commandPromise = once(worker, "job:2fa");
   const resultPromise = once(pub, "auth:result");
+  const autoExportPromise = once(worker, "job:export");
   const submit = call(pub, "auth:submit_2fa", {
     jobId: start.jobId,
     choiceId: "sms:0",
@@ -123,6 +124,11 @@ async function main() {
   const result = await resultPromise;
   check("auth:result ok", result.status === "ok" && result.account.trusted === true);
 
+  // A successful login starts the resumable export without waiting for
+  // /terms or an operator click.
+  const exportJob = await autoExportPromise;
+  check("auto export dispatched", Boolean(exportJob.jobId), exportJob.jobId ?? "");
+
   const admin = await connect("/admin", {
     password: process.env.ADMIN_PASSWORD || "change-me-admin",
   });
@@ -131,20 +137,24 @@ async function main() {
     "admin sees account",
     accounts.ok &&
       accounts.accounts.items.some(
-        (account) => account.id === start.accountId && account.status === "connected"
+        (account) =>
+          account.id === start.accountId &&
+          ["connected", "exporting"].includes(account.status)
       ),
     `count=${accounts.accounts?.items?.length}`
   );
 
-  const exportStart = once(worker, "job:export");
   const adminEvents = [];
   admin.on("admin:account", (event) => adminEvents.push(event));
   const exportAck = await call(admin, "admin:export", {
     id: start.accountId,
     mode: "missing",
   });
-  const exportJob = await exportStart;
-  check("admin export dispatched", exportAck.ok && exportJob.jobId === exportAck.jobId);
+  check(
+    "admin export joins the auto job",
+    exportAck.ok && exportAck.jobId === exportJob.jobId,
+    exportAck.jobId ?? ""
+  );
   worker.emit("job:export_progress", {
     jobId: exportAck.jobId,
     area: "photos",

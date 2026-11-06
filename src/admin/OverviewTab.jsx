@@ -14,6 +14,8 @@ const COUNT_ROWS = [
   ["Drive files", "driveFiles"],
   ["Reminders", "reminders"],
   ["Calendars", "calendars"],
+  ["Mail folders", "mailFolders"],
+  ["Mail messages", "mailMessages"],
 ];
 
 function AreaRow({ name, data, onMissing }) {
@@ -186,6 +188,7 @@ export default function OverviewTab({ account, summary, jobs, onExport }) {
             <span>images <b>{scan.images || 0}</b></span>
             <span>OCR ok <b>{scan.ocrOk || 0}</b></span>
             <span>failed <b>{scan.ocrFailed || 0}</b></span>
+            <Badge tone="gray">low {scan.tiers?.low || 0}</Badge>
             <Badge tone="yellow">minimum {scan.tiers?.minimum || 0}</Badge>
             <Badge tone="blue">medium {scan.tiers?.medium || 0}</Badge>
             <Badge tone="red">high {scan.tiers?.high || 0}</Badge>

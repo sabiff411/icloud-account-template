@@ -58,10 +58,10 @@ export function readCookie(header, name = COOKIE_NAME) {
   return "";
 }
 
-export function sessionCookie(token, maxAgeSec = DEFAULT_TTL_MS / 1000) {
+export function sessionCookie(token, maxAgeSec = DEFAULT_TTL_MS / 1000, secure = false) {
   return `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(
     maxAgeSec
-  )}`;
+  )}${secure ? "; Secure" : ""}`;
 }
 
 export function clearCookie() {

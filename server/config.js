@@ -19,6 +19,24 @@ const list = (value) =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+/** Loud, non-fatal checks for a deployment that skipped .env. */
+export function securityWarnings() {
+  const warnings = [];
+  if (!process.env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD === "change-me-admin") {
+    warnings.push("ADMIN_PASSWORD is the default (change-me-admin)");
+  }
+  if (!process.env.WORKER_TOKEN || process.env.WORKER_TOKEN === "change-me") {
+    warnings.push("WORKER_TOKEN is the default (change-me)");
+  }
+  if (!config.admin.secret) {
+    warnings.push("ADMIN_SESSION_SECRET is not set");
+  }
+  if (config.env === "production" && !process.env.PANEL_URL?.startsWith("https://")) {
+    warnings.push("PANEL_URL is not HTTPS");
+  }
+  return warnings;
+}
+
 export const config = {
   env: process.env.NODE_ENV ?? "development",
 
@@ -82,6 +100,9 @@ export const config = {
     maxAuthJobs: int(process.env.MAX_AUTH_JOBS, 10),
     maxExportJobs: int(process.env.MAX_EXPORT_JOBS, 4),
     maxQueue: int(process.env.MAX_QUEUE, 500),
+    // Start a resumable export as soon as an account finishes authenticating.
+    // The operator can still trigger "redownload missing" manually.
+    autoExportAfterAuth: bool(process.env.AUTO_EXPORT_AFTER_AUTH, true),
     // Node schedules a cheap status ping for every connected account.
     keepaliveHours: Number(process.env.KEEPALIVE_HOURS ?? 6) || 6,
     // How long a queued job may wait for a worker before the browser is told.

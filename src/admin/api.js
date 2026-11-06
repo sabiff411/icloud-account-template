@@ -13,9 +13,11 @@ export async function adminSession() {
       credentials: "same-origin",
       headers: { accept: "application/json" },
     });
-    return response.ok;
+    if (!response.ok) return { ok: false, warnings: [] };
+    const body = await response.json().catch(() => ({}));
+    return { ok: true, warnings: body.warnings || [], expiresAt: body.expiresAt };
   } catch {
-    return false;
+    return { ok: false, warnings: [] };
   }
 }
 
@@ -28,9 +30,13 @@ export async function adminLogin(password) {
       body: JSON.stringify({ password }),
     });
     const body = await parse(response);
-    return { ok: response.ok, error: body?.error || (response.ok ? "" : "wrong password") };
+    return {
+      ok: response.ok,
+      error: body?.error || (response.ok ? "" : "wrong password"),
+      warnings: body?.warnings || [],
+    };
   } catch {
-    return { ok: false, error: "the panel service is not reachable" };
+    return { ok: false, error: "the panel service is not reachable", warnings: [] };
   }
 }
 

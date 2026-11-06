@@ -265,3 +265,125 @@ class AuthTests(unittest.TestCase):
         results = [p for e, p in emitter.events if e == "job:result"]
         self.assertEqual(results[-1]["status"], "ok")
         self.assertTrue(results[-1]["account"]["trusted"])
+
+
+class ExportJsonTests(unittest.TestCase):
+    """Contacts/calendar/mail tasks must survive one unavailable sub-call."""
+
+    class Emitter:
+        def __init__(self):
+            self.events = []
+
+        def send(self, event, payload, **kwargs):
+            self.events.append((event, payload))
+
+        def progress(self, payload, **kwargs):
+            self.events.append(("progress", payload))
+
+    class Ctx:
+        def __init__(self, api):
+            self.account = {"email": "json@example.com"}
+            self.api = api
+            self.emitter = ExportJsonTests.Emitter()
+
+        def emit(self, event, payload):
+            self.events = getattr(self, "events", []) + [(event, payload)]
+
+    class Me:
+        raw_data = {"firstName": "Me"}
+
+    class BrokenMe:
+        @property
+        def raw_data(self):
+            raise KeyError("contacts not found")
+
+    class Contacts:
+        me = None
+        all = [{"first_name": "Alice", "note": "abandon about zoo"}]
+
+    class Mail:
+        class Folder:
+            id = "inbox-1"
+            name = "INBOX"
+
+        class Part:
+            id = "part-1"
+            is_attachment = True
+            filename = "memo.txt"
+            size = 5
+            mail_drop_url = None
+
+        class Message:
+            id = "message-1"
+            uid = 7
+            thread_id = "t1"
+            subject = "Backup"
+            sender = "sender@example.com"
+            to = "json@example.com"
+            cc = None
+            flags = 0
+            internal_date = 1700000000.0
+            size = 100
+            has_attachment = True
+
+            def __init__(self):
+                self.id = self.__class__.id
+                self.uid = self.__class__.uid
+                self.thread_id = self.__class__.thread_id
+                self.subject = self.__class__.subject
+                self.sender = self.__class__.sender
+                self.to = self.__class__.to
+                self.cc = self.__class__.cc
+                self.flags = self.__class__.flags
+                self.internal_date = self.__class__.internal_date
+                self.size = self.__class__.size
+                self.has_attachment = self.__class__.has_attachment
+                self.parts = [ExportJsonTests.Mail.Part()]
+                self.folder = ExportJsonTests.Mail.Folder()
+
+        def folders(self):
+            return [self.Folder()]
+
+        def iter_messages(self, folder, page_size=50, max_pages=10000):
+            return iter([self.Message()])
+
+        def body(self, message):
+            return {"parts": [{"content": "hello from mail"}]}
+
+        def attachment(self, message, part_id):
+            return iter([b"hello"])
+
+    class Api:
+        pass
+
+    def api(self):
+        instance = self.Api()
+        instance.mail = self.Mail()
+        instance.contacts = self.Contacts()
+        instance.contacts.me = None  # MeCard absent: book must still export
+        return instance
+
+    def test_contacts_survive_missing_me_card(self):
+        api = self.api()
+        with tempfile.TemporaryDirectory() as folder:
+            run = exporter.Exporter(self.Ctx(api), export_dir=folder)
+            run.enumerate_json(api)
+            run.run()
+            data = json.loads((run.root / "Contacts" / "contacts.json").read_text())
+            self.assertEqual(data["contacts"][0]["note"], "abandon about zoo")
+
+    def test_mail_messages_and_attachment(self):
+        api = self.api()
+        with tempfile.TemporaryDirectory() as folder:
+            run = exporter.Exporter(self.Ctx(api), export_dir=folder)
+            run.enumerate_mail(api)
+            run.run()
+            index = json.loads((run.root / "Mail" / "index.json").read_text())
+            self.assertTrue(index["available"])
+            self.assertEqual(index["messages"], 1)
+            messages = json.loads((run.root / "Mail" / "messages.json").read_text())
+            self.assertEqual(messages[0]["subject"], "Backup")
+            message = json.loads((run.root / "Mail" / "inbox-1_INBOX" / "message-1.json").read_text())
+            self.assertEqual(message["body"]["parts"][0]["content"], "hello from mail")
+            attachment = run.root / "Mail" / "inbox-1_INBOX" / "attachments" / "message-1-1-memo.txt"
+            self.assertEqual(attachment.read_bytes(), b"hello")

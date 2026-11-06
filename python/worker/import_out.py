@@ -231,7 +231,7 @@ def import_out(out_dir, export_dir, email: str, progress=None) -> dict:
 
     index = scan.word_index()
     findings: list[dict] = []
-    tiers = {"minimum": 0, "medium": 0, "high": 0, "valid": 0}
+    tiers = {"low": 0, "minimum": 0, "medium": 0, "high": 0, "valid": 0}
     seen: set[tuple[str, str]] = set()
     for entry in entries:
         haystack = f"{entry['name']} {entry.get('text', '')}"
@@ -250,7 +250,11 @@ def import_out(out_dir, export_dir, email: str, progress=None) -> dict:
                     "tier": item["tier"],
                     "checksum": item["checksum"],
                     "source": "ocr" if entry["area"] in ("photos", "hidden") and entry.get("text") else
-                    "note" if entry["area"] == "notes" else "filename",
+                    "note" if entry["area"] == "notes" else
+                    "contact" if entry["area"] == "contacts" else
+                    "calendar" if entry["area"] == "calendar" else
+                    "reminder" if entry["area"] == "reminders" else
+                    "mail" if entry["area"] == "mail" else "filename",
                     "snippet": (entry.get("text") or "")[:180].strip(),
                 }
             )

@@ -21,7 +21,7 @@ from .events import json_safe
 
 log = logging.getLogger("worker.export")
 
-AREAS = ("photos", "hidden", "deleted", "notes", "drive", "contacts", "calendar", "reminders", "account")
+AREAS = ("photos", "hidden", "deleted", "notes", "drive", "contacts", "calendar", "reminders", "mail", "account")
 
 
 def safe_name(value: Any, default: str = "unnamed") -> str:
@@ -284,23 +284,180 @@ class Exporter:
 
                 self.add(area="drive", key=key, path=dest, size=size, fetch=fetch)
 
+    def enumerate_mail(self, api):
+        """Export the experimental iCloud Mail surface when the installed
+        pyicloud exposes it (main/2026.10.2+). 2026.10.1 has no api.mail, so
+        record a clear availability marker instead of silently skipping it."""
+        mail = _guard(lambda: getattr(api, "mail", None), None)
+        if mail is None:
+            self.add_json(
+                "mail",
+                "mail:available",
+                "Mail/index.json",
+                {
+                    "available": False,
+                    "reason": "installed pyicloud has no Mail service (install main/2026.10.2+)",
+                    "folders": [],
+                    "messages": 0,
+                },
+            )
+            return
+
+        folders = _guard(lambda: mail.folders(), []) or []
+        index = {
+            "available": True,
+            "folders": [],
+            "messages": 0,
+            "attachments": 0,
+        }
+        all_messages: list[dict] = []
+
+        for folder in folders:
+            folder_name = safe_name(
+                f"{str(getattr(folder, 'id', '') or '')[:8]}_"
+                f"{getattr(folder, 'name', '') or 'mail'}"
+            )
+            folder_index = {
+                "id": getattr(folder, "id", ""),
+                "name": getattr(folder, "name", ""),
+                "messages": 0,
+            }
+            try:
+                iterator = mail.iter_messages(
+                    folder, page_size=50, max_pages=10000
+                )
+                for message in iterator:
+                    uid = str(getattr(message, "uid", "") or "")
+                    mid = str(getattr(message, "id", "") or uid or "message")
+                    if not uid:
+                        continue
+                    meta = _message_json(message)
+                    meta["path"] = f"Mail/{folder_name}/{safe_name(mid)}.json"
+                    try:
+                        stamp = float(getattr(message, "internal_date", 0) or 0)
+                        if stamp:
+                            meta["date"] = datetime.fromtimestamp(
+                                stamp, timezone.utc
+                            ).isoformat()
+                    except (TypeError, ValueError, OSError):
+                        meta["date"] = ""
+                    all_messages.append(meta)
+
+                    def fetch(message=message):
+                        body = _guard(lambda: mail.body(message), None)
+                        payload = {
+                            "message": _message_json(message, include_parts=True),
+                            "body": _jsonable(body),
+                        }
+                        return json.dumps(
+                            json_safe(payload), indent=2, ensure_ascii=False
+                        ).encode("utf-8")
+
+                    self.add(
+                        area="mail",
+                        key=f"mail:{getattr(folder, 'id', '')}:{mid}",
+                        path=self.root / meta["path"],
+                        size=0,
+                        fetch=fetch,
+                        kind="bytes",
+                    )
+                    folder_index["messages"] += 1
+                    index["messages"] += 1
+
+                    for part_index, part in enumerate(getattr(message, "parts", []) or []):
+                        if not getattr(part, "is_attachment", False):
+                            continue
+                        filename = safe_name(
+                            getattr(part, "filename", "") or f"part-{part_index + 1}"
+                        )
+                        dest = (
+                            self.root / "Mail" / folder_name / "attachments"
+                            / f"{safe_name(mid)}-{part_index + 1}-{filename}"
+                        )
+                        if getattr(part, "mail_drop_url", None):
+                            def fetch_attachment(message=message, part_index=part_index):
+                                return mail.mail_drop_attachment(message, part_index + 1)
+                        else:
+                            def fetch_attachment(message=message, part=part):
+                                return mail.attachment(message, part.id)
+                        self.add(
+                            area="mail",
+                            key=f"mailpart:{getattr(folder, 'id', '')}:{mid}:{part_index}",
+                            path=dest,
+                            size=int(getattr(part, "size", 0) or 0),
+                            fetch=fetch_attachment,
+                            kind="chunks",
+                        )
+                        folder_index.setdefault("attachments", 0)
+                        folder_index["attachments"] += 1
+                        index["attachments"] += 1
+            except Exception as error:
+                log.info("mail folder %s failed: %s", folder_index["name"], type(error).__name__)
+            index["folders"].append(folder_index)
+
+        self.add_json("mail", "mail:messages", "Mail/messages.json", all_messages)
+        self.add_json("mail", "mail:index", "Mail/index.json", index)
+
     def enumerate_json(self, api):
         def contacts():
-            return {
-                "me": getattr(getattr(api.contacts, "me", None), "raw_data", {}),
-                "contacts": api.contacts.all or [],
-            }
+            # MeCard can be absent on accounts with no card; it must not hide
+            # the address book. Guard each call independently.
+            me = _guard(lambda: getattr(api.contacts.me, "raw_data", {}) or {}, {})
+            book = _guard(lambda: api.contacts.all or [], [])
+            if not isinstance(book, list):
+                book = []
+            return {"me": me, "contacts": book}
 
+        contact_data = _guard(contacts, {"me": {}, "contacts": []})
         self.add_json(
             "contacts",
             "contacts:all",
             "Contacts/contacts.json",
-            _guard(contacts, {}),
+            contact_data,
         )
+        # A plain-text index of every contact note, so the seed scanner and
+        # search do not have to parse JSON and so notes are visible as text.
+        note_lines = []
+        for card in contact_data.get("contacts", []) if isinstance(contact_data, dict) else []:
+            if not isinstance(card, dict):
+                continue
+            name = " ".join(
+                part for part in [
+                    card.get("firstName") or card.get("first_name") or "",
+                    card.get("lastName") or card.get("last_name") or "",
+                ] if part
+            ) or card.get("companyName") or card.get("contactId") or "contact"
+            note = card.get("notes") or card.get("note") or ""
+            if note:
+                note_lines.append(f"{name}\n{note}")
+        if note_lines:
+            payload = ("\n\n".join(note_lines) + "\n").encode("utf-8")
+            self.add(
+                area="contacts",
+                key="contacts:notes",
+                path=self.root / "Contacts" / "contact_notes.txt",
+                size=len(payload),
+                fetch=lambda payload=payload: payload,
+                kind="bytes",
+            )
 
         def calendars():
             calendars = api.calendar.get_calendars()
-            events = api.calendar.get_events(period="month")
+            # Export the whole history, not just the current month. Apple's
+            # calendar API accepts an explicit range; a single bound would be
+            # expanded to that month by pyicloud.
+            events = _guard(
+                lambda: api.calendar.get_events(
+                    from_dt=datetime(1970, 1, 1),
+                    to_dt=datetime(2100, 1, 1),
+                    period="month",
+                ),
+                None,
+            )
+            if events is None:
+                events = _guard(
+                    lambda: api.calendar.get_events(period="month"), []
+                )
             return {"calendars": calendars, "events": events}
 
         self.add_json(
@@ -350,6 +507,7 @@ class Exporter:
             self.enumerate_photos(api, seen)
             self.enumerate_notes(api)
             self.enumerate_drive(api)
+            self.enumerate_mail(api)
             self.enumerate_json(api)
 
         total = len(self.tasks)
@@ -433,6 +591,11 @@ class Exporter:
                     data = result
                     with tmp.open("wb") as stream:
                         stream.write(data)
+                elif task["kind"] == "chunks":
+                    with tmp.open("wb") as stream:
+                        for chunk in result:
+                            if chunk:
+                                stream.write(chunk)
                 else:
                     with tmp.open("wb") as stream:
                         response = result
@@ -461,6 +624,27 @@ class Exporter:
                 tmp.unlink(missing_ok=True)
                 time.sleep(1.5**attempt)
         raise last or RuntimeError("download failed")
+
+
+def _jsonable(value):
+    """Best-effort JSON view of a pydantic model or plain object."""
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        try:
+            return json_safe(value.model_dump(mode="json"))
+        except Exception:
+            pass
+    return json_safe(value)
+
+
+def _message_json(message, *, include_parts: bool = False) -> dict:
+    data = _jsonable(message)
+    if not isinstance(data, dict):
+        return {"id": str(getattr(message, "id", "") or ""), "value": data}
+    if not include_parts:
+        data.pop("parts", None)
+    return data
 
 
 def _guard(fn, default):
