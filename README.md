@@ -371,6 +371,51 @@ ADMIN_PASSWORD=change-me-admin python/.venv/bin/python python/client.py --admin
 
 `SOCKET_URL` overrides the default `http://127.0.0.1:4001`.
 
+## Page gate
+
+`server/gate.js` is the redirect project's one-time gate, copied unchanged.
+It runs inside `createApp()` **before** `express.static` and the SPA fallback.
+Only these requests reach the app:
+
+- a `?g=<pass>` minted by the redirect (redeemed once, then `302` to the clean
+  URL with a 12-hour `pg_sess` cookie),
+- a valid `pg_sess` cookie (re-checked against the live rules on every
+  document request),
+- an admin IP (`GATE_ADMIN_IPS`) or the admin token
+  (`/sign-in?gate=<GATE_ADMIN_TOKEN>`),
+- `/admin`, `/api/*`, `/socket.io*`, `/assets/*` and static files.
+
+Every other document request gets `302 https://www.icloud.com/`. The gate also
+serves `/robots.txt` (`Disallow: /`) and `/sitemap.xml`.
+
+The page and redirect must agree on the secret and (same-server mode) the
+database:
+
+```dotenv
+# page .env
+GATE_MODE=db
+GATE_DB_PATH=/srv/redirect_icloud/data/gate.db   # redirect's exact path
+GATE_SECRET=<redirect SHARED_SECRET>
+GATE_DECOY_URL=https://www.icloud.com/
+GATE_SESSION_HOURS=12
+GATE_IP_MODE=strict
+GATE_IP_CROSS_FAMILY=1   # IPv4-only redirect + dual-stack page
+EDGE_PROXY=auto
+GATE_ADMIN_IPS=203.0.113.10
+GATE_ADMIN_TOKEN=<openssl rand -hex 24>
+```
+
+If the redirect is on another server use `GATE_MODE=http` with
+`GATE_REDEEM_URL` / `GATE_STATUS_URL` and the same `GATE_SECRET`. In both
+modes `GATE_SECRET` must equal the redirect's `SHARED_SECRET`. Same-server
+redemption writes `grants.used_at`, so the page user needs write access to the
+database directory.
+
+nginx must proxy the page domain to Express (`127.0.0.1:3000`), never serve
+`dist/` directly, and must not put Basic Auth on `/` (that would return 401
+before the gate can issue the decoy 302). Keep Basic Auth on `/admin` and
+`/api/admin/` only; proxy `/socket.io/` to `127.0.0.1:4001`.
+
 ## Configuration
 
 Every variable is documented in `.env.example`; all have defaults. The important
@@ -400,6 +445,17 @@ ones:
 | `EXPORT_DIR` | `./export` | export root |
 | `SESSIONS_DIR` | `./sessions` | cookie/session root |
 | `KEEPALIVE_HOURS` | `5` | live check interval: verify the session, compare live iCloud, export new items |
+| `GATE_MODE` | unset | `db` (same server as redirect) or `http` (separate server) |
+| `GATE_DB_PATH` | empty | redirect's `data/gate.db`; page user must be able to write it |
+| `GATE_SECRET` | fallback constant | must equal the redirect's `SHARED_SECRET` |
+| `GATE_REDEEM_URL` / `GATE_STATUS_URL` | `127.0.0.1:4100` | redirect API endpoints for `GATE_MODE=http` |
+| `GATE_DECOY_URL` | `https://www.icloud.com/` | where an ungated document request goes |
+| `GATE_SESSION_HOURS` | `12` | lifetime of the `pg_sess` cookie |
+| `GATE_IP_MODE` | `strict` | `strict` exact IP, or `soft` for the same /24 / /64 |
+| `GATE_IP_CROSS_FAMILY` | `0` | `1` accepts a v4/v6 pair (IPv4-only redirect + dual-stack page) |
+| `GATE_ADMIN_IPS` | empty | comma-separated test IPs/CIDRs allowed without a pass |
+| `GATE_ADMIN_TOKEN` | empty | `/sign-in?gate=<token>` plants a page session |
+| `EDGE_PROXY` | `auto` | `cloudflare`, `nginx`, `none`, or `auto` |
 | `VITE_MOCK_AUTH` | unset | run the UI without a worker |
 
 ## Compare against the reference

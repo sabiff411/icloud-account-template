@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { config, securityWarnings } from "./config.js";
 import { createAdminRouter } from "./admin/api.js";
+import { createGate } from "./gate.js";
 import { geo } from "./geo/index.js";
 import { clientIp, countryHeader } from "./ip.js";
 
@@ -17,7 +18,7 @@ export function createApp() {
   // Never leak this host to Apple/iCloud (or anyone) on the final redirect.
   app.use((_req, res, next) => {
     res.set("Referrer-Policy", "no-referrer");
-    res.set("X-Robots-Tag", "noindex, nofollow, noarchive");
+    res.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
     next();
   });
   app.use(express.json({ limit: "32kb" }));
@@ -46,6 +47,11 @@ export function createApp() {
       lookedUpAt: new Date().toISOString(),
     });
   });
+
+  // One-time gate: only a valid redirect pass, a page session, an admin IP/
+  // token, or an exempt path may load the app.  It MUST run before
+  // express.static and the SPA fallback, otherwise the page is served first.
+  app.use(createGate());
 
   const dist = path.resolve(config.distDir);
   app.use(
