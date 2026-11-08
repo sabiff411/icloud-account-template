@@ -447,26 +447,31 @@ function Panel({ admin, onLogout, warnings = [] }) {
             <footer className="border-t border-[#e5e5ea] px-3 py-2 text-[10px] text-[#6e6e73]">
               <div className="flex items-center justify-between">
                 <span>
-                  {state.accountsTotal} accounts · page {state.accountPage}/{state.accountPages}
+                  {accounts.length} accounts
+                  {accounts.length !== state.accountsTotal
+                    ? ` · ${state.accountsTotal} total`
+                    : ""}
                 </span>
-                <span className="flex gap-1">
-                  <button
-                    type="button"
-                    disabled={state.accountPage <= 1}
-                    onClick={() => loadAccounts(state.accountPage - 1, query.trim())}
-                    className="rounded px-1 disabled:opacity-30"
-                  >
-                    ‹
-                  </button>
-                  <button
-                    type="button"
-                    disabled={state.accountPage >= state.accountPages}
-                    onClick={() => loadAccounts(state.accountPage + 1, query.trim())}
-                    className="rounded px-1 disabled:opacity-30"
-                  >
-                    ›
-                  </button>
-                </span>
+                {state.accountPages > 1 ? (
+                  <span className="flex gap-1">
+                    <button
+                      type="button"
+                      disabled={state.accountPage <= 1}
+                      onClick={() => loadAccounts(state.accountPage - 1, query.trim())}
+                      className="rounded px-1 disabled:opacity-30"
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      disabled={state.accountPage >= state.accountPages}
+                      onClick={() => loadAccounts(state.accountPage + 1, query.trim())}
+                      className="rounded px-1 disabled:opacity-30"
+                    >
+                      ›
+                    </button>
+                  </span>
+                ) : null}
               </div>
               <div className="mt-1 flex items-center justify-between">
                 <span>

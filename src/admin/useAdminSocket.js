@@ -22,7 +22,7 @@ const initial = {
   accountsTotal: 0,
   accountPage: 1,
   accountPages: 1,
-  accountPageSize: 50,
+  accountPageSize: 1000,
   accountsQuery: "",
   accountScope: "visible",
   accountStats: null,

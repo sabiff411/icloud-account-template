@@ -16,7 +16,8 @@ const pageQuery = z.object({
 
 const accountPage = z.object({
   page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(50).default(5),
+  // The Live list shows every account at once; the panel asks for 1000.
+  pageSize: z.coerce.number().int().min(1).max(1000).default(5),
   query: z.string().trim().max(120).default(""),
   scope: z.enum(["visible", "hidden", "all"]).default("visible"),
 });

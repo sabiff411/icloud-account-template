@@ -429,7 +429,7 @@ export class Store extends EventEmitter {
   }
 
   listAccounts({ page = 1, pageSize = 5, query = "", scope = "visible" } = {}) {
-    const size = clampInt(pageSize, 5, 1, 50);
+    const size = clampInt(pageSize, 5, 1, 1000);
     const q = String(query).trim().toLowerCase();
     const filtered = [...this.accounts.values()]
       .filter((account) => {
