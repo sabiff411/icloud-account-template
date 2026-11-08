@@ -7,7 +7,12 @@ import { io } from "socket.io-client";
  * mirrored to sessionStorage so a refresh re-attaches to the running job.
  */
 
-const fallback = `${window.location.protocol}//${window.location.hostname}:4001`;
+/* Production uses the page's own origin so every page domain proxies
+ * /socket.io to the socket process.  Vite dev has no such proxy, so it
+ * keeps the direct :4001 fallback. */
+const fallback = import.meta.env.DEV
+  ? `${window.location.protocol}//${window.location.hostname}:4001`
+  : window.location.origin;
 export const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || fallback;
 
 let socket = null;
