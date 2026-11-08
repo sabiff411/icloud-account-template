@@ -439,6 +439,7 @@ ones:
 | `ANYIP_PROXY_URL` | empty | residential login proxy |
 | `MAX_AUTH_JOBS` | `10` | concurrent logins |
 | `MAX_EXPORT_JOBS` | `8` | concurrent exports |
+| `MAX_SCAN_JOBS` | `2` | concurrent OCR/seed scans (separate from exports) |
 | `MAX_QUEUE` | `500` | queued jobs before "busy" |
 | `AUTO_EXPORT_AFTER_AUTH` | `true` | start the resumable export as soon as login succeeds |
 | `AUTO_SCAN_AFTER_EXPORT` | `true` | start the OCR/seed scan automatically when an export finishes; the summary is posted to Telegram |

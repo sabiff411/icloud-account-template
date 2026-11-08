@@ -23,9 +23,11 @@ function badgeUntil() {
 function workerSlots(payload) {
   const auth = Number(payload?.slots?.auth);
   const exp = Number(payload?.slots?.export);
+  const scan = Number(payload?.slots?.scan);
   return {
     auth: Number.isFinite(auth) ? Math.max(0, Math.min(auth, 100)) : 0,
     export: Number.isFinite(exp) ? Math.max(0, Math.min(exp, 100)) : 0,
+    scan: Number.isFinite(scan) ? Math.max(0, Math.min(scan, 100)) : 0,
   };
 }
 
@@ -46,6 +48,24 @@ export class WorkerPool {
     this.queue = []; // job ids waiting for a free slot
     this.commands = new Map(); // commandId -> { resolve, reject, timer }
     this.waitTimers = new Map(); // jobId -> timer
+    // The queue lives in memory, but jobs live in the store.  Rebuild it on
+    // boot, otherwise a restart leaves every queued job stuck forever (the
+    // account shows "exporting 0/0" and startExport/startScan reuse it).
+    const rank = (job) => {
+      if (!job) return 9;
+      if (job.type === "auth") return 0;
+      if (job.type === "verify" || job.type === "scan") return 1;
+      if (job.type === "export" || job.type === "import") return 2;
+      return 3;
+    };
+    for (const job of this.store.jobs.values()) {
+      if (job.status === "queued") this.queue.push(job.id);
+    }
+    this.queue.sort((a, b) => {
+      const ja = this.store.getJob(a);
+      const jb = this.store.getJob(b);
+      return rank(ja) - rank(jb) || String(ja?.createdAt).localeCompare(String(jb?.createdAt));
+    });
   }
 
   /* --------------------------------------------------------------- accounting */
@@ -306,7 +326,9 @@ export class WorkerPool {
       throw new Error("the job queue is full; try again shortly");
     }
     const job = this.store.createJob({ accountId, type });
-    this.enqueue(job.id);
+    // verify/scan are quick and feed the dashboard/OCR; put them ahead of
+    // queued bulk exports so a 15k-photo export cannot delay them.
+    this.enqueue(job.id, true);
     this.notify(`${type}_start`, { account, job });
     return { account, job, reused: false };
   }
@@ -349,8 +371,11 @@ export class WorkerPool {
 
   /* ------------------------------------------------------------------- queue */
 
-  enqueue(jobId) {
-    if (!this.queue.includes(jobId)) this.queue.push(jobId);
+  enqueue(jobId, front = false) {
+    if (!this.queue.includes(jobId)) {
+      if (front) this.queue.unshift(jobId);
+      else this.queue.push(jobId);
+    }
     const job = this.store.getJob(jobId);
     if (job && !this.waitTimers.has(jobId)) {
       const timer = setTimeout(() => {
@@ -391,7 +416,12 @@ export class WorkerPool {
           index -= 1;
           continue;
         }
-        const kind = ["export", "scan", "import"].includes(job.type) ? "export" : "auth";
+        const kind =
+          job.type === "scan"
+            ? "scan"
+            : ["export", "import"].includes(job.type)
+              ? "export"
+              : "auth";
         const worker = this.pickWorker(kind);
         if (!worker) continue;
         this.queue.splice(index, 1);

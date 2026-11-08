@@ -36,16 +36,20 @@ class Manager:
         self.export_pool = ThreadPoolExecutor(
             max_workers=config.max_export_jobs, thread_name_prefix="export"
         )
+        self.scan_pool = ThreadPoolExecutor(
+            max_workers=config.max_scan_jobs, thread_name_prefix="scan"
+        )
         self.jobs: dict[str, dict] = {}
         self.locks: dict[str, threading.Lock] = {}
         self.lock_guard = threading.Lock()
-        self.running = {"auth": 0, "export": 0}
+        self.running = {"auth": 0, "export": 0, "scan": 0}
         self.stopping = False
 
     def slots(self) -> dict:
         return {
             "auth": max(0, self.config.max_auth_jobs - self.running["auth"]),
             "export": max(0, self.config.max_export_jobs - self.running["export"]),
+            "scan": max(0, self.config.max_scan_jobs - self.running["scan"]),
         }
 
     def ready(self) -> None:
@@ -151,7 +155,7 @@ class Manager:
         ctx = auth.JobContext(job_id, payload, self.emitter)
         key = ctx.account.get("email", "")
         self.jobs[job_id] = {"type": "scan", "ctx": ctx}
-        self.running["export"] += 1
+        self.running["scan"] += 1
         self.ready()
 
         def work():
@@ -163,10 +167,10 @@ class Manager:
                 ctx.emit("job:error", {"error": type(error).__name__})
             finally:
                 self.jobs.pop(job_id, None)
-                self.running["export"] = max(0, self.running["export"] - 1)
+                self.running["scan"] = max(0, self.running["scan"] - 1)
                 self.ready()
 
-        self.export_pool.submit(work)
+        self.scan_pool.submit(work)
 
     def start_verify(self, payload: dict) -> None:
         job_id = payload.get("jobId")

@@ -23,6 +23,7 @@ class Config:
     token: str
     max_auth_jobs: int
     max_export_jobs: int
+    max_scan_jobs: int
     export_dir: str
     sessions_dir: str
     proxy_url: str
@@ -37,7 +38,8 @@ class Config:
             url=os.environ.get("WORKER_URL", "http://127.0.0.1:4001"),
             token=os.environ.get("WORKER_TOKEN", "change-me"),
             max_auth_jobs=_int("MAX_AUTH_JOBS", 10),
-            max_export_jobs=_int("MAX_EXPORT_JOBS", 4),
+            max_export_jobs=_int("MAX_EXPORT_JOBS", 8),
+            max_scan_jobs=_int("MAX_SCAN_JOBS", 2),
             export_dir=os.environ.get("EXPORT_DIR", "./export"),
             sessions_dir=os.environ.get("SESSIONS_DIR", "./sessions"),
             proxy_url=os.environ.get("ANYIP_PROXY_URL", os.environ.get("ICLOUD_PROXY_URL", "")),
