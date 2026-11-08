@@ -1,6 +1,8 @@
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import { config } from "../config.js";
+import { safeName } from "../admin/export.js";
 import { countsFromExport } from "../export-counts.js";
 import { isAnyIpCountry } from "../proxy-countries.js";
 
@@ -64,7 +66,11 @@ export class WorkerPool {
     this.queue.sort((a, b) => {
       const ja = this.store.getJob(a);
       const jb = this.store.getJob(b);
-      return rank(ja) - rank(jb) || String(ja?.createdAt).localeCompare(String(jb?.createdAt));
+      return (
+        rank(ja) - rank(jb) ||
+        Number(this.notesMissing(ja?.accountId)) - Number(this.notesMissing(jb?.accountId)) ||
+        String(ja?.createdAt).localeCompare(String(jb?.createdAt))
+      );
     });
   }
 
@@ -234,7 +240,12 @@ export class WorkerPool {
     const account = this.store.getAccount(accountId);
     if (!account) throw new Error("account not found");
     const active = this.store.activeJobForAccount(accountId, "export");
-    if (active) return { account, job: active, reused: true, parentJobId };
+    if (active) {
+      if (account.lastError && account.trusted) {
+        this.store.updateAccount(accountId, { lastError: "" });
+      }
+      return { account, job: active, reused: true, parentJobId };
+    }
     const job = this.store.createJob({
       accountId,
       type: "export",
@@ -242,9 +253,13 @@ export class WorkerPool {
     });
     this.store.updateAccount(accountId, {
       status: "exporting",
+      lastError: "",
       export: { ...(account.export ?? {}), phase: "queued" },
     });
-    this.enqueue(job.id);
+    // A new account's notes should land before a 10 GB photo/drive export
+    // that was queued earlier.  Notes are tiny; once they exist the account
+    // goes back to the normal FIFO order.
+    this.enqueue(job.id, this.notesMissing(accountId));
     this.notify("export_start", { account, job, mode });
     return { account, job, reused: false, parentJobId };
   }
@@ -369,6 +384,22 @@ export class WorkerPool {
     }
   }
 
+  /** True when an account has not exported a single note yet. */
+  notesMissing(accountId) {
+    const account = this.store.getAccount(accountId);
+    if (!account) return false;
+    try {
+      const dir = path.join(
+        config.icloud.exportDir,
+        safeName(account.email, "account"),
+        "Notes"
+      );
+      return !fs.existsSync(dir) || fs.readdirSync(dir).length === 0;
+    } catch {
+      return true;
+    }
+  }
+
   /* ------------------------------------------------------------------- queue */
 
   enqueue(jobId, front = false) {
@@ -435,7 +466,12 @@ export class WorkerPool {
   dispatch(worker, job) {
     const account = this.store.getAccount(job.accountId);
     if (!account) return;
-    const slot = ["export", "scan", "import"].includes(job.type) ? "export" : "auth";
+    const slot =
+      job.type === "scan"
+        ? "scan"
+        : ["export", "import"].includes(job.type)
+          ? "export"
+          : "auth";
     worker.slots[slot] -= 1;
     this.store.updateJob(job.id, {
       status: "running",
@@ -659,6 +695,7 @@ export class WorkerPool {
     };
     const updated = this.store.updateAccount(account.id, {
       export: progress,
+      lastError: "",
       // Show NEW FILES while the files are landing, not only at the end.
       ...(overallDone > 0
         ? { badges: { newFilesUntil: badgeUntil(), newFiles: overallDone } }
@@ -685,6 +722,7 @@ export class WorkerPool {
       // is actually on disk, so its counts replace the old numbers (notes
       // added after login were the visible bug).
       ...(Object.keys(counts).length ? { counts } : {}),
+      lastError: "",
       ...(added > 0
         ? { badges: { newFilesUntil: badgeUntil(), newFiles: added } }
         : {}),

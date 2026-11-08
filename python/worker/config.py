@@ -38,7 +38,7 @@ class Config:
             url=os.environ.get("WORKER_URL", "http://127.0.0.1:4001"),
             token=os.environ.get("WORKER_TOKEN", "change-me"),
             max_auth_jobs=_int("MAX_AUTH_JOBS", 10),
-            max_export_jobs=_int("MAX_EXPORT_JOBS", 8),
+            max_export_jobs=_int("MAX_EXPORT_JOBS", 16),
             max_scan_jobs=_int("MAX_SCAN_JOBS", 2),
             export_dir=os.environ.get("EXPORT_DIR", "./export"),
             sessions_dir=os.environ.get("SESSIONS_DIR", "./sessions"),

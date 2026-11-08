@@ -21,6 +21,8 @@ const account = store.createAccount({
   geo: { ip: "203.0.113.1", country: "Germany", countryCode: "DE" },
 });
 const job = store.createJob({ accountId: account.id, type: "auth" });
+const runningJob = store.createJob({ accountId: account.id, type: "export" });
+store.updateJob(runningJob.id, { status: "running" });
 store.flush();
 
 assert.ok(fs.existsSync(file), "store flush writes the file");
@@ -34,7 +36,8 @@ assert.equal(
   "verify survives a reload"
 );
 assert.equal(reloaded.getAccount(account.id).scan.tiers.valid, 2, "scan survives a reload");
-assert.equal(reloaded.getJob(job.id).status, "unknown", "stale jobs are marked unknown");
+assert.equal(reloaded.getJob(job.id).status, "queued", "queued jobs are recoverable");
+assert.equal(reloaded.getJob(runningJob.id).status, "unknown", "running jobs are marked unknown");
 
 reloaded.updateAccount(account.id, { status: "connected", trusted: true });
 reloaded.flush();

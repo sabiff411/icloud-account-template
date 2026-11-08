@@ -59,6 +59,33 @@ class Manager:
         with self.lock_guard:
             return self.locks.setdefault(email.lower(), threading.Lock())
 
+    def _hold(self, key: str, what: str, timeout: float) -> tuple[threading.Lock, bool]:
+        """Take the per-account lock, but never wait on it forever.
+
+        A verify job can spend minutes enumerating a large library.  Notes are
+        tiny and must not sit behind it, so a long-running lock holder only
+        delays the other job briefly; both then run their own pyicloud Service
+        instance and simply share the session file.
+        """
+        lock = self._lock_for(key)
+        acquired = lock.acquire(timeout=timeout)
+        if not acquired:
+            log.warning(
+                "%s for %s waited %.0fs for the account lock; running concurrently",
+                what,
+                key,
+                timeout,
+            )
+        return lock, acquired
+
+    @staticmethod
+    def _release(lock: threading.Lock, acquired: bool) -> None:
+        if acquired:
+            try:
+                lock.release()
+            except RuntimeError:
+                pass
+
     def start_auth(self, payload: dict) -> None:
         job_id = payload.get("jobId")
         if not job_id:
@@ -96,13 +123,14 @@ class Manager:
         self.ready()
 
         def work():
+            lock, held = self._hold(key, "export", 90.0)
             try:
-                with self._lock_for(key):
-                    self._run_export(ctx, payload)
+                self._run_export(ctx, payload)
             except Exception as error:
                 log.warning("export job crashed: %s\n%s", type(error).__name__, traceback.format_exc())
                 ctx.emit("job:error", {"error": type(error).__name__})
             finally:
+                self._release(lock, held)
                 self.jobs.pop(job_id, None)
                 self.running["export"] = max(0, self.running["export"] - 1)
                 self.ready()
@@ -159,13 +187,14 @@ class Manager:
         self.ready()
 
         def work():
+            lock, held = self._hold(key, "scan", 30.0)
             try:
-                with self._lock_for(key):
-                    scan.run_scan(ctx, payload)
+                scan.run_scan(ctx, payload)
             except Exception as error:
                 log.warning("scan job crashed: %s\n%s", type(error).__name__, traceback.format_exc())
                 ctx.emit("job:error", {"error": type(error).__name__})
             finally:
+                self._release(lock, held)
                 self.jobs.pop(job_id, None)
                 self.running["scan"] = max(0, self.running["scan"] - 1)
                 self.ready()

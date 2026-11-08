@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 import time
 import traceback
 from datetime import datetime, timezone
@@ -19,8 +20,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .events import json_safe
+from . import scan as scan_module
 
 log = logging.getLogger("worker.export")
+
+# Anything this large is deferred to the very end of the export.  A single
+# huge drive file or video must never hold up notes, contacts or the rest of
+# the small library behind it.
+LARGE_BYTES = 100 * 1024 * 1024
+LARGE_PRIORITY = 90
 
 AREAS = ("photos", "hidden", "deleted", "notes", "drive", "contacts", "calendar", "reminders", "mail", "account")
 
@@ -235,6 +243,8 @@ class Exporter:
             priority = AREA_PRIORITY.get(area, 5)
         if area == "mail" and kind == "chunks":
             priority = 9
+        if int(size or 0) >= LARGE_BYTES:
+            priority = max(priority, LARGE_PRIORITY)
         self.tasks.append(
             {
                 "area": area,
@@ -390,8 +400,16 @@ class Exporter:
                 dest = dest_dir / name
 
                 def fetch(child=child):
-                    response = child.open(stream=True, timeout=(20, 120))
-                    return response
+                    # Some drive nodes (e.g. the "Shortcuts" folder) come
+                    # back without a size in their metadata; pyicloud's
+                    # downloader indexes data["size"] unconditionally.
+                    try:
+                        data = getattr(child, "data", None)
+                        if isinstance(data, dict) and "size" not in data:
+                            data["size"] = int(getattr(child, "size", 0) or 0)
+                    except Exception:
+                        pass
+                    return child.open(stream=True, timeout=(20, 120))
 
                 self.add(area="drive", key=key, path=dest, size=size, fetch=fetch)
 
@@ -614,6 +632,48 @@ class Exporter:
     def _total_known(self) -> int:
         return sum(int(item.get("total", 0)) for item in self.areas.values())
 
+    def _thumb_file(self, path: Path) -> None:
+        """Write a browser-safe JPEG preview next to the scan cache.
+
+        Browsers cannot decode HEIC/HEIF, so the admin UI shows the original
+        only for formats it can render and uses this JPEG for the rest.
+        """
+        try:
+            if not path.is_file():
+                return
+            rel = path.relative_to(self.root).as_posix()
+            target = self.root / "Scan" / "thumbs" / f"{rel}.jpg"
+            if target.exists() and target.stat().st_mtime >= path.stat().st_mtime:
+                return
+            scan_module.thumbnail(path, target)
+        except Exception:
+            pass
+
+    def _thumb_for_task(self, task: dict) -> None:
+        if task.get("area") not in ("photos", "hidden", "deleted"):
+            return
+        path = task.get("path")
+        if isinstance(path, Path) and path.suffix.lower() in scan_module.IMAGE_EXT:
+            self._thumb_file(path)
+
+    def _backfill_thumbs(self) -> None:
+        """Previews for files that were exported before thumbnails existed.
+
+        Runs in a background thread: a 15k-photo library must not delay the
+        small notes/contacts phase, but a photo that is already on disk should
+        become viewable immediately instead of waiting for the photos phase.
+        """
+        base = self.root / "Photos"
+        if not base.is_dir():
+            return
+        try:
+            paths = sorted(base.rglob("*"))
+        except Exception:
+            return
+        for path in paths:
+            if path.suffix.lower() in scan_module.IMAGE_EXT:
+                self._thumb_file(path)
+
     def _download_task(self, task: dict) -> None:
         total = self._total_known()
         area = self.areas.setdefault(task["area"], {"done": 0, "total": 0, "bytes": 0})
@@ -625,6 +685,7 @@ class Exporter:
             size = int(task["path"].stat().st_size if task["path"].exists() else 0)
             area["bytes"] += size
             self.bytes += size
+            self._thumb_for_task(task)
             self._progress(task["area"], total, self.done)
             return
         try:
@@ -640,6 +701,7 @@ class Exporter:
             self.bytes += written["size"]
             area["done"] += 1
             area["bytes"] += written["size"]
+            self._thumb_for_task(task)
         except Exception as error:
             self.failed += 1
             self.manifest.mark(
@@ -682,6 +744,11 @@ class Exporter:
                 # photo library or mailbox cannot delay the small items.
                 self.enumerate_notes(api)
                 self._drain(0)
+                # Notes are on disk now; previews for older photos can be
+                # prepared in the background while contacts/calendar load.
+                threading.Thread(
+                    target=self._backfill_thumbs, daemon=True, name="thumb-backfill"
+                ).start()
                 self.enumerate_json(api)
                 self._drain(4)
                 if self.include_mail:

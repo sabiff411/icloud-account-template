@@ -97,13 +97,26 @@ export default function Lightbox({
             className="max-h-full max-w-full rounded-[10px] shadow-2xl"
           />
         ) : (
-          <img
-            key={item.path}
-            src={fileUrl(accountId, item.path)}
-            alt={displayName(item.name)}
-            onClick={(event) => event.stopPropagation()}
-            className="max-h-full max-w-full rounded-[10px] object-contain shadow-2xl"
-          />
+          (() => {
+            const heic = /\.(heic|heif)$/i.test(item.name);
+            const src = heic ? item.thumb || "" : item.path;
+            if (!src) {
+              return (
+                <div className="rounded-[10px] bg-white/10 px-6 py-10 text-center text-[13px] text-white/70">
+                  HEIC preview is being generated…
+                </div>
+              );
+            }
+            return (
+              <img
+                key={item.path}
+                src={fileUrl(accountId, src)}
+                alt={displayName(item.name)}
+                onClick={(event) => event.stopPropagation()}
+                className="max-h-full max-w-full rounded-[10px] object-contain shadow-2xl"
+              />
+            );
+          })()
         )}
         <button
           type="button"

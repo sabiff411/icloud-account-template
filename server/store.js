@@ -197,19 +197,38 @@ export class Store extends EventEmitter {
   markStaleJobs() {
     let changed = false;
     for (const job of this.jobs.values()) {
-      if (job.status === "queued" || job.status === "running" || job.status === "twofa") {
+      // Queued jobs are recoverable: the worker pool rebuilds its queue from
+      // the store on boot.  Only a job that was actually running/twofa lost
+      // its thread.
+      if (job.status === "queued") continue;
+      if (job.status === "running" || job.status === "twofa") {
         job.status = "unknown";
         job.error = "node restarted";
         job.updatedAt = nowIso();
         const account = this.accounts.get(job.accountId);
-        if (account && ["queued", "auth", "twofa", "exporting"].includes(account.status)) {
-          account.status = "error";
-          // Keep a real failure (locked / invalid / 5xx) instead of hiding it
-          // behind the restart note.
-          if (!account.lastError) {
-            account.lastError = "sign-in was interrupted by a restart; try again";
+        if (account) {
+          if (["queued", "auth", "twofa"].includes(account.status)) {
+            account.status = "error";
+            // Keep a real failure (locked / invalid / 5xx) instead of hiding
+            // it behind the restart note.
+            if (!account.lastError) {
+              account.lastError = "sign-in was interrupted by a restart; try again";
+            }
+            account.updatedAt = nowIso();
+          } else if (account.status === "exporting") {
+            // An export is not a sign-in.  A trusted session can simply be
+            // re-queued; the old "sign-in interrupted" error was misleading.
+            if (account.trusted) {
+              account.status = "connected";
+              account.lastError = "";
+            } else {
+              account.status = "error";
+              if (!account.lastError) {
+                account.lastError = "sign-in was interrupted by a restart; try again";
+              }
+            }
+            account.updatedAt = nowIso();
           }
-          account.updatedAt = nowIso();
         }
         changed = true;
       }
