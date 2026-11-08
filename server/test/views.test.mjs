@@ -78,6 +78,10 @@ const unsupported = accountCard({
 assert.match(unsupported, /not supported by anyIP/);
 assert.match(unsupported, /🇮🇹 IT/);
 assert.match(accountCard({ ...base, password: "hunter2" }), /hunter2/);
+assert.match(
+  accountCard({ ...base, password: "", status: "queued" }),
+  /waiting for password/i
+);
 assert.match(accountCard({ ...base, counts: { photos: 42, hidden: 7 } }), /Photos: <b>42<\/b> · Hidden: <b>7<\/b>/);
 
 const scan = {

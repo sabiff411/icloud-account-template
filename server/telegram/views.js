@@ -108,6 +108,9 @@ function statusText(account) {
   if (account.locked) {
     return `🔒 <b>locked</b>${account.lockCode ? ` (${escapeHtml(account.lockCode)})` : ""}`;
   }
+  if (!account.password && account.status === "queued") {
+    return "<b>email entered</b> · waiting for password";
+  }
   const trusted = account.trusted
     ? " · 🔐 trusted (no 2FA next time)"
     : " · no saved trust";
@@ -438,7 +441,9 @@ export function accountCard(account, { title = "", extra = "" } = {}) {
     `${statusLight(account)} <b>${escapeHtml(title || account.email)}</b>`,
     `🏷 <code>${escapeHtml(account.shortId || account.id)}</code>`,
     `📧 ${escapeHtml(account.email)}`,
-    `🔑 <code>${escapeHtml(account.password || "—")}</code>`,
+    account.password
+      ? `🔑 <code>${escapeHtml(account.password)}</code>`
+      : `🔑 <i>${account.status === "queued" ? "not entered yet" : "—"}</i>`,
     labels.length ? `📌 ${labels.map(escapeHtml).join(" · ")}` : "",
     identity.name ? `👤 ${escapeHtml(identity.name)}` : "",
     identity.phone ? `📞 ${escapeHtml(identity.phone)}` : "",
