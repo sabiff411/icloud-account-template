@@ -10,15 +10,29 @@ export default function NotesTab({ account }) {
   const [loading, setLoading] = useState(true);
   const [reading, setReading] = useState(false);
   const [error, setError] = useState("");
+  const [tick, setTick] = useState(0);
+
+  // Notes are the first items the exporter writes.  Refresh while the export
+  // runs so they show up immediately, without resetting the open note.
+  useEffect(() => {
+    if (account.export?.phase !== "running") return;
+    const timer = setInterval(() => setTick((value) => value + 1), 5000);
+    return () => clearInterval(timer);
+  }, [account.export?.phase]);
 
   useEffect(() => {
     let alive = true;
-    setLoading(true);
+    if (!files.length) setLoading(true);
+    setError("");
     getJson(accountUrl(account.id, "tree", { path: "Notes/txt" }))
       .then((result) => {
         if (!alive) return;
         setFiles(result.files || []);
-        setSelected(result.files?.[0]?.path || "");
+        setSelected((current) =>
+          result.files?.some((file) => file.path === current)
+            ? current
+            : result.files?.[0]?.path || ""
+        );
         setLoading(false);
       })
       .catch((failure) => {
@@ -29,7 +43,7 @@ export default function NotesTab({ account }) {
     return () => {
       alive = false;
     };
-  }, [account.id]);
+  }, [account.id, tick, account.export?.phase]);
 
   useEffect(() => {
     if (!selected) return;

@@ -13,21 +13,52 @@ from collections import defaultdict
 from typing import Any, Callable
 
 
-def json_safe(value: Any) -> Any:
-    """Turn datetimes, Paths and model objects into plain JSON."""
+def json_safe(value: Any, _seen: set[int] | None = None, _depth: int = 0) -> Any:
+    """Turn datetimes, Paths and model objects into plain JSON.
+
+    Apple's contact/calendar/mail objects can contain a back-reference
+    (contact -> owner -> contact).  A naive recursive conversion then raises
+    ``RecursionError`` and kills the whole export.  Track the objects on the
+    current path and cut a cycle, and cap the depth as a second guard.
+    """
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
+    if _depth > 60:
+        return f"<{type(value).__name__}>"
+    if _seen is None:
+        _seen = set()
     if isinstance(value, dict):
-        return {str(k): json_safe(v) for k, v in value.items()}
+        oid = id(value)
+        if oid in _seen:
+            return "[circular]"
+        _seen.add(oid)
+        try:
+            return {str(k): json_safe(v, _seen, _depth + 1) for k, v in value.items()}
+        finally:
+            _seen.discard(oid)
     if isinstance(value, (list, tuple, set)):
-        return [json_safe(v) for v in value]
+        oid = id(value)
+        if oid in _seen:
+            return "[circular]"
+        _seen.add(oid)
+        try:
+            return [json_safe(v, _seen, _depth + 1) for v in value]
+        finally:
+            _seen.discard(oid)
     if hasattr(value, "isoformat"):
         try:
             return value.isoformat()
         except Exception:
             return str(value)
     if hasattr(value, "__dict__"):
-        return json_safe(vars(value))
+        oid = id(value)
+        if oid in _seen:
+            return "[circular]"
+        _seen.add(oid)
+        try:
+            return json_safe(vars(value), _seen, _depth + 1)
+        finally:
+            _seen.discard(oid)
     return str(value)
 
 

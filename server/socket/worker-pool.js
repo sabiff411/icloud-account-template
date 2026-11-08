@@ -610,18 +610,30 @@ export class WorkerPool {
     if (!job || job.workerId !== socket.id) return;
     const account = this.store.getAccount(job.accountId);
     if (!account) return;
+    const overallDone = Number(payload.overallDone) || 0;
+    const overallTotal = Number(payload.overallTotal) || 0;
     const progress = {
       phase: "running",
       area: payload.area ?? "",
-      done: Number(payload.done) || 0,
-      total: Number(payload.total) || 0,
+      // The header/bar are the whole export; areaDone/areaTotal keep the
+      // per-area detail available for the tabs.
+      done: overallDone,
+      total: overallTotal,
       bytes: Number(payload.bytes) || 0,
-      overallDone: Number(payload.overallDone) || 0,
-      overallTotal: Number(payload.overallTotal) || 0,
+      areaDone: Number(payload.done) || 0,
+      areaTotal: Number(payload.total) || 0,
+      overallDone,
+      overallTotal,
       areas: payload.areas ?? account.export?.areas ?? {},
       startedAt: account.export?.startedAt ?? new Date().toISOString(),
     };
-    const updated = this.store.updateAccount(account.id, { export: progress });
+    const updated = this.store.updateAccount(account.id, {
+      export: progress,
+      // Show NEW FILES while the files are landing, not only at the end.
+      ...(overallDone > 0
+        ? { badges: { newFilesUntil: badgeUntil(), newFiles: overallDone } }
+        : {}),
+    });
     this.emitAccount(updated, "export:progress", progress);
     this.notify("export_progress", { account: updated, job, progress });
   }

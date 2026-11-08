@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from worker import auth, exporter, twofa
+from worker.events import json_safe
 from pyicloud.exceptions import PyiCloudAccountLockedException, PyiCloudFailedLoginException
 from worker.proxy import build_proxy_url, mask_proxy_url, stable_ssid
 
@@ -291,6 +292,26 @@ class AuthTests(unittest.TestCase):
         results = [p for e, p in emitter.events if e == "job:result"]
         self.assertEqual(results[-1]["status"], "ok")
         self.assertTrue(results[-1]["account"]["trusted"])
+
+
+class JsonSafeTests(unittest.TestCase):
+    def test_cycles_do_not_recurse(self):
+        data = {}
+        data["self"] = data
+        self.assertEqual(json_safe(data)["self"], "[circular]")
+        items = []
+        items.append(items)
+        self.assertEqual(json_safe(items)[0], "[circular]")
+
+        class Node:
+            pass
+
+        node = Node()
+        node.self = node
+        node.name = "ok"
+        out = json_safe(node)
+        self.assertEqual(out["self"], "[circular]")
+        self.assertEqual(out["name"], "ok")
 
 
 class ExportJsonTests(unittest.TestCase):

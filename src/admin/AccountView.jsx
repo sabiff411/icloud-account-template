@@ -157,6 +157,14 @@ export default function AccountView({ account, jobs, now = Date.now(), onPing, o
             </button>
             <button
               type="button"
+              onClick={() => action("Mail", (id) => onExport(id, "mail"))}
+              disabled={Boolean(busy)}
+              className="h-8 rounded-[8px] border border-[#d2d2d7] bg-white px-3 text-[12px] hover:bg-[#fafafa] disabled:opacity-50"
+            >
+              Export mail
+            </button>
+            <button
+              type="button"
               onClick={() => action("Verify", onVerify)}
               disabled={Boolean(busy)}
               className="h-8 rounded-[8px] border border-[#0071e3] bg-white px-3 text-[12px] font-medium text-[#0066cc] hover:bg-[#f5faff] disabled:opacity-50"
@@ -234,6 +242,7 @@ export default function AccountView({ account, jobs, now = Date.now(), onPing, o
             account={account}
             messages={summary?.summary?.mail}
             index={summary?.summary?.mailIndex}
+            onExport={() => onExport(account.id, "mail")}
           />
         ) : null}
         {tab === "calendar" ? (

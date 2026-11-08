@@ -16,6 +16,16 @@ export default function PhotosTab({ account }) {
   const [error, setError] = useState("");
   const [open, setOpen] = useState(null);
   const [pending, setPending] = useState(null);
+  const [tick, setTick] = useState(0);
+
+  // The exporter writes each photo as soon as it is downloaded.  While an
+  // export is running, refresh the gallery so new files appear immediately
+  // instead of after the whole (possibly huge) library finishes.
+  useEffect(() => {
+    if (account.export?.phase !== "running") return;
+    const timer = setInterval(() => setTick((value) => value + 1), 5000);
+    return () => clearInterval(timer);
+  }, [account.export?.phase]);
 
   useEffect(() => {
     let alive = true;
@@ -44,7 +54,7 @@ export default function PhotosTab({ account }) {
 
   useEffect(() => {
     let alive = true;
-    setLoading(true);
+    if (!data.items.length) setLoading(true);
     setError("");
     getJson(accountUrl(account.id, "gallery", { area, q: query, page, pageSize: 60 }))
       .then((result) => {
@@ -60,7 +70,7 @@ export default function PhotosTab({ account }) {
     return () => {
       alive = false;
     };
-  }, [account.id, area, query, page]);
+  }, [account.id, area, query, page, tick, account.export?.phase]);
 
   // A page change requested from the lightbox opens its first/last item.
   useEffect(() => {
@@ -158,6 +168,11 @@ export default function PhotosTab({ account }) {
                 {item.video ? (
                   <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1 text-[9px] text-white">
                     video
+                  </span>
+                ) : null}
+                {item.mtime && Date.now() - Number(item.mtime) < 10 * 60 * 1000 ? (
+                  <span className="absolute right-1 top-1 rounded bg-[#0071e3] px-1 text-[9px] font-medium text-white">
+                    NEW
                   </span>
                 ) : null}
                 {area === "All" && item.area ? (

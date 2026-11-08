@@ -13,6 +13,7 @@ import logging
 import re
 import sqlite3
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -22,6 +23,22 @@ from .events import json_safe
 log = logging.getLogger("worker.export")
 
 AREAS = ("photos", "hidden", "deleted", "notes", "drive", "contacts", "calendar", "reminders", "mail", "account")
+
+# Small, high-value data first; photos and mail attachments last.  The
+# dashboard then shows notes/contacts/calendar while a large library is still
+# downloading.
+AREA_PRIORITY = {
+    "notes": 0,
+    "contacts": 1,
+    "calendar": 2,
+    "reminders": 3,
+    "account": 4,
+    "mail": 5,
+    "drive": 6,
+    "photos": 7,
+    "hidden": 8,
+    "deleted": 8,
+}
 
 VIDEO_EXT = {".mov", ".mp4", ".m4v", ".3gp", ".avi", ".mkv", ".webm"}
 
@@ -184,6 +201,9 @@ class Exporter:
     def __init__(self, ctx, *, export_dir: str, mode: str = "missing"):
         self.ctx = ctx
         self.mode = mode
+        self.force = mode in ("force", "mail-force", "all-force")
+        self.only_mail = mode in ("mail", "mail-force")
+        self.include_mail = mode in ("mail", "mail-force", "all", "all-force")
         self.root = Path(export_dir) / safe_name(ctx.account.get("email", "account"))
         self.root.mkdir(parents=True, exist_ok=True)
         self.manifest = Manifest(self.root / "manifest.sqlite3")
@@ -207,9 +227,14 @@ class Exporter:
         size: int,
         fetch: Callable[[], Any],
         kind: str = "stream",
+        priority: int | None = None,
     ):
         if not contained(self.root, path):
             path = self.root / safe_name(path.name)
+        if priority is None:
+            priority = AREA_PRIORITY.get(area, 5)
+        if area == "mail" and kind == "chunks":
+            priority = 9
         self.tasks.append(
             {
                 "area": area,
@@ -218,6 +243,7 @@ class Exporter:
                 "size": int(size or 0),
                 "fetch": fetch,
                 "kind": kind,
+                "priority": priority,
             }
         )
         self.areas.setdefault(area, {"done": 0, "total": 0, "bytes": 0})
@@ -250,21 +276,30 @@ class Exporter:
                 album = api.photos.albums[album_name]
             except Exception:
                 continue
-            self._add_album(api, album, area, album_name, seen)
+            try:
+                self._add_album(api, album, area, album_name, seen)
+                self._drain(8)
+            except Exception as error:
+                log.info("photo album failed: %s", type(error).__name__)
         try:
             for album in albums:
                 name = str(getattr(album, "name", "") or "album")
                 if name in ("Hidden", "Recently Deleted", "Library"):
                     continue
-                self._add_album(api, album, "photos", name, seen)
+                try:
+                    self._add_album(api, album, "photos", name, seen)
+                    self._drain(8)
+                except Exception as error:
+                    log.info("photo album failed: %s", type(error).__name__)
         except Exception:
             pass
 
     def _add_album(self, api, album, area: str, album_name: str, seen: set[str]):
         try:
-            assets = list(album)
+            assets = iter(album)
         except Exception:
             return
+        count = 0
         for asset in assets:
             asset_id = str(getattr(asset, "id", "") or "")
             if not asset_id or asset_id in seen:
@@ -295,8 +330,14 @@ class Exporter:
                     fetch=fetch,
                     kind="stream",
                 )
+                count += 1
+                # Start downloading after every 50 assets, so the dashboard
+                # shows new images while a 15k-photo album is still listing.
+                if count % 50 == 0:
+                    self._drain(8)
             except Exception as error:
                 log.info("photo enumerate failed: %s", type(error).__name__)
+        self._drain(8)
 
     def enumerate_notes(self, api):
         try:
@@ -570,48 +611,90 @@ class Exporter:
 
     # ------------------------------------------------------------------ run
 
+    def _total_known(self) -> int:
+        return sum(int(item.get("total", 0)) for item in self.areas.values())
+
+    def _download_task(self, task: dict) -> None:
+        total = self._total_known()
+        area = self.areas.setdefault(task["area"], {"done": 0, "total": 0, "bytes": 0})
+        if not self.force and not self.manifest.needs(
+            task["key"], task["path"], task["size"]
+        ):
+            self.done += 1
+            area["done"] += 1
+            size = int(task["path"].stat().st_size if task["path"].exists() else 0)
+            area["bytes"] += size
+            self.bytes += size
+            self._progress(task["area"], total, self.done)
+            return
+        try:
+            written = self.download(task)
+            self.manifest.mark(
+                task["key"],
+                task["area"],
+                task["path"],
+                written["size"],
+                written["sha256"],
+            )
+            self.done += 1
+            self.bytes += written["size"]
+            area["done"] += 1
+            area["bytes"] += written["size"]
+        except Exception as error:
+            self.failed += 1
+            self.manifest.mark(
+                task["key"], task["area"], task["path"], 0, "", status="failed"
+            )
+            log.info(
+                "export item failed: %s %s\n%s",
+                task.get("key"),
+                type(error).__name__,
+                traceback.format_exc(),
+            )
+        self._progress(task["area"], total, self.done)
+
+    def _drain(self, max_priority: int) -> None:
+        """Download the pending tasks at or below a priority, small first."""
+        ready = [task for task in self.tasks if task.get("priority", 5) <= max_priority]
+        if not ready:
+            return
+        pending = set(id(task) for task in ready)
+        self.tasks = [task for task in self.tasks if id(task) not in pending]
+        ready.sort(key=lambda task: (task.get("priority", 5), int(task.get("size", 0) or 0)))
+        cancel = getattr(self.ctx, "cancel", None)
+        for task in ready:
+            if cancel is not None and cancel.is_set():
+                return
+            self._download_task(task)
+
     def run(self) -> dict:
         api = self.ctx.api
         seen: set[str] = set()
         if api is not None:
-            self.enumerate_photos(api, seen)
-            self.enumerate_notes(api)
-            self.enumerate_drive(api)
-            self.enumerate_mail(api)
-            self.enumerate_json(api)
+            if self.only_mail:
+                # Mail is large and optional: only the explicit "Export mail"
+                # button reaches this path.
+                self.enumerate_mail(api)
+                self._drain(99)
+            else:
+                # Notes first, then contacts/calendar/reminders/account.  Each
+                # phase drains before the next enumeration starts, so a large
+                # photo library or mailbox cannot delay the small items.
+                self.enumerate_notes(api)
+                self._drain(0)
+                self.enumerate_json(api)
+                self._drain(4)
+                if self.include_mail:
+                    self.enumerate_mail(api)
+                    self._drain(5)
+                self.enumerate_drive(api)
+                self._drain(6)
+                self.enumerate_photos(api, seen)
+                self._drain(99)
+        else:
+            self._drain(99)
 
-        total = len(self.tasks)
-        for index, task in enumerate(self.tasks, 1):
-            if self.mode != "force" and not self.manifest.needs(
-                task["key"], task["path"], task["size"]
-            ):
-                self.done += 1
-                area = self.areas[task["area"]]
-                area["done"] += 1
-                area["bytes"] += int(task["path"].stat().st_size if task["path"].exists() else 0)
-                self.bytes += int(task["path"].stat().st_size if task["path"].exists() else 0)
-                self._progress(task["area"], total, index)
-                continue
-            try:
-                written = self.download(task)
-                self.manifest.mark(
-                    task["key"],
-                    task["area"],
-                    task["path"],
-                    written["size"],
-                    written["sha256"],
-                )
-                self.done += 1
-                self.bytes += written["size"]
-                self.areas[task["area"]]["done"] += 1
-                self.areas[task["area"]]["bytes"] += written["size"]
-            except Exception as error:
-                self.failed += 1
-                self.manifest.mark(
-                    task["key"], task["area"], task["path"], 0, "", status="failed"
-                )
-                log.info("export item failed: %s", type(error).__name__)
-            self._progress(task["area"], total, index)
+        total = self._total_known()
 
         totals = {
             "done": self.done,
@@ -659,14 +742,19 @@ class Exporter:
             try:
                 result = task["fetch"]()
                 if task["kind"] == "bytes":
-                    data = result
+                    data = result.encode("utf-8") if isinstance(result, str) else result
                     with tmp.open("wb") as stream:
                         stream.write(data)
                 elif task["kind"] == "chunks":
                     with tmp.open("wb") as stream:
-                        for chunk in result:
-                            if chunk:
-                                stream.write(chunk)
+                        if isinstance(result, (bytes, bytearray, memoryview)):
+                            stream.write(result)
+                        elif isinstance(result, str):
+                            stream.write(result.encode("utf-8"))
+                        else:
+                            for chunk in result:
+                                if chunk:
+                                    stream.write(chunk)
                 else:
                     with tmp.open("wb") as stream:
                         response = result

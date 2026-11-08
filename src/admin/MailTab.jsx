@@ -8,7 +8,7 @@ function pretty(value) {
   return String(value);
 }
 
-export default function MailTab({ account, messages, index }) {
+export default function MailTab({ account, messages, index, onExport }) {
   const [filter, setFilter] = useState("");
   const [selected, setSelected] = useState(null);
   const [body, setBody] = useState("");
@@ -63,8 +63,22 @@ export default function MailTab({ account, messages, index }) {
 
   if (!Array.isArray(messages) || !messages.length) {
     return (
-      <Empty title="Mail is not exported yet">
-        Run Export missing to fetch folders and messages.
+      <Empty
+        title="Mail is not exported yet"
+        action={
+          onExport ? (
+            <button
+              type="button"
+              onClick={onExport}
+              className="mt-1 h-8 rounded-[8px] bg-[#0071e3] px-3 text-[12px] font-medium text-white hover:bg-[#0077ed]"
+            >
+              Export mail
+            </button>
+          ) : null
+        }
+      >
+        Mail is optional and can be large. Click Export mail to fetch folders and
+        messages; it is not downloaded by the normal Export missing/Redownload.
       </Empty>
     );
   }

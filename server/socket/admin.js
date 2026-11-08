@@ -32,7 +32,7 @@ const importCommand = z.object({
 
 const exportCommand = z.object({
   id: z.string().min(1).max(80),
-  mode: z.enum(["missing", "force"]).default("missing"),
+  mode: z.enum(["missing", "force", "mail", "mail-force", "all"]).default("missing"),
 });
 
 const pingCommand = z.object({

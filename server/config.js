@@ -112,7 +112,7 @@ export const config = {
     token: process.env.WORKER_TOKEN ?? "change-me",
     url: process.env.WORKER_URL ?? `http://127.0.0.1:${int(process.env.SOCKET_PORT, 4001)}`,
     maxAuthJobs: int(process.env.MAX_AUTH_JOBS, 10),
-    maxExportJobs: int(process.env.MAX_EXPORT_JOBS, 4),
+    maxExportJobs: int(process.env.MAX_EXPORT_JOBS, 8),
     maxQueue: int(process.env.MAX_QUEUE, 500),
     // Start a resumable export as soon as an account finishes authenticating.
     // The operator can still trigger "redownload missing" manually.

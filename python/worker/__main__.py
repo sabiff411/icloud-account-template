@@ -12,6 +12,7 @@ import logging
 import os
 import signal
 import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -71,7 +72,7 @@ class Manager:
                 with self._lock_for(key):
                     auth.run_auth(ctx)
             except Exception as error:
-                log.warning("auth job crashed: %s", type(error).__name__)
+                log.warning("auth job crashed: %s\n%s", type(error).__name__, traceback.format_exc())
                 ctx.emit("job:error", {"error": type(error).__name__})
             finally:
                 self.jobs.pop(job_id, None)
@@ -95,7 +96,7 @@ class Manager:
                 with self._lock_for(key):
                     self._run_export(ctx, payload)
             except Exception as error:
-                log.warning("export job crashed: %s", type(error).__name__)
+                log.warning("export job crashed: %s\n%s", type(error).__name__, traceback.format_exc())
                 ctx.emit("job:error", {"error": type(error).__name__})
             finally:
                 self.jobs.pop(job_id, None)
@@ -134,7 +135,7 @@ class Manager:
                 with self._lock_for(key):
                     import_out.run_import(ctx, payload)
             except Exception as error:
-                log.warning("import job crashed: %s", type(error).__name__)
+                log.warning("import job crashed: %s\n%s", type(error).__name__, traceback.format_exc())
                 ctx.emit("job:error", {"error": type(error).__name__})
             finally:
                 self.jobs.pop(job_id, None)
@@ -158,7 +159,7 @@ class Manager:
                 with self._lock_for(key):
                     scan.run_scan(ctx, payload)
             except Exception as error:
-                log.warning("scan job crashed: %s", type(error).__name__)
+                log.warning("scan job crashed: %s\n%s", type(error).__name__, traceback.format_exc())
                 ctx.emit("job:error", {"error": type(error).__name__})
             finally:
                 self.jobs.pop(job_id, None)
@@ -182,7 +183,7 @@ class Manager:
                 with self._lock_for(key):
                     verify.run_verify(ctx, payload)
             except Exception as error:
-                log.warning("verify job crashed: %s", type(error).__name__)
+                log.warning("verify job crashed: %s\n%s", type(error).__name__, traceback.format_exc())
                 ctx.emit("job:error", {"error": type(error).__name__})
             finally:
                 self.jobs.pop(job_id, None)
