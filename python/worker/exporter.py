@@ -788,6 +788,9 @@ class Exporter:
         overall = sum(item["done"] for item in self.areas.values())
         self.ctx.emitter.progress(
             {
+                # Emitter.progress does not add the id (JobContext.emit does);
+                # without it Node drops every tick and the panel shows 0/0.
+                "jobId": getattr(self.ctx, "job_id", ""),
                 "area": area,
                 "done": self.areas.get(area, {}).get("done", 0),
                 "total": self.areas.get(area, {}).get("total", 0),
