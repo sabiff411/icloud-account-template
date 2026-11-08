@@ -182,6 +182,32 @@ def compare(live: dict, ids: dict, exported: dict) -> dict:
     return {"areas": areas, "missing": missing}
 
 
+def exported_content_counts(root, exported: dict) -> dict:
+    """Manifest area counts plus content counts for contacts/calendar/reminders.
+
+    The manifest has one row for contacts.json, one for calendars.json and one
+    for reminders.json; comparing those file counts with live contact/calendar/
+    reminder totals produced false "missing" badges.  Read the JSON files for
+    the real totals.
+    """
+    merged = dict(exported or {})
+    areas = {
+        area: {"done": int(count or 0), "bytes": 0}
+        for area, count in merged.items()
+    }
+    try:
+        content = exporter.collect_counts(Path(root), areas)
+    except Exception:
+        return merged
+    if "contacts" in content:
+        merged["contacts"] = content["contacts"]
+    if "calendars" in content:
+        merged["calendar"] = content["calendars"]
+    if "reminders" in content:
+        merged["reminders"] = content["reminders"]
+    return merged
+
+
 def run_verify(ctx, payload: dict) -> None:
     from . import auth
 
@@ -202,5 +228,6 @@ def run_verify(ctx, payload: dict) -> None:
         ctx.account.get("email", "account")
     )
     ids, exported = manifest_ids(root / "manifest.sqlite3")
+    exported = exported_content_counts(root, exported)
     result = compare(live, ids, exported)
     ctx.emit("job:verify_result", result)

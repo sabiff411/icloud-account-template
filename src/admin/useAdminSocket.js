@@ -24,6 +24,7 @@ const initial = {
   accountPages: 1,
   accountPageSize: 50,
   accountsQuery: "",
+  accountScope: "visible",
   accountStats: null,
   jobs: null,
   workers: null,
@@ -78,12 +79,13 @@ export function useAdminSocket() {
   );
 
   const loadAccounts = useCallback(
-    async (page = 1, query = "") => {
+    async (page = 1, query = "", scope = state.accountScope) => {
       try {
         const result = await emit("admin:accounts", {
           page,
           pageSize: state.accountPageSize,
           query,
+          scope,
         });
         setState((prev) => ({
           ...prev,
@@ -92,6 +94,7 @@ export function useAdminSocket() {
           accountPage: result.accounts.page,
           accountPages: result.accounts.pages,
           accountsQuery: query,
+          accountScope: scope,
           accountStats: result.stats ?? prev.accountStats,
           jobs: result.jobs ?? prev.jobs,
           workers: result.workers ?? prev.workers,
@@ -100,7 +103,7 @@ export function useAdminSocket() {
         note(error.message);
       }
     },
-    [emit, note, state.accountPageSize]
+    [emit, note, state.accountPageSize, state.accountScope]
   );
 
   const connect = useCallback(
@@ -179,16 +182,28 @@ export function useAdminSocket() {
       // keep a detail drawer in sync.
       socket.on("admin:account", ({ account, stats: accountStats }) => {
         setState((prev) => {
+          const scope = prev.accountScope;
+          const matches =
+            scope === "all" ||
+            (scope === "hidden" ? account.hidden : !account.hidden);
           const exists = prev.accounts.some((item) => item.id === account.id);
+          let accounts = prev.accounts;
+          if (!matches) {
+            accounts = prev.accounts.filter((item) => item.id !== account.id);
+          } else if (exists) {
+            accounts = prev.accounts.map((item) =>
+              item.id === account.id ? account : item
+            );
+          } else if (prev.accountPage === 1) {
+            accounts = [account, ...prev.accounts].slice(0, prev.accountPageSize);
+          }
           return {
             ...prev,
             accountStats: accountStats ?? prev.accountStats,
-            accounts: exists
-              ? prev.accounts.map((item) => (item.id === account.id ? account : item))
-              : prev.accountPage === 1
-                ? [account, ...prev.accounts].slice(0, prev.accountPageSize)
-                : prev.accounts,
-            accountsTotal: exists ? prev.accountsTotal : prev.accountsTotal + 1,
+            accounts,
+            accountsTotal:
+              prev.accountsTotal +
+              (matches && !exists ? 1 : !matches && exists ? -1 : 0),
             selectedAccount:
               prev.selectedAccount?.id === account.id
                 ? { ...prev.selectedAccount, ...account }
@@ -329,12 +344,56 @@ export function useAdminSocket() {
     [emit, note]
   );
 
+  const hideAccount = useCallback(
+    async (id, hidden = true) => {
+      try {
+        const result = await emit("admin:hide", { id, hidden });
+        setState((prev) => ({
+          ...prev,
+          selectedAccount:
+            prev.selectedAccount?.id === id
+              ? { ...prev.selectedAccount, ...result.account }
+              : prev.selectedAccount,
+        }));
+        note(hidden ? "account hidden (files kept)" : "account shown again");
+        await loadAccounts(state.accountPage, state.accountsQuery, state.accountScope);
+      } catch (error) {
+        note(error.message);
+      }
+    },
+    [emit, note, loadAccounts, state.accountPage, state.accountsQuery, state.accountScope]
+  );
+
+  const hideAll = useCallback(async () => {
+    try {
+      const result = await emit("admin:hideAll", {});
+      note(`${result.hidden} account(s) hidden`);
+      await loadAccounts(1, state.accountsQuery, state.accountScope);
+    } catch (error) {
+      note(error.message);
+    }
+  }, [emit, note, loadAccounts, state.accountsQuery, state.accountScope]);
+
+  const recheckAll = useCallback(async () => {
+    try {
+      const result = await emit("admin:recheckAll", {});
+      note(
+        result.queued
+          ? `recheck queued for ${result.queued}/${result.total} live account(s)`
+          : "no live accounts to recheck"
+      );
+    } catch (error) {
+      note(error.message);
+    }
+  }, [emit, note]);
+
   const refreshAll = useCallback(async () => {
     try {
       const result = await emit("admin:refresh", {
         page: state.accountPage,
         pageSize: state.accountPageSize,
         query: state.accountsQuery,
+        scope: state.accountScope,
       });
       setState((prev) => ({
         ...prev,
@@ -350,7 +409,7 @@ export function useAdminSocket() {
     } catch (error) {
       note(error.message);
     }
-  }, [emit, note, state.accountPage, state.accountPageSize, state.accountsQuery]);
+  }, [emit, note, state.accountPage, state.accountPageSize, state.accountsQuery, state.accountScope]);
 
   const sendNotice = useCallback(
     async (title, body) => {
@@ -383,6 +442,9 @@ export function useAdminSocket() {
     importAccount,
     verifyAccount,
     scanAccount,
+    hideAccount,
+    hideAll,
+    recheckAll,
     refreshAll,
     sendNotice,
   };

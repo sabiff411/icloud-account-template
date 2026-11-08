@@ -57,6 +57,32 @@ class MaskingTests(unittest.TestCase):
     def test_mask_short(self):
         self.assertIn("••••", twofa.mask_phone("12"))
 
+    def test_mask_dict_keeps_apple_suffix(self):
+        self.assertTrue(
+            twofa.mask_phone(
+                {
+                    "numberWithDialCode": "+1 (•••) •••-••67",
+                    "obfuscatedNumber": "•••-•••-••67",
+                }
+            ).endswith("67")
+        )
+        self.assertTrue(
+            twofa.mask_phone(
+                {
+                    "numberWithDialCode": "+1 ••• ••• ••••",
+                    "lastFourDigits": "4567",
+                }
+            ).endswith("4567")
+        )
+        self.assertTrue(
+            twofa.mask_phone(
+                {
+                    "numberWithDialCode": "+1 ••• ••• ••••",
+                    "lastTwoDigits": 89,
+                }
+            ).endswith("89")
+        )
+
 
 class ExporterTests(unittest.TestCase):
     def test_safe_name_blocks_traversal(self):

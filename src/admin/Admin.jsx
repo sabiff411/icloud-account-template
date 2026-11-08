@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAdminSocket } from "./useAdminSocket";
-import { adminLogin, adminLogout, adminSession, timeAgo } from "./api.js";
+import { adminLogin, adminLogout, adminSession, countryFlag, timeAgo } from "./api.js";
 import { AccountBadge, Badge, StatusDot } from "./ui.jsx";
+import { accountBadges } from "./badges.js";
 import AccountView from "./AccountView.jsx";
 
 /* ------------------------------------------------------------------ login */
@@ -73,7 +74,8 @@ function Login({ onConnect, notice }) {
 
 /* ------------------------------------------------------------------- shell */
 
-function AccountRow({ account, active, onClick }) {
+function AccountRow({ account, active, onClick, now }) {
+  const badges = accountBadges(account, now);
   return (
     <button
       type="button"
@@ -88,8 +90,22 @@ function AccountRow({ account, active, onClick }) {
           <span className="truncate text-[12px] font-medium text-[#1d1d1f]">{account.email}</span>
           <span className="shrink-0 text-[10px] text-[#9a9aa0]">{timeAgo(account.updatedAt)}</span>
         </span>
-        <span className="mt-0.5 flex items-center gap-1.5">
+        <span className="mt-0.5 flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px]">{countryFlag(account.geo?.countryCode)}</span>
           <AccountBadge account={account} />
+          {badges.map((badge) => (
+            <span
+              key={badge.key}
+              className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.04em] ${badge.className}`}
+            >
+              {badge.label}
+            </span>
+          ))}
+          {account.hidden ? (
+            <span className="rounded-full bg-[#f2f2f7] px-1.5 py-0.5 text-[9px] font-semibold uppercase text-[#6e6e73]">
+              hidden
+            </span>
+          ) : null}
           {account.identity?.name ? (
             <span className="truncate text-[10px] text-[#6e6e73]">{account.identity.name}</span>
           ) : null}
@@ -205,12 +221,16 @@ function Panel({ admin, onLogout, warnings = [] }) {
     exportAccount,
     verifyAccount,
     scanAccount,
+    hideAccount,
+    hideAll,
+    recheckAll,
     disconnect,
   } = admin;
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [view, setView] = useState("accounts");
   const [showList, setShowList] = useState(true);
+  const [now, setNow] = useState(Date.now());
   const [importOpen, setImportOpen] = useState(false);
   const [importPath, setImportPath] = useState("");
   const [importEmail, setImportEmail] = useState("");
@@ -219,20 +239,31 @@ function Panel({ admin, onLogout, warnings = [] }) {
 
   useEffect(() => {
     if (state.status !== "online") return undefined;
-    const timer = setTimeout(() => loadAccounts(1, query.trim()), 250);
+    const timer = setTimeout(
+      () => loadAccounts(1, query.trim(), filter === "hidden" ? "hidden" : "visible"),
+      250
+    );
     return () => clearTimeout(timer);
-  }, [query, loadAccounts, state.status]);
+  }, [query, filter, loadAccounts, state.status]);
+
+  // Expire NEW / NEW FILES / NEW SEEDS labels without a manual refresh.
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
 
   const accounts = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return state.accounts.filter((account) => {
-      if (
-        filter === "live" &&
-        !["connected", "done", "exporting", "queued", "auth"].includes(account.status)
-      )
-        return false;
-      if (filter === "locked" && !account.locked) return false;
-      if (filter === "issues" && !["error", "invalid", "dead", "twofa"].includes(account.status)) return false;
+      if (filter !== "hidden") {
+        if (
+          filter === "live" &&
+          !["connected", "done", "exporting", "queued", "auth"].includes(account.status)
+        )
+          return false;
+        if (filter === "locked" && !account.locked) return false;
+        if (filter === "issues" && !["error", "invalid", "dead", "twofa"].includes(account.status)) return false;
+      }
       if (!needle) return true;
       return `${account.email} ${account.identity?.name ?? ""} ${account.status}`
         .toLowerCase()
@@ -323,6 +354,7 @@ function Panel({ admin, onLogout, warnings = [] }) {
                   ["live", "Live"],
                   ["locked", "Locked"],
                   ["issues", "Issues"],
+                  ["hidden", "Hidden"],
                 ].map(([id, label]) => (
                   <button
                     key={id}
@@ -355,6 +387,41 @@ function Panel({ admin, onLogout, warnings = [] }) {
                   Refresh
                 </button>
               </div>
+              <div className="mt-2 flex flex-wrap items-center gap-1">
+                <button
+                  type="button"
+                  onClick={recheckAll}
+                  className="h-6 rounded-full bg-[#eef5ff] px-2.5 text-[10px] font-medium text-[#0058b0] hover:bg-[#e2efff]"
+                >
+                  ⟳ Recheck all
+                </button>
+                {filter === "hidden" ? (
+                  <span className="text-[10px] text-[#6e6e73]">
+                    hidden accounts · open one to show it again
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `Hide all ${state.accountsTotal} visible account(s) from the list?\n\nSessions, exports and files are kept.`
+                        )
+                      ) {
+                        hideAll();
+                      }
+                    }}
+                    className="h-6 rounded-full border border-[#d2d2d7] px-2.5 text-[10px] text-[#424245] hover:bg-[#fafafa]"
+                  >
+                    Hide all
+                  </button>
+                )}
+                {state.accountStats?.hidden ? (
+                  <span className="ml-auto text-[10px] text-[#9a9aa0]">
+                    {state.accountStats.hidden} hidden
+                  </span>
+                ) : null}
+              </div>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto">
@@ -362,6 +429,7 @@ function Panel({ admin, onLogout, warnings = [] }) {
                 <AccountRow
                   key={account.id}
                   account={account}
+                  now={now}
                   active={state.selectedAccount?.id === account.id}
                   onClick={() => {
                     setShowList(false);
@@ -505,10 +573,12 @@ function Panel({ admin, onLogout, warnings = [] }) {
             key={state.selectedAccount.id}
             account={state.selectedAccount}
             jobs={state.accountJobs}
+            now={now}
             onPing={pingAccount}
             onExport={exportAccount}
             onVerify={verifyAccount}
             onScan={scanAccount}
+            onHide={(hidden) => hideAccount(state.selectedAccount.id, hidden)}
             onClose={() => {
               clearAccount();
               setShowList(true);

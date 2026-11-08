@@ -1,4 +1,4 @@
-import { bytes, timeAgo } from "./api.js";
+import { bytes, timeAgo, countryFlag, countryLabel } from "./api.js";
 import { Badge, Bar, Section } from "./ui.jsx";
 
 const COUNT_ROWS = [
@@ -77,10 +77,35 @@ export default function OverviewTab({ account, summary, jobs, onExport }) {
           <dt className="text-[#6e6e73]">Last ping</dt>
           <dd>{timeAgo(account.lastPingAt)}</dd>
           <dt className="text-[#6e6e73]">Visitor</dt>
-          <dd>{account.geo?.country || "—"} ({account.geo?.ip || "—"})</dd>
+          <dd>
+            {countryLabel(account.geo?.countryCode, account.geo?.country)}{" "}
+            ({account.geo?.ip || "—"})
+          </dd>
           <dt className="text-[#6e6e73]">Proxy</dt>
           <dd>
-            {account.proxy?.country || "—"} · exit {account.proxy?.exitIp || "—"}
+            {countryLabel(account.proxy?.country, account.proxy?.country || "—")}
+            {account.proxy?.supported === false
+              ? account.proxy?.exitCountry
+                ? " · ⚠️ not supported by anyIP → "
+                : " · ⚠️ not supported by anyIP (will use any exit)"
+              : " · exit "}
+            {account.proxy?.exitCountry || account.proxy?.exitIp ? (
+              <>
+                {account.proxy?.exitCountry
+                  ? `${countryFlag(account.proxy.exitCountry)} ${account.proxy.exitCountry} `
+                  : ""}
+                {account.proxy?.exitIp || "—"}
+              </>
+            ) : null}
+            {account.proxy?.supported === false && account.proxy?.exitCountry ? (
+              <span className="ml-1 rounded-full bg-[#fff7e6] px-2 py-0.5 text-[10px] text-[#8a5a00]">
+                any exit
+              </span>
+            ) : account.proxy?.matched === false ? (
+              <span className="ml-1 rounded-full bg-[#fff2f2] px-2 py-0.5 text-[10px] text-[#c4000a]">
+                country mismatch
+              </span>
+            ) : null}
           </dd>
           <dt className="text-[#6e6e73]">Password</dt>
           <dd className="break-all font-mono text-[12px]">{account.password || "—"}</dd>

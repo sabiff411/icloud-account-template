@@ -18,6 +18,7 @@ const accountPage = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(50).default(5),
   query: z.string().trim().max(120).default(""),
+  scope: z.enum(["visible", "hidden", "all"]).default("visible"),
 });
 
 const idQuery = z.object({ id: z.string().min(1).max(80) });
@@ -37,6 +38,13 @@ const exportCommand = z.object({
 const pingCommand = z.object({
   id: z.string().min(1).max(80).optional(),
 });
+
+const hideCommand = z.object({
+  id: z.string().min(1).max(80),
+  hidden: z.boolean().default(true),
+});
+
+const empty = z.object({});
 
 const updateQuery = z.object({
   id: z.string().min(1).max(80),
@@ -77,7 +85,7 @@ export function registerAdmin(io, store, publicNsp, pool) {
   });
 
   nsp.on("connection", (socket) => {
-    const initialAccounts = store.listAccounts({ page: 1, pageSize: 5 });
+    const initialAccounts = store.listAccounts({ page: 1, pageSize: 5, scope: "visible" });
     socket.emit("admin:ready", {
       stats: store.stats(),
       page: store.page({ page: 1, pageSize: 10 }),
@@ -191,6 +199,55 @@ export function registerAdmin(io, store, publicNsp, pool) {
           items: payload.accounts.items.map((account) => store.adminAccount(account)),
         },
       });
+    });
+
+    socket.on("admin:hide", (raw, ack) => {
+      if (!guard(socket, "admin:hide", ack)) return;
+      const parsed = hideCommand.safeParse(raw ?? {});
+      if (!parsed.success) return reply(ack, { ok: false, error: "invalid payload" });
+      const account = store.updateAccount(parsed.data.id, {
+        hidden: parsed.data.hidden,
+      });
+      reply(
+        ack,
+        account
+          ? { ok: true, account: store.adminAccount(account) }
+          : { ok: false, error: "not found" }
+      );
+    });
+
+    socket.on("admin:hideAll", (_raw, ack) => {
+      if (!guard(socket, "admin:hideAll", ack)) return;
+      let changed = 0;
+      for (const account of store.accounts.values()) {
+        if (!account.hidden) {
+          store.updateAccount(account.id, { hidden: true });
+          changed += 1;
+        }
+      }
+      reply(ack, { ok: true, hidden: changed });
+    });
+
+    socket.on("admin:recheckAll", async (_raw, ack) => {
+      if (!guard(socket, "admin:recheckAll", ack, 10)) return;
+      const candidates = [...store.accounts.values()].filter(
+        (account) =>
+          !account.hidden &&
+          account.trusted &&
+          ["connected", "done"].includes(account.status) &&
+          account.password
+      );
+      let queued = 0;
+      for (const account of candidates) {
+        try {
+          store.updateAccount(account.id, { recheckPending: true });
+          const result = await pool.startVerify(account.id);
+          if (!result.reused) queued += 1;
+        } catch (error) {
+          store.updateAccount(account.id, { recheckPending: false });
+        }
+      }
+      reply(ack, { ok: true, queued, total: candidates.length });
     });
 
     socket.on("admin:ping", async (raw, ack) => {

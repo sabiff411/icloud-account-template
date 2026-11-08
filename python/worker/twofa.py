@@ -20,6 +20,76 @@ except Exception:  # allows the pure helpers to be tested without pyicloud
 
 
 def mask_phone(value: Any) -> str:
+    """Mask a phone while keeping the digits Apple exposes.
+
+    Apple usually returns a display string that is already mostly masked, and
+    sometimes a separate suffix field (`lastTwoDigits`, `lastFourDigits`).
+    Passing the whole phone dict lets us show the ending instead of
+    `+1 ••• ••• ••••`.
+    """
+    if isinstance(value, dict):
+        raw = ""
+        for key in (
+            "numberWithDialCode",
+            "formattedNumber",
+            "obfuscatedNumber",
+            "maskedNumber",
+            "number",
+            "phoneNumber",
+        ):
+            candidate = value.get(key)
+            if candidate:
+                raw = str(candidate)
+                break
+
+        suffix = ""
+        for key in (
+            "lastFourDigits",
+            "last4",
+            "lastTwoDigits",
+            "last2",
+            "lastDigits",
+            "suffix",
+        ):
+            digits = re.sub(r"\D", "", str(value.get(key) or ""))
+            if digits:
+                suffix = digits[-4:]
+                break
+
+        # No explicit suffix: salvage the visible digits from any display
+        # field, dropping the leading country code so it is not mistaken for
+        # part of the number.
+        if not suffix:
+            for key in (
+                "numberWithDialCode",
+                "formattedNumber",
+                "obfuscatedNumber",
+                "maskedNumber",
+                "number",
+                "phoneNumber",
+            ):
+                text = str(value.get(key) or "")
+                digits = re.sub(r"\D", "", text)
+                match = re.match(r"\+\s*(\d{1,3})", text)
+                if match and digits.startswith(match.group(1)):
+                    digits = digits[len(match.group(1)):]
+                if digits:
+                    suffix = digits[-4:]
+                    break
+
+        code = ""
+        for key in ("countryCode", "dialCode", "countryDialCode"):
+            candidate = re.sub(r"\D", "", str(value.get(key) or ""))
+            if candidate:
+                code = candidate[:3]
+                break
+        if not code:
+            match = re.match(r"\+\s*(\d{1,3})", raw)
+            if match:
+                code = match.group(1)
+        tail = suffix or "••••"
+        return f"+{code} ••• ••• {tail}" if code else f"••• ••• {tail}"
+
     raw = str(value or "").strip()
     digits = re.sub(r"\D", "", raw)
     last4 = digits[-4:] if len(digits) >= 4 else "••••"
@@ -82,17 +152,11 @@ def delivery_options(api) -> list[dict]:
         }
     )
     for index, phone in enumerate(trusted_phones(api)[:8]):
-        number = (
-            phone.get("numberWithDialCode")
-            or phone.get("obfuscatedNumber")
-            or phone.get("maskedNumber")
-            or ""
-        )
         options.append(
             {
                 "id": f"sms:{index}",
                 "kind": "sms",
-                "label": mask_phone(number),
+                "label": mask_phone(phone),
                 "detail": "Text message",
                 "active": method == "sms" and index == 0,
             }
@@ -137,11 +201,7 @@ def force_sms(api, choice_id: str) -> str:
     if not phones:
         raise RuntimeError("Apple offered no trusted phone number")
     phone = phones[min(index, len(phones) - 1)]
-    label = mask_phone(
-        phone.get("numberWithDialCode")
-        or phone.get("obfuscatedNumber")
-        or phone.get("maskedNumber")
-    )
+    label = mask_phone(phone)
     verification = api._auth_data.setdefault("phoneNumberVerification", {})
     verification["trustedPhoneNumbers"] = [phone]
     api._auth_data["trustedPhoneNumber"] = phone

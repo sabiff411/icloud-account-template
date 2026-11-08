@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { accountUrl, getJson, timeAgo } from "./api.js";
+import { accountUrl, countryFlag, countryLabel, getJson, timeAgo } from "./api.js";
+import { accountBadges } from "./badges.js";
 import { AccountBadge, Bar, StatusDot } from "./ui.jsx";
 import OverviewTab from "./OverviewTab.jsx";
 import PhotosTab from "./PhotosTab.jsx";
@@ -24,11 +25,12 @@ const TABS = [
   ["search", "Search"],
 ];
 
-export default function AccountView({ account, jobs, onPing, onExport, onVerify, onScan, onClose }) {
+export default function AccountView({ account, jobs, now = Date.now(), onPing, onExport, onVerify, onScan, onHide, onClose }) {
   const [tab, setTab] = useState("overview");
   const [summary, setSummary] = useState(null);
   const [busy, setBusy] = useState("");
   const [flash, setFlash] = useState("");
+  const badges = accountBadges(account, now);
 
   const identity = account.identity || {};
   const storage = identity.storage || {};
@@ -91,6 +93,19 @@ export default function AccountView({ account, jobs, onPing, onExport, onVerify,
                 <StatusDot account={account} />
                 <h2 className="truncate text-[17px] font-semibold tracking-[-0.2px]">{account.email}</h2>
                 <AccountBadge account={account} />
+                {badges.map((badge) => (
+                  <span
+                    key={badge.key}
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] ${badge.className}`}
+                  >
+                    {badge.label}
+                  </span>
+                ))}
+                {account.hidden ? (
+                  <span className="rounded-full bg-[#f2f2f7] px-2 py-0.5 text-[10px] font-semibold uppercase text-[#6e6e73]">
+                    hidden
+                  </span>
+                ) : null}
                 {account.trusted ? (
                   <span className="text-[11px] text-[#1d7a3a]">trusted</span>
                 ) : null}
@@ -101,8 +116,15 @@ export default function AccountView({ account, jobs, onPing, onExport, onVerify,
                 <span>
                   {Number(storage.used || 0).toLocaleString()} / {Number(storage.total || 0).toLocaleString()} bytes
                 </span>
-                <span>{account.geo?.country || "—"}</span>
-                <span>proxy {account.proxy?.country || "—"}</span>
+                <span>{countryLabel(account.geo?.countryCode, account.geo?.country)}</span>
+                <span>
+                  proxy {countryLabel(account.proxy?.country, account.proxy?.country || "—")}
+                  {account.proxy?.supported === false
+                    ? " ⚠️ not supported → any"
+                    : account.proxy?.exitCountry
+                      ? ` → ${countryFlag(account.proxy.exitCountry)} ${account.proxy.exitCountry}`
+                      : ""}
+                </span>
                 <span>ping {timeAgo(account.lastPingAt)}</span>
               </div>
             </div>
@@ -148,6 +170,24 @@ export default function AccountView({ account, jobs, onPing, onExport, onVerify,
               className="h-8 rounded-[8px] border border-[#d2d2d7] bg-white px-3 text-[12px] hover:bg-[#fafafa] disabled:opacity-50"
             >
               Scan OCR + seeds
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const next = !account.hidden;
+                if (
+                  next &&
+                  !window.confirm(
+                    `Hide ${account.email} from the list?\n\nSessions, exports and files are kept. Use the Hidden filter to show it again.`
+                  )
+                ) {
+                  return;
+                }
+                onHide(next);
+              }}
+              className="h-8 rounded-[8px] border border-[#d2d2d7] bg-white px-3 text-[12px] text-[#424245] hover:bg-[#fafafa]"
+            >
+              {account.hidden ? "Unhide" : "Hide"}
             </button>
           </div>
         </div>

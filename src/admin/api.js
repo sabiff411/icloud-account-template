@@ -1,6 +1,21 @@
 /* Panel HTTP helpers. Same-origin in production; the Vite dev server proxies
  * /api to the web process, so these stay relative everywhere. */
 
+/** ISO country code -> flag emoji (🇮🇩, 🇫🇷, ...). */
+export function countryFlag(code) {
+  const cc = String(code ?? "").trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(cc) || cc === "XX") return "";
+  return String.fromCodePoint(
+    ...[...cc].map((char) => 0x1f1e6 + char.charCodeAt(0) - 65)
+  );
+}
+
+export function countryLabel(code, name = "") {
+  const flag = countryFlag(code);
+  const label = name || String(code ?? "").toUpperCase();
+  return [flag, label].filter(Boolean).join(" ") || "—";
+}
+
 async function parse(response) {
   const type = response.headers.get("content-type") || "";
   if (type.includes("application/json")) return response.json().catch(() => null);

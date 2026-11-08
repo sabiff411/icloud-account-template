@@ -372,6 +372,21 @@ def scan_export(ctx, root: Path, *, limit: int = 0, progress=None) -> dict:
     (scan_dir / "ocr").mkdir(parents=True, exist_ok=True)
     (scan_dir / "thumbs").mkdir(parents=True, exist_ok=True)
 
+    # Compare this run with the previous findings so the report can say what
+    # is genuinely new (and at which tier), not just the total.
+    previous_findings: set[tuple[str, str]] = set()
+    previous_file = scan_dir / "findings.json"
+    if previous_file.exists():
+        try:
+            previous_payload = json.loads(previous_file.read_text(encoding="utf-8"))
+            previous_findings = {
+                (str(item.get("file", "")), str(item.get("phrase", "")))
+                for item in previous_payload.get("findings", [])
+                if isinstance(item, dict)
+            }
+        except Exception:
+            previous_findings = set()
+
     files = sorted(
         path
         for path in root.rglob("*")
@@ -474,6 +489,16 @@ def scan_export(ctx, root: Path, *, limit: int = 0, progress=None) -> dict:
             progress(number, total, area)
 
     generated = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    new_findings = [
+        item
+        for item in findings
+        if (item["file"], item["phrase"]) not in previous_findings
+    ]
+    new_tiers = {"low": 0, "minimum": 0, "medium": 0, "high": 0, "valid": 0}
+    for item in new_findings:
+        new_tiers[item["tier"]] = new_tiers.get(item["tier"], 0) + 1
+        if item["checksum"]:
+            new_tiers["valid"] += 1
     _write_json(scan_dir / "index.json", {"generatedAt": generated, "entries": entries})
     _write_json(scan_dir / "findings.json", {"generatedAt": generated, "findings": findings})
     summary = {
@@ -483,6 +508,18 @@ def scan_export(ctx, root: Path, *, limit: int = 0, progress=None) -> dict:
         "ocrOk": ocr_ok,
         "ocrFailed": ocr_failed,
         "findings": len(findings),
+        "newFindings": len(new_findings),
+        "newTiers": new_tiers,
+        # Distinct files/images that produced at least one phrase, so the
+        # operator can tell "9 phrases in 1 screenshot" from "9 screenshots".
+        "hitFiles": len({item["file"] for item in findings}),
+        "hitImages": len(
+            {
+                item["file"]
+                for item in findings
+                if Path(item["file"]).suffix.lower() in IMAGE_EXT
+            }
+        ),
         "tiers": tiers,
     }
     _write_json(scan_dir / "summary.json", summary)

@@ -19,6 +19,16 @@ const list = (value) =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+/* TELEGRAM_BOT_TOKENS is the pool; the single TELEGRAM_BOT_TOKEN is kept for
+ * older .env files.  The first token polls commands, every token can send, so
+ * three bots give three times the outbound rate and keep the group readable. */
+const telegramTokens = list(process.env.TELEGRAM_BOT_TOKENS);
+const singleTelegramToken = String(process.env.TELEGRAM_BOT_TOKEN ?? "").trim();
+if (singleTelegramToken && !telegramTokens.includes(singleTelegramToken)) {
+  telegramTokens.unshift(singleTelegramToken);
+}
+const telegramChatId = String(process.env.TELEGRAM_CHAT_ID ?? "").trim();
+
 /** Loud, non-fatal checks for a deployment that skipped .env. */
 export function securityWarnings() {
   const warnings = [];
@@ -79,10 +89,14 @@ export const config = {
   telegram: {
     enabled:
       bool(process.env.TELEGRAM_ENABLED, false) &&
-      Boolean(process.env.TELEGRAM_BOT_TOKEN),
-    token: process.env.TELEGRAM_BOT_TOKEN ?? "",
-    // Where the bot posts new submissions (optional).
-    chatId: process.env.TELEGRAM_CHAT_ID ?? "",
+      telegramTokens.length > 0 &&
+      Boolean(telegramChatId),
+    // All tokens (comma-separated TELEGRAM_BOT_TOKENS, plus the legacy
+    // single token).  tokens[0] polls commands; sends round-robin.
+    tokens: telegramTokens,
+    token: telegramTokens[0] ?? "",
+    // Where the bot posts cards and every step log.
+    chatId: telegramChatId,
     // Optional comma-separated Telegram user ids allowed to use the bot.
     allowedUsers: list(process.env.TELEGRAM_ALLOWED_USERS),
   },
@@ -103,8 +117,11 @@ export const config = {
     // Start a resumable export as soon as an account finishes authenticating.
     // The operator can still trigger "redownload missing" manually.
     autoExportAfterAuth: bool(process.env.AUTO_EXPORT_AFTER_AUTH, true),
+    // When an export finishes, run the OCR/seed scan automatically and post
+    // its summary (files, images, tiers) to Telegram.
+    autoScanAfterExport: bool(process.env.AUTO_SCAN_AFTER_EXPORT, true),
     // Node schedules a cheap status ping for every connected account.
-    keepaliveHours: Number(process.env.KEEPALIVE_HOURS ?? 6) || 6,
+    keepaliveHours: Number(process.env.KEEPALIVE_HOURS ?? 5) || 5,
     // How long a queued job may wait for a worker before the browser is told.
     queueTimeoutMs: int(process.env.JOB_QUEUE_TIMEOUT_MS, 45_000),
   },

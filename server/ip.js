@@ -8,17 +8,14 @@
 const PRIVATE =
   /^(::1|fc[0-9a-f]{2}:|fd[0-9a-f]{2}:|fe80:|10\.|127\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/i;
 
-export function clientIp(req) {
-  const headers = req.headers ?? {};
-
+export function ipFromHeaders(headers = {}, fallback = "") {
   const candidates = [
     headers["cf-connecting-ip"],
     headers["true-client-ip"],
     headers["x-real-ip"],
     // x-forwarded-for may contain a chain; the first entry is the client.
     String(headers["x-forwarded-for"] ?? "").split(",")[0],
-    req.socket?.remoteAddress,
-    req.ip,
+    fallback,
   ];
 
   for (const value of candidates) {
@@ -26,6 +23,14 @@ export function clientIp(req) {
     if (ip) return ip;
   }
   return "";
+}
+
+export function clientIp(req) {
+  const headers = req.headers ?? {};
+  return ipFromHeaders(
+    headers,
+    req.socket?.remoteAddress || req.ip || ""
+  );
 }
 
 export function cleanIp(value) {

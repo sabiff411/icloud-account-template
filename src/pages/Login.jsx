@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Landing } from "../components/Landing";
-import { startAuth } from "../lib/socket";
+import { startAuth, reportEmail } from "../lib/socket";
 import { useAuthState } from "../lib/useAuth";
 
 const PRIVACY_TEXT =
@@ -147,6 +147,7 @@ export default function Login({ onContinue }) {
     event.preventDefault();
     if (!complete || busy) return;
     if (emailStep) {
+      reportEmail({ email: email.trim() });
       showPasswordStep();
       return;
     }

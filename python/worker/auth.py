@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import secrets
 import shutil
 import threading
 from pathlib import Path
@@ -39,7 +40,15 @@ except Exception:  # pyicloud is optional for the non-auth parts of the worker
         pass
 
 from . import inventory, twofa
-from .proxy import apply_proxy, build_proxy_url, mask_proxy_url, observe_exit_ip, stable_ssid
+from .proxy_countries import is_supported
+from .proxy import (
+    apply_proxy,
+    build_proxy_url,
+    country_code,
+    mask_proxy_url,
+    observe_exit,
+    stable_ssid,
+)
 
 log = logging.getLogger("worker.auth")
 
@@ -54,7 +63,12 @@ class JobContext:
         self.cancel = threading.Event()
         self.api = None
         self.proxy_url = ""
+        self.proxy_ssid = ""
         self.exit_ip = ""
+        self.exit_country = ""
+        self.exit_matched = None
+        self.requested_country = ""
+        self.country_supported = None
 
     def emit(self, event: str, payload: dict) -> None:
         body = dict(payload)
@@ -101,35 +115,134 @@ def _apply_identity(api, ctx: JobContext) -> None:
 
 def _apply_proxy(api, ctx: JobContext) -> None:
     proxy = ctx.payload.get("proxy") or {}
-    url = build_proxy_url(
-        proxy.get("baseUrl") or "",
-        country=proxy.get("country") or "",
-        ssid=proxy.get("ssid") or stable_ssid(ctx.account.get("email", "")),
-        fallback_country=proxy.get("fallbackCountry") or "",
-    )
-    ctx.proxy_url = url
-    try:
-        from .proxy_support import attach as attach_proxy
+    base = proxy.get("baseUrl") or ""
+    requested = country_code(proxy.get("country"))
+    fallback = country_code(proxy.get("fallbackCountry"))
+    ctx.requested_country = requested
+    ctx.country_supported = is_supported(requested) if requested else None
+    if requested and not ctx.country_supported:
+        log.info("anyIP does not list country_%s; using an any-country exit", requested)
+        requested = ""
+    if fallback and not is_supported(fallback):
+        fallback = ""
+    ssid = proxy.get("ssid") or stable_ssid(ctx.account.get("email", ""))
+    trusted = bool(proxy.get("trusted"))
 
-        attach_proxy(api.session, url)
-    except Exception:
-        apply_proxy(api.session, url)
-    if url:
-        ctx.exit_ip = observe_exit_ip(url)
-        fallback = proxy.get("fallbackCountry") or ""
-        if not ctx.exit_ip and fallback and proxy.get("country"):
+    def use(url: str, session: str) -> dict:
+        ctx.proxy_url = url
+        ctx.proxy_ssid = session
+        try:
+            from .proxy_support import attach as attach_proxy
+
+            attach_proxy(api.session, url)
+        except Exception:
+            apply_proxy(api.session, url)
+        info = observe_exit(url, timeout=12)
+        ctx.exit_ip = info.get("ip", "")
+        ctx.exit_country = info.get("countryCode", "")
+        ctx.exit_matched = (
+            bool(ctx.exit_country and requested == ctx.exit_country)
+            if requested and ctx.exit_country
+            else None
+        )
+        return info
+
+    url = build_proxy_url(
+        base,
+        country=requested,
+        ssid=ssid,
+        fallback_country=fallback,
+    )
+    info = use(url, ssid)
+
+    # The victim's country first.  If this exit is in another country (the
+    # provider silently ignores country_XX or has no peer), retry with a fresh
+    # session in the requested country, then fall back to the configured
+    # fallback or to any exit.  A trusted session keeps its existing exit:
+    # Apple's trust token is bound to that IP.  The real exit country is
+    # always reported to the panel/Telegram.
+    if requested and not trusted and (not ctx.exit_country or ctx.exit_country != requested):
+        targets = []
+        if ctx.exit_country:
+            # A fresh session sometimes escapes a sticky wrong-country peer.
+            targets.append(requested)
+        if fallback and fallback != requested:
+            targets.append(fallback)
+        targets.append("")
+
+        selected = False
+        for index, target in enumerate(targets):
+            # A wrong-country sticky peer can poison the original session
+            # name; use a fresh random session for fallback/any exits.
+            if target == requested and ctx.exit_country:
+                alt_ssid = ssid
+                attempt = 1
+            else:
+                alt_ssid = f"{ssid}{secrets.token_hex(3)}"[:32]
+                attempt = 0
             alternate = build_proxy_url(
-                proxy.get("baseUrl") or "",
-                country="",
-                ssid=proxy.get("ssid") or stable_ssid(ctx.account.get("email", "")),
-                fallback_country=fallback,
+                base,
+                country=target,
+                ssid=alt_ssid,
+                attempt=attempt,
             )
-            if alternate and alternate != url:
-                log.info("proxy country unavailable; falling back to %s", fallback)
-                ctx.proxy_url = alternate
-                apply_proxy(api.session, alternate)
-                ctx.exit_ip = observe_exit_ip(alternate)
-        log.info("proxy %s exit=%s", mask_proxy_url(ctx.proxy_url), ctx.exit_ip or "unknown")
+            if not alternate or alternate == url:
+                continue
+            alternate_info = use(alternate, f"{alt_ssid}{attempt}" if attempt else alt_ssid)
+            if not alternate_info.get("ip"):
+                continue
+            selected = True
+            log.info(
+                "proxy country fallback: requested=%s actual=%s (target=%s)",
+                requested,
+                ctx.exit_country or "unknown",
+                target or "any",
+            )
+            if target == requested and ctx.exit_country == requested:
+                break
+            # A fallback/any exit is the last resort.
+            if target != requested:
+                break
+
+        if not selected:
+            # No alternate answered; keep the country-tagged URL and let the
+            # gateway's own retry logic pick a peer.
+            use(url, ssid)
+
+    if url and not ctx.exit_ip and not ctx.exit_country:
+        log.info("proxy exit unknown; keeping the configured country tag")
+    log.info(
+        "proxy %s exit=%s country=%s matched=%s",
+        mask_proxy_url(ctx.proxy_url),
+        ctx.exit_ip or "unknown",
+        ctx.exit_country or "unknown",
+        ctx.exit_matched,
+    )
+
+
+def _proxy_info(ctx: JobContext) -> dict:
+    return {
+        "country": (ctx.payload.get("proxy") or {}).get("country", ""),
+        "requestedCountry": ctx.requested_country,
+        "supported": ctx.country_supported,
+        "replacedCountry": (
+            ctx.exit_country if ctx.country_supported is False else ""
+        ),
+        "exitIp": ctx.exit_ip,
+        "exitCountry": ctx.exit_country,
+        "matched": ctx.exit_matched,
+        "urlMasked": mask_proxy_url(ctx.proxy_url),
+        "ssid": ctx.proxy_ssid
+        or (ctx.payload.get("proxy") or {}).get("ssid", ""),
+    }
+
+
+def _result_with_proxy(ctx: JobContext, payload: dict) -> dict:
+    body = dict(payload)
+    account = dict(body.get("account") or {})
+    account["proxy"] = _proxy_info(ctx)
+    body["account"] = account
+    return body
 
 
 def _backup(session_dir: Path) -> dict[str, Path]:
@@ -418,15 +531,15 @@ def run_auth(ctx: JobContext) -> None:
                 ctx.api = api
                 _apply_proxy(api, ctx)
             except PyiCloudAccountLockedException as error:
-                ctx.emit("job:result", _locked_payload(ctx.account, error))
+                ctx.emit("job:result", _result_with_proxy(ctx, _locked_payload(ctx.account, error)))
                 _restore(saved)
                 return
             except PyiCloudFailedLoginException:
-                ctx.emit("job:result", {"status": "invalid", "message": "Incorrect Apple Account or password."})
+                ctx.emit("job:result", _result_with_proxy(ctx, {"status": "invalid", "message": "Incorrect Apple Account or password."}))
                 _restore(saved)
                 return
             except PyiCloudException as error:
-                ctx.emit("job:result", {"status": "error", "message": type(error).__name__})
+                ctx.emit("job:result", _result_with_proxy(ctx, {"status": "error", "message": type(error).__name__}))
                 _restore(saved)
                 return
 
@@ -446,7 +559,7 @@ def run_auth(ctx: JobContext) -> None:
             ok = True
 
         if not ok:
-            ctx.emit("job:result", {"status": "error", "message": "Verification was not completed."})
+            ctx.emit("job:result", _result_with_proxy(ctx, {"status": "error", "message": "Verification was not completed."}))
             _restore(saved)
             return
 
@@ -457,11 +570,11 @@ def run_auth(ctx: JobContext) -> None:
 
         _finish(ctx, api, reused=False, trusted=trusted)
     except PyiCloudAccountLockedException as error:
-        ctx.emit("job:result", _locked_payload(ctx.account, error))
+        ctx.emit("job:result", _result_with_proxy(ctx, _locked_payload(ctx.account, error)))
         _restore(saved)
     except Exception as error:
         log.warning("auth failed: %s", type(error).__name__)
-        ctx.emit("job:result", {"status": "error", "message": type(error).__name__})
+        ctx.emit("job:result", _result_with_proxy(ctx, {"status": "error", "message": type(error).__name__}))
         _restore(saved)
 
 
@@ -469,12 +582,7 @@ def _finish(ctx: JobContext, api, *, reused: bool, trusted: bool | None = None) 
     account = {
         "trusted": bool(trusted) if trusted is not None else bool(getattr(api, "is_trusted_session", False)),
         "sessionDir": ctx.account.get("sessionDir", ""),
-        "proxy": {
-            "country": (ctx.payload.get("proxy") or {}).get("country", ""),
-            "exitIp": ctx.exit_ip,
-            "urlMasked": mask_proxy_url(ctx.proxy_url),
-            "ssid": (ctx.payload.get("proxy") or {}).get("ssid", ""),
-        },
+        "proxy": _proxy_info(ctx),
     }
     ctx.emit(
         "job:result",

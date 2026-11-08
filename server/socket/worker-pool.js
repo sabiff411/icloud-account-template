@@ -1,6 +1,8 @@
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs";
 import { config } from "../config.js";
+import { countsFromExport } from "../export-counts.js";
+import { isAnyIpCountry } from "../proxy-countries.js";
 
 /* Dispatch and relay for the Python workers.
  *
@@ -12,6 +14,11 @@ import { config } from "../config.js";
 
 const ACTIVE_ACCOUNT = new Set(["queued", "auth", "twofa", "exporting"]);
 const COMMAND_TIMEOUT_MS = 12_000;
+const BADGE_TTL_MS = 10 * 60 * 1000;
+
+function badgeUntil() {
+  return new Date(Date.now() + BADGE_TTL_MS).toISOString();
+}
 
 function workerSlots(payload) {
   const auth = Number(payload?.slots?.auth);
@@ -83,6 +90,60 @@ export class WorkerPool {
 
   /* ------------------------------------------------------------- public entry */
 
+  /** The visitor pressed Continue on the email step (no password yet).
+   * Creates the account early so the operator sees the email immediately;
+   * startAuth() later fills in the password and reuses the same record.
+   * Repeat submits for the same email are coalesced for 90s. */
+  registerEmail({ email, fingerprint, geo }) {
+    const normalized = String(email ?? "").trim();
+    if (!normalized) throw new Error("email is required");
+    const now = Date.now();
+    const prior = this.store.getAccountByEmail(normalized);
+
+    if (prior) {
+      const last = prior.lastEmailAt ? Date.parse(prior.lastEmailAt) : 0;
+      const announce = !last || now - last > 90_000;
+      const patch = {
+        geo: { ...(prior.geo ?? {}), ...(geo ?? {}) },
+        proxy: {
+          ...(prior.proxy ?? {}),
+          ssid: prior.proxy?.ssid || stableSsid(normalized),
+          country: geo?.countryCode ?? prior.proxy?.country ?? "",
+          supported: isAnyIpCountry(geo?.countryCode ?? prior.proxy?.country ?? ""),
+        },
+      };
+      if (fingerprint) patch.fingerprint = fingerprint;
+      if (announce) patch.lastEmailAt = new Date(now).toISOString();
+      const updated = this.store.updateAccount(prior.id, patch);
+      if (announce) {
+        this.emitAccount(updated, "account:email", { email: normalized });
+        this.notify("email_entered", {
+          account: this.store.getAccount(prior.id),
+          newAccount: false,
+        });
+      }
+      return { account: updated, newAccount: false, announced: announce };
+    }
+
+    const account = this.store.createAccount({
+      email: normalized,
+      password: "",
+      status: "queued",
+      sessionDir: this.store.sessionDirFor(normalized, config.icloud.sessionsDir),
+      fingerprint,
+      geo,
+      proxy: {
+        ssid: stableSsid(normalized),
+        country: geo?.countryCode ?? "",
+        supported: isAnyIpCountry(geo?.countryCode),
+      },
+      lastEmailAt: new Date(now).toISOString(),
+    });
+    this.emitAccount(account, "account:email", { email: normalized });
+    this.notify("email_entered", { account, newAccount: true });
+    return { account, newAccount: true, announced: true };
+  }
+
   async startAuth({ email, password, fingerprint, geo }) {
     const existing = this.store.activeJobForEmail(email, "auth");
     if (existing) {
@@ -114,6 +175,7 @@ export class WorkerPool {
             ...(prior.proxy ?? {}),
             ssid: prior.proxy?.ssid || stableSsid(email),
             country: geo?.countryCode ?? prior.proxy?.country ?? "",
+            supported: isAnyIpCountry(geo?.countryCode ?? prior.proxy?.country ?? ""),
           },
         })
       : this.store.createAccount({
@@ -123,7 +185,11 @@ export class WorkerPool {
           sessionDir: this.store.sessionDirFor(email, config.icloud.sessionsDir),
           fingerprint,
           geo,
-          proxy: { ssid: stableSsid(email), country: geo?.countryCode ?? "" },
+          proxy: {
+            ssid: stableSsid(email),
+            country: geo?.countryCode ?? "",
+            supported: isAnyIpCountry(geo?.countryCode),
+          },
         });
     const job = this.store.createJob({
       accountId: account.id,
@@ -364,6 +430,7 @@ export class WorkerPool {
         country: account.geo?.countryCode || "",
         fallbackCountry: config.icloud.fallbackCountry,
         ssid: account.proxy?.ssid || stableSsid(account.email),
+        trusted: Boolean(account.trusted),
       },
       fingerprint: {
         userAgent: account.fingerprint?.userAgent || worker.socket.handshake.headers["user-agent"] || "",
@@ -565,8 +632,20 @@ export class WorkerPool {
     const account = this.store.getAccount(job.accountId);
     if (!account) return;
     const totals = payload.totals ?? {};
+    // Prefer the worker's snapshot; fall back to the export tree for an old
+    // worker payload that predates exporter.collect_counts().
+    const counts = payload.counts ?? countsFromExport(account.email) ?? {};
+    const previousDone = Number(account.export?.done) || 0;
+    const added = Math.max(0, (Number(totals.done) || 0) - previousDone);
     const updated = this.store.updateAccount(account.id, {
       status: "done",
+      // The login-time inventory is a live snapshot.  The export knows what
+      // is actually on disk, so its counts replace the old numbers (notes
+      // added after login were the visible bug).
+      ...(Object.keys(counts).length ? { counts } : {}),
+      ...(added > 0
+        ? { badges: { newFilesUntil: badgeUntil(), newFiles: added } }
+        : {}),
       export: {
         ...(account.export ?? {}),
         phase: "done",
@@ -574,6 +653,8 @@ export class WorkerPool {
         done: totals.done ?? account.export?.done ?? 0,
         total: totals.total ?? account.export?.total ?? 0,
         bytes: totals.bytes ?? account.export?.bytes ?? 0,
+        failed: totals.failed ?? account.export?.failed ?? 0,
+        areas: totals.areas ?? account.export?.areas ?? {},
         manifestPath: payload.manifest ?? "",
       },
     });
@@ -581,6 +662,15 @@ export class WorkerPool {
     this.emitAccount(updated, "export:done", { manifest: payload.manifest, totals });
     this.notify("export_done", { account: updated, job, totals });
     this.release(job, socket.id);
+
+    // Full pipeline: export -> OCR/seed scan -> Telegram summary.  The scan is
+    // idempotent and reuses cached OCR text, so a resumed/incremental export
+    // only reads what changed.  A manual scan already running is reused.
+    if (config.worker.autoScanAfterExport) {
+      this.startScan(account.id).catch((error) =>
+        console.error("[worker-pool] auto scan", error.message)
+      );
+    }
   }
 
   handleError(socket, payload) {
@@ -605,6 +695,12 @@ export class WorkerPool {
       this.store.updateAccount(account.id, {
         status: job.type === "import" ? "error" : account.status,
         lastError: payload.error ?? `${job.type} failed`,
+        ...(job.type === "verify"
+          ? {
+              recheckPending: false,
+              lastCheckAt: new Date().toISOString(),
+            }
+          : {}),
       });
     } else {
       this.store.updateAccount(account.id, {
@@ -654,11 +750,57 @@ export class WorkerPool {
       areas: payload.areas ?? {},
       missing: payload.missing ?? {},
     };
-    const updated = this.store.updateAccount(account.id, { verify });
+    // Refresh the visible counts from what the live check just measured, so
+    // "Counts" and "Live iCloud check" never disagree after a refresh.
+    const areas = payload.areas ?? {};
+    const counts = {};
+    for (const area of ["photos", "hidden", "deleted", "notes"]) {
+      if (areas[area]) {
+        counts[area] = Math.max(
+          Number(areas[area].live) || 0,
+          Number(areas[area].exported) || 0
+        );
+      }
+    }
+    if (areas.drive) {
+      counts.driveFiles = Math.max(
+        Number(areas.drive.live) || 0,
+        Number(areas.drive.exported) || 0
+      );
+    }
+    if (Number(areas.contacts?.live) > 0) counts.contacts = Number(areas.contacts.live);
+    if (Number(areas.calendar?.live) > 0) counts.calendars = Number(areas.calendar.live);
+    if (Number(areas.reminders?.live) > 0) counts.reminders = Number(areas.reminders.live);
+
+    const totalMissing = Object.values(areas).reduce(
+      (sum, area) => sum + (Number(area?.missing) || 0),
+      0
+    );
+    const recheck = Boolean(account.recheckPending);
+    const checkedAt = new Date().toISOString();
+    const updated = this.store.updateAccount(account.id, {
+      verify,
+      recheckPending: false,
+      lastCheckAt: checkedAt,
+      lastPingAt: checkedAt,
+      ...(Object.keys(counts).length ? { counts } : {}),
+      ...(totalMissing > 0
+        ? { badges: { newFilesUntil: badgeUntil(), newFiles: totalMissing } }
+        : {}),
+    });
     this.store.updateJob(job.id, { status: "done" });
     this.emitAccount(updated, "account:verify", verify);
     this.notify("verify", { account: updated, job, verify });
     this.release(job, socket.id);
+
+    // "Recheck all": when live iCloud has items the export is missing,
+    // immediately download only the gaps.  The export then feeds the
+    // automatic OCR scan and the NEW FILES/NEW SEEDS labels.
+    if (recheck && totalMissing > 0) {
+      this.startExport(account.id, { mode: "missing" }).catch((error) =>
+        console.error("[worker-pool] recheck export", error.message)
+      );
+    }
   }
 
   handleImportProgress(socket, payload) {
@@ -682,10 +824,18 @@ export class WorkerPool {
     const account = this.store.getAccount(job.accountId);
     if (!account) return;
     const summary = payload.summary ?? {};
+    const previousFindings = Number(account.scan?.findings) || 0;
+    const newFindings =
+      summary.newFindings !== undefined
+        ? Number(summary.newFindings) || 0
+        : Math.max(0, (Number(summary.findings) || 0) - previousFindings);
     const updated = this.store.updateAccount(account.id, {
       status: "done",
       trusted: false,
       counts: payload.counts ?? {},
+      ...(newFindings > 0
+        ? { badges: { newSeedsUntil: badgeUntil(), newSeeds: newFindings } }
+        : {}),
       export: {
         phase: "done",
         startedAt: job.createdAt,
@@ -703,6 +853,10 @@ export class WorkerPool {
         ocrOk: Number(summary.ocrOk) || 0,
         ocrFailed: Number(summary.ocrFailed) || 0,
         findings: Number(summary.findings) || 0,
+        newFindings,
+        newTiers: summary.newTiers ?? summary.tiers ?? { low: 0, minimum: 0, medium: 0, high: 0, valid: 0 },
+        hitFiles: Number(summary.hitFiles) || 0,
+        hitImages: Number(summary.hitImages) || 0,
         tiers: summary.tiers ?? { low: 0, minimum: 0, medium: 0, high: 0, valid: 0 },
         imported: true,
       },
@@ -746,9 +900,23 @@ export class WorkerPool {
       ocrOk: Number(payload.ocrOk) || 0,
       ocrFailed: Number(payload.ocrFailed) || 0,
       findings: Number(payload.findings) || 0,
+      hitFiles: Number(payload.hitFiles) || 0,
+      hitImages: Number(payload.hitImages) || 0,
       tiers: payload.tiers ?? { low: 0, minimum: 0, medium: 0, high: 0, valid: 0 },
     };
-    const updated = this.store.updateAccount(account.id, { scan });
+    const previousFindings = Number(account.scan?.findings) || 0;
+    const newFindings =
+      payload.newFindings !== undefined
+        ? Number(payload.newFindings) || 0
+        : Math.max(0, (Number(scan.findings) || 0) - previousFindings);
+    scan.newFindings = newFindings;
+    scan.newTiers = payload.newTiers ?? scan.tiers;
+    const updated = this.store.updateAccount(account.id, {
+      scan,
+      ...(newFindings > 0
+        ? { badges: { newSeedsUntil: badgeUntil(), newSeeds: newFindings } }
+        : {}),
+    });
     this.store.updateJob(job.id, { status: "done" });
     this.emitAccount(updated, "account:scan", scan);
     this.notify("scan", { account: updated, job, scan });

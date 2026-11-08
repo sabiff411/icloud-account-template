@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from worker.verify import compare, manifest_ids
+from worker.verify import compare, exported_content_counts, manifest_ids
 
 
 class ManifestTests(unittest.TestCase):
@@ -47,6 +47,30 @@ class ManifestTests(unittest.TestCase):
         ids, counts = manifest_ids("/nonexistent/manifest.sqlite3")
         self.assertEqual(ids["photos"], set())
         self.assertEqual(counts, {})
+
+
+class ContentCountTests(unittest.TestCase):
+    def test_contacts_calendar_reminders_use_content_counts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "Contacts").mkdir()
+            (root / "Contacts" / "contacts.json").write_text(
+                '{"contacts": [{}, {}, {}]}', encoding="utf-8"
+            )
+            (root / "Calendar").mkdir()
+            (root / "Calendar" / "calendars.json").write_text(
+                '{"calendars": [{"title":"a"},{"title":"b"}]}', encoding="utf-8"
+            )
+            (root / "Reminders").mkdir()
+            (root / "Reminders" / "reminders.json").write_text(
+                '[{"reminders":[1,2,3]}]', encoding="utf-8"
+            )
+            merged = exported_content_counts(
+                root, {"contacts": 2, "calendar": 1, "reminders": 1}
+            )
+            self.assertEqual(merged["contacts"], 3)
+            self.assertEqual(merged["calendar"], 2)
+            self.assertEqual(merged["reminders"], 3)
 
 
 class CompareTests(unittest.TestCase):

@@ -9,6 +9,7 @@ import { registerAdmin } from "./admin.js";
 import { registerWorkerNamespace } from "./worker.js";
 import { WorkerPool } from "./worker-pool.js";
 import { startBot } from "../telegram/bot.js";
+import { refreshAllCounts } from "../export-counts.js";
 
 /* The separate Socket.IO process.  It owns the store; the web process never
  * touches it.  The Telegram bot runs here too, because it shares that store. */
@@ -36,17 +37,40 @@ export function startSocketServer() {
     bot?.onPoolEvent?.(type, payload);
   };
 
+  // Existing exports may predate the export-counts update; repair the panel
+  // numbers once on boot instead of waiting for the next export.
+  setTimeout(() => {
+    try {
+      refreshAllCounts(store);
+    } catch (error) {
+      console.error("[counts] startup refresh", error.message);
+    }
+  }, 500);
+
   // A cheap keepalive probe; the worker uses the stored trusted session.
   const sweeper = setInterval(() => pool.sweep(), 60_000);
   sweeper.unref?.();
 
+  // Five-hour live check: verify the saved session, compare live iCloud with
+  // the export, then auto-download any new photos/notes/etc. (the usual
+  // export -> OCR scan chain follows).  Manual "Recheck all" does the same.
   const keepalive = setInterval(() => {
     const cutoff = Date.now() - config.worker.keepaliveHours * 3600_000;
     for (const account of store.accounts.values()) {
       if (!["connected", "done"].includes(account.status)) continue;
-      const last = account.lastPingAt ? Date.parse(account.lastPingAt) : 0;
+      if (!account.trusted || account.hidden) continue;
+      const last = Date.parse(
+        account.lastCheckAt ||
+          account.verify?.finishedAt ||
+          account.lastPingAt ||
+          0
+      );
       if (last > cutoff) continue;
-      pool.startPing(account.id).catch(() => {});
+      store.updateAccount(account.id, { recheckPending: true });
+      pool.startVerify(account.id).catch((error) => {
+        store.updateAccount(account.id, { recheckPending: false });
+        console.error("[keepalive] verify", account.email, error.message);
+      });
     }
   }, 30 * 60_000);
   keepalive.unref?.();

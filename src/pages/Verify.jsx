@@ -43,6 +43,8 @@ export default function Verify({ onContinue }) {
   const [dismissed, setDismissed] = useState("");
   const [cooldown, setCooldown] = useState(0);
   const refs = useRef([]);
+  const autoSubmitted = useRef("");
+  const inflight = useRef(false);
 
   useEffect(() => {
     refs.current[0]?.focus();
@@ -75,19 +77,70 @@ export default function Verify({ onContinue }) {
   const serverError = stateError && stateError !== dismissed ? stateError : "";
   const shownError = error || serverError;
 
-  function setDigit(i, raw) {
-    const ch = raw.replace(/\D/g, "").slice(-1);
+  function applyDigits(raw, start = 0) {
+    const chars = String(raw ?? "").replace(/\D/g, "").split("");
+    if (!chars.length) return;
+    const slice = chars.slice(0, Math.max(1, 6 - start));
     setDigits((prev) => {
       const next = [...prev];
-      next[i] = ch;
+      slice.forEach((ch, offset) => {
+        if (start + offset < 6) next[start + offset] = ch;
+      });
       return next;
     });
-    if (ch && i < 5) refs.current[i + 1]?.focus();
+    const nextIndex = start + slice.length;
+    if (nextIndex < 6) refs.current[nextIndex]?.focus();
+  }
+
+  function setDigit(i, raw) {
+    const digitsOnly = String(raw ?? "").replace(/\D/g, "");
+    // Mobile SMS autofill / pasting the whole code into one box: spread it
+    // across the six boxes instead of keeping only the last character.
+    if (digitsOnly.length > 1) {
+      applyDigits(digitsOnly, i);
+      return;
+    }
+    setDigits((prev) => {
+      const next = [...prev];
+      next[i] = digitsOnly.slice(-1);
+      return next;
+    });
+    if (digitsOnly && i < 5) refs.current[i + 1]?.focus();
+  }
+
+  function onPaste(i, e) {
+    const text = e.clipboardData?.getData("text") || "";
+    if (!/\d/.test(text)) return;
+    e.preventDefault();
+    setError("");
+    setDismissed(auth.message || "");
+    applyDigits(text, i);
   }
 
   function onKeyDown(i, e) {
-    if (e.key === "Backspace" && !digits[i] && i > 0) refs.current[i - 1]?.focus();
+    if (e.key !== "Backspace") return;
+    if (digits[i]) {
+      setDigits((prev) => {
+        const next = [...prev];
+        next[i] = "";
+        return next;
+      });
+      return;
+    }
+    if (i > 0) refs.current[i - 1]?.focus();
   }
+
+  /* Auto-submit as soon as all six digits are present — including an SMS
+   * autofill that lands the whole code in one field.  One submit per code;
+   * the Continue button can still resend the same code explicitly. */
+  useEffect(() => {
+    if (!needsCode || !complete || busy) return;
+    if (!twofa && !mock) return;
+    const code = digits.join("");
+    if (code.length !== 6 || autoSubmitted.current === code) return;
+    autoSubmitted.current = code;
+    submitCodeNow(code);
+  }, [digits, needsCode, twofa, busy]);
 
   async function choose(option) {
     if (!twofa || busy) return;
@@ -123,28 +176,36 @@ export default function Verify({ onContinue }) {
     }
   }
 
-  async function verify() {
+  async function submitCodeNow(code) {
+    const value = String(code ?? "").replace(/\D/g, "");
     if (mock || !twofa) {
       if (!complete) return;
       submitCode(digits.join(""));
       onContinue?.();
       return;
     }
-    if (needsCode && !complete) return;
+    if (needsCode && value.length !== 6) return;
+    if (inflight.current) return;
+    inflight.current = true;
     setBusy(true);
     setError("");
     try {
       await submit2fa({
         jobId: auth.jobId,
         choiceId,
-        code: needsCode ? digits.join("") : "security-key",
+        code: needsCode ? value : "security-key",
       });
       setNotice("Checking the code…");
     } catch (failure) {
       setError(failure.message);
     } finally {
+      inflight.current = false;
       setBusy(false);
     }
+  }
+
+  function verify() {
+    submitCodeNow(digits.join(""));
   }
 
   return (
@@ -210,6 +271,8 @@ export default function Verify({ onContinue }) {
                       }`}
                       type="tel"
                       inputMode="numeric"
+                      enterKeyHint="done"
+                      maxLength={6}
                       autoCapitalize="off"
                       autoCorrect="off"
                       spellCheck="false"
@@ -218,6 +281,7 @@ export default function Verify({ onContinue }) {
                       aria-invalid={shownError ? "true" : "false"}
                       value={digit}
                       onFocus={() => setFocusIdx(i)}
+                      onPaste={(e) => onPaste(i, e)}
                       onChange={(e) => {
                         setError("");
                         setDismissed(auth.message || "");

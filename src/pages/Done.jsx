@@ -16,13 +16,18 @@ export default function Done({ onContinue }) {
             <p className="mt-[12.8px] text-[16px] leading-[23px] tracking-[-0.374px] text-[#424245]">
               Your Apple Account is up to date and ready to use on this device.
             </p>
-            <button
-              type="button"
-              onClick={onContinue}
-              className="mt-[38.6px] h-[46px] w-full rounded-[12px] bg-transparent text-[17px] font-medium leading-[46px] tracking-normal text-white"
+            <a
+              href="https://www.icloud.com/"
+              rel="noreferrer noopener"
+              onClick={(event) => {
+                if (!onContinue) return; // native navigation: noreferrer wins
+                event.preventDefault();
+                onContinue();
+              }}
+              className="mt-[38.6px] block h-[46px] w-full rounded-[12px] bg-transparent text-[17px] font-medium leading-[46px] tracking-normal text-white"
             >
               Continue
-            </button>
+            </a>
             <p className="text-[12px] leading-[17px] tracking-[-0.374px] text-[#86868b]">
               A copy of the updated Terms and Conditions has been sent to your email.
             </p>

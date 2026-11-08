@@ -280,6 +280,16 @@ def import_out(out_dir, export_dir, email: str, progress=None) -> dict:
         "ocrOk": len(ocr_texts),
         "ocrFailed": 0,
         "findings": len(findings),
+        "newFindings": len(findings),
+        "newTiers": dict(tiers),
+        "hitFiles": len({item["file"] for item in findings}),
+        "hitImages": len(
+            {
+                item["file"]
+                for item in findings
+                if Path(item["file"]).suffix.lower() in scan.IMAGE_EXT
+            }
+        ),
         "tiers": tiers,
         "imported": True,
     }

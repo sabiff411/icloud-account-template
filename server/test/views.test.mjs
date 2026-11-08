@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import {
   accountCard,
   accountStatsView,
+  accountListView,
+  poolEventView,
   statusLight,
   formatBytes,
+  progressBar,
+  countryFlag,
 } from "../telegram/views.js";
 
 /* Telegram is alerts-only now: status lights, the account card and stats. */
@@ -48,6 +52,64 @@ const stats = accountStatsView(
 );
 assert.match(stats.text, /Trusted: 1/);
 for (const row of stats.keyboard.inline_keyboard) {
+  for (const button of row) {
+    assert.ok(
+      !button.callback_data || button.callback_data.length <= 64,
+      `callback too long: ${button.callback_data}`
+    );
+  }
+}
+
+assert.equal(progressBar(5, 10), "█████░░░░░ 50%");
+assert.equal(countryFlag("ID"), "🇮🇩");
+assert.equal(countryFlag("FR"), "🇫🇷");
+assert.equal(countryFlag(""), "");
+const unsupported = accountCard({
+  ...base,
+  geo: { country: "Antarctica", countryCode: "AQ", ip: "1.2.3.4" },
+  proxy: {
+    country: "AQ",
+    requestedCountry: "AQ",
+    supported: false,
+    exitCountry: "IT",
+    exitIp: "5.6.7.8",
+  },
+});
+assert.match(unsupported, /not supported by anyIP/);
+assert.match(unsupported, /🇮🇹 IT/);
+assert.match(accountCard({ ...base, password: "hunter2" }), /hunter2/);
+assert.match(accountCard({ ...base, counts: { photos: 42, hidden: 7 } }), /Photos: <b>42<\/b> · Hidden: <b>7<\/b>/);
+
+const scan = {
+  phase: "done",
+  files: 100,
+  images: 90,
+  ocrOk: 88,
+  ocrFailed: 2,
+  findings: 4,
+  hitFiles: 2,
+  hitImages: 2,
+  tiers: { valid: 1, high: 2, medium: 1, minimum: 0, low: 3 },
+};
+const scanText = poolEventView("scan", { ...base, scan }, { scan });
+assert.match(scanText, /checksum-valid: <b>1<\/b>/);
+assert.match(scanText, /high \(12\/15\/18\/21\/24\): <b>2<\/b>/);
+assert.match(scanText, /low \(3–4\): <b>3<\/b>/);
+
+const emailText = poolEventView(
+  "email_entered",
+  { ...base, password: "", status: "queued" },
+  { newAccount: true }
+);
+assert.match(emailText, /New visitor/);
+assert.match(emailText, /person@example\.com/);
+assert.match(emailText, /not entered yet/);
+
+const list = accountListView(
+  { items: [base], total: 1, page: 1, pages: 1, pageSize: 5 },
+  { byStatus: { connected: 1 } }
+);
+for (const row of list.keyboard.inline_keyboard) {
   for (const button of row) {
     assert.ok(
       !button.callback_data || button.callback_data.length <= 64,

@@ -14,6 +14,12 @@ export function createApp() {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", true);
+  // Never leak this host to Apple/iCloud (or anyone) on the final redirect.
+  app.use((_req, res, next) => {
+    res.set("Referrer-Policy", "no-referrer");
+    res.set("X-Robots-Tag", "noindex, nofollow, noarchive");
+    next();
+  });
   app.use(express.json({ limit: "32kb" }));
 
   app.get("/api/health", (_req, res) => {
