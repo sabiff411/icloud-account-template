@@ -346,7 +346,7 @@ def _handle_hsa2(api, ctx: JobContext) -> bool:
                 try:
                     notice = twofa.switch_delivery(api, target)
                 except Exception as error:
-                    notice = f"Switch failed: {type(error).__name__}"
+                    notice = f"Switch failed: {twofa.describe_error(error)}"
                 choice = target["id"]
                 ctx.emit(
                     "job:2fa",
@@ -365,7 +365,7 @@ def _handle_hsa2(api, ctx: JobContext) -> bool:
             try:
                 notice = twofa.switch_delivery(api, target or {})
             except Exception as error:
-                notice = f"Resend failed: {type(error).__name__}"
+                notice = f"Resend failed: {twofa.describe_error(error)}"
             ctx.emit(
                 "job:2fa",
                 {

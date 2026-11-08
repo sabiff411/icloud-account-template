@@ -19,6 +19,25 @@ except Exception:  # allows the pure helpers to be tested without pyicloud
         response = None
 
 
+def describe_error(error: Any) -> str:
+    """Short, user-facing reason for an Apple API failure.
+
+    ``PyiCloudAPIResponseException`` carries ``reason``/``code`` and often a
+    full HTTP response body.  The worker's 2FA notices used to print only the
+    class name, which hid Apple's actual answer (rate limit, invalid phone,
+    expired session).  Keep this short enough for a Telegram line.
+    """
+    reason = str(getattr(error, "reason", "") or "").strip()
+    code = getattr(error, "code", None)
+    if reason or code:
+        text = reason or "Apple API error"
+        if code is not None and str(code) not in text:
+            text += f" ({code})"
+        return text[:180]
+    text = str(error or "").strip()
+    return text[:180] if text else type(error).__name__
+
+
 def mask_phone(value: Any) -> str:
     """Mask a phone while keeping the digits Apple exposes.
 
