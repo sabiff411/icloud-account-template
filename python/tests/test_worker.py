@@ -285,7 +285,7 @@ class AuthTests(unittest.TestCase):
             ), patch.object(auth.twofa, "delivery_options", return_value=options), patch.object(
                 auth.twofa, "default_choice", return_value="sms:0"
             ), patch.object(auth.twofa, "switch_delivery", return_value="Code sent"), patch.object(
-                auth.twofa, "submit_code", return_value=True
+                auth.twofa, "submit_code_any", return_value=(True, "sms:0")
             ), patch.object(auth.twofa, "ensure_trusted", return_value=True):
                 auth.run_auth(ctx)
         results = [p for e, p in emitter.events if e == "job:result"]

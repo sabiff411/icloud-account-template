@@ -344,7 +344,7 @@ function openSharedDb(file) {
 }
 
 /** Same recipe as src/fingerprint.js. Kept inline so this file stays standalone. */
-function fingerprintOf(headers = {}) {
+export function fingerprintOf(headers = {}) {
   const ua = String(headers["user-agent"] || "").trim();
   const lang = String(headers["accept-language"] || "").trim().toLowerCase();
   const ch = String(headers["sec-ch-ua"] || "").trim();
@@ -435,7 +435,7 @@ export function createGate(overrides = {}) {
     redeemUrl: trim(overrides.redeemUrl || env.GATE_REDEEM_URL, "http://127.0.0.1:4100/api/redeem"),
     statusUrl: trim(overrides.statusUrl || env.GATE_STATUS_URL),
     secret: trim(overrides.secret || env.GATE_SECRET, "change-me-shared-secret"),
-    decoyUrl: trim(overrides.decoyUrl || env.GATE_DECOY_URL, "https://www.icloud.com/"),
+    decoyUrl: trim(overrides.decoyUrl || env.GATE_DECOY_URL, "https://www.apple.com/"),
     sessionHours: int(overrides.sessionHours || env.GATE_SESSION_HOURS, 12),
     ipMode: trim(overrides.ipMode || env.GATE_IP_MODE, "strict") === "soft" ? "soft" : "strict",
     ipCrossFamily: bool(overrides.ipCrossFamily ?? env.GATE_IP_CROSS_FAMILY, false),

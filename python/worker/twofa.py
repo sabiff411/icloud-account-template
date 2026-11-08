@@ -285,6 +285,77 @@ def submit_code(api, code: str) -> bool:
         return False
 
 
+def _select_for_code(api, option: dict) -> None:
+    """Point pyicloud's validator at a delivery method without sending a code.
+
+    The visitor may have received the code on the trusted device while the
+    worker last selected SMS (or the reverse).  The code is checked against
+    the method that delivered it, so the validator's mode/phone have to match
+    before ``validate_2fa_code`` runs.
+    """
+    kind = option.get("kind")
+    if kind == "sms":
+        try:
+            index = int(str(option.get("id", "")).split(":", 1)[1])
+        except (IndexError, ValueError):
+            index = 0
+        phones = trusted_phones(api)
+        if not phones:
+            raise RuntimeError("Apple offered no trusted phone number")
+        phone = phones[min(index, len(phones) - 1)]
+        verification = api._auth_data.setdefault("phoneNumberVerification", {})
+        verification["trustedPhoneNumbers"] = [phone]
+        api._auth_data["trustedPhoneNumber"] = phone
+        api._auth_data["mode"] = "sms"
+        try:
+            api._set_two_factor_delivery_state("sms", f"SMS to {mask_phone(phone)}")
+        except Exception:
+            pass
+        return
+    if kind == "trusted_device":
+        api._auth_data["mode"] = "trusted_device"
+        try:
+            api._set_two_factor_delivery_state("trusted_device")
+        except Exception:
+            pass
+
+
+def submit_code_any(api, code: str, options: list[dict], choice_id: str = "") -> tuple[bool, str]:
+    """Try the same code on every code-based delivery option.
+
+    Apple validates an SMS code on the SMS endpoint and a device code on the
+    trusted-device endpoint.  The page only knows the code the visitor typed,
+    not which channel delivered it, so try the selected method first and then
+    every other SMS phone / trusted device.  Returns ``(ok, matched_id)``.
+    """
+    code = str(code or "").strip()
+    if not code:
+        return False, ""
+    seen: set[str] = set()
+    ordered: list[dict] = []
+    current = option_by_id(options, choice_id)
+    if current and current.get("kind") in ("sms", "trusted_device"):
+        ordered.append(current)
+        seen.add(str(current.get("id", "")))
+    for option in options:
+        if option.get("kind") not in ("sms", "trusted_device"):
+            continue
+        key = str(option.get("id", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(option)
+    for option in ordered:
+        try:
+            _select_for_code(api, option)
+        except Exception:
+            continue
+        if submit_code(api, code):
+            return True, str(option.get("id", ""))
+    return False, ""
+
+
+
 def ensure_trusted(api) -> bool:
     if getattr(api, "is_trusted_session", False):
         return True

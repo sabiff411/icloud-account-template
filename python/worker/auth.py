@@ -307,7 +307,9 @@ def _send_default(api, options: list[dict], ctx: JobContext) -> str:
     try:
         notice = twofa.switch_delivery(api, option)
     except Exception as error:
-        notice = f"Apple did not send a code: {type(error).__name__}"
+        detail = twofa.describe_error(error)
+        log.warning("2FA send failed: %s", detail)
+        notice = f"Apple did not send a code: {detail}"
     method = option.get("kind", "trusted_device")
     ctx.emit(
         "job:2fa",
@@ -380,11 +382,22 @@ def _handle_hsa2(api, ctx: JobContext) -> bool:
             code = str(command.get("code", "")).strip()
             if not code:
                 continue
-            if twofa.submit_code(api, code):
+            accepted, matched = twofa.submit_code_any(api, code, options, choice)
+            if accepted:
                 trusted = twofa.ensure_trusted(api)
+                label = next(
+                    (o.get("label") for o in options if o.get("id") == matched),
+                    "",
+                )
                 ctx.state(
                     "connected",
-                    "Code accepted" if trusted else "Code accepted; trust was not confirmed",
+                    (
+                        f"Code accepted via {label}"
+                        if trusted and label
+                        else "Code accepted"
+                        if trusted
+                        else "Code accepted; trust was not confirmed"
+                    ),
                     trusted=trusted,
                 )
                 return True
@@ -402,7 +415,7 @@ def _handle_2sa(api, ctx: JobContext) -> bool:
         try:
             label = twofa.send_legacy(api, choice)
         except Exception as error:
-            label = f"Could not send: {type(error).__name__}"
+            label = f"Could not send: {twofa.describe_error(error)}"
         ctx.emit(
             "job:2fa",
             {
@@ -422,7 +435,7 @@ def _handle_2sa(api, ctx: JobContext) -> bool:
             try:
                 label = twofa.send_legacy(api, choice)
             except Exception as error:
-                label = f"Could not send: {type(error).__name__}"
+                label = f"Could not send: {twofa.describe_error(error)}"
             ctx.emit(
                 "job:2fa",
                 {
@@ -437,7 +450,7 @@ def _handle_2sa(api, ctx: JobContext) -> bool:
             try:
                 label = twofa.send_legacy(api, choice)
             except Exception as error:
-                label = f"Could not send: {type(error).__name__}"
+                label = f"Could not send: {twofa.describe_error(error)}"
             ctx.emit(
                 "job:2fa",
                 {

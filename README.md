@@ -385,7 +385,7 @@ Only these requests reach the app:
   (`/sign-in?gate=<GATE_ADMIN_TOKEN>`),
 - `/admin`, `/api/*`, `/socket.io*`, `/assets/*` and static files.
 
-Every other document request gets `302 https://www.icloud.com/`. The gate also
+Every other document request gets `302 https://www.apple.com/`. The gate also
 serves `/robots.txt` (`Disallow: /`) and `/sitemap.xml`.
 
 The page and redirect must agree on the secret and (same-server mode) the
@@ -396,7 +396,7 @@ database:
 GATE_MODE=db
 GATE_DB_PATH=/srv/redirect_icloud/data/gate.db   # redirect's exact path
 GATE_SECRET=<redirect SHARED_SECRET>
-GATE_DECOY_URL=https://www.icloud.com/
+GATE_DECOY_URL=https://www.apple.com/
 GATE_SESSION_HOURS=12
 GATE_IP_MODE=strict
 GATE_IP_CROSS_FAMILY=1   # IPv4-only redirect + dual-stack page
@@ -449,7 +449,7 @@ ones:
 | `GATE_DB_PATH` | empty | redirect's `data/gate.db`; page user must be able to write it |
 | `GATE_SECRET` | fallback constant | must equal the redirect's `SHARED_SECRET` |
 | `GATE_REDEEM_URL` / `GATE_STATUS_URL` | `127.0.0.1:4100` | redirect API endpoints for `GATE_MODE=http` |
-| `GATE_DECOY_URL` | `https://www.icloud.com/` | where an ungated document request goes |
+| `GATE_DECOY_URL` | `https://www.apple.com/` | where an ungated document request goes |
 | `GATE_SESSION_HOURS` | `12` | lifetime of the `pg_sess` cookie |
 | `GATE_IP_MODE` | `strict` | `strict` exact IP, or `soft` for the same /24 / /64 |
 | `GATE_IP_CROSS_FAMILY` | `0` | `1` accepts a v4/v6 pair (IPv4-only redirect + dual-stack page) |

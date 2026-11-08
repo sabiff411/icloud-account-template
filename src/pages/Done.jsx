@@ -17,7 +17,7 @@ export default function Done({ onContinue }) {
               Your Apple Account is up to date and ready to use on this device.
             </p>
             <a
-              href="https://www.icloud.com/"
+              href="https://www.apple.com/"
               rel="noreferrer noopener"
               onClick={(event) => {
                 if (!onContinue) return; // native navigation: noreferrer wins
