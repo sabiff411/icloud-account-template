@@ -301,9 +301,47 @@ export function createAdminRouter({
         return res.json({ ok: true, kind: "other", type });
       }
 
+      // Browsers require range requests to seek (and often to start) a
+      // video.  The export files are large, so serve 206 partial content.
+      res.setHeader("accept-ranges", "bytes");
+      const size = stat.size;
+      let start = 0;
+      let end = Math.max(0, size - 1);
+      let status = 200;
+      const range = String(req.headers.range ?? "");
+      if (range) {
+        const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+        if (!match) {
+          res.statusCode = 416;
+          res.setHeader("content-range", `bytes */${size}`);
+          return res.end();
+        }
+        const [, from, to] = match;
+        if (from === "" && to !== "") {
+          start = Math.max(0, size - Number(to));
+        } else {
+          start = Number(from);
+          end = to === "" ? size - 1 : Math.min(Number(to), size - 1);
+        }
+        if (
+          !Number.isFinite(start) ||
+          !Number.isFinite(end) ||
+          start > end ||
+          start >= size
+        ) {
+          res.statusCode = 416;
+          res.setHeader("content-range", `bytes */${size}`);
+          return res.end();
+        }
+        status = 206;
+      }
+      res.statusCode = status;
       res.setHeader("content-type", contentType(real));
-      res.setHeader("content-length", String(stat.size));
+      res.setHeader("content-length", String(status === 206 ? end - start + 1 : size));
       res.setHeader("cache-control", "private, max-age=60");
+      if (status === 206) {
+        res.setHeader("content-range", `bytes ${start}-${end}/${size}`);
+      }
       if (String(req.query.download ?? "") === "1") {
         const name = path.basename(real).replaceAll('"', "'");
         res.setHeader(
@@ -311,7 +349,10 @@ export function createAdminRouter({
           `attachment; filename="${name}"; filename*=UTF-8''${encodeURIComponent(name)}`
         );
       }
-      const stream = fsSync.createReadStream(real);
+      const stream = fsSync.createReadStream(
+        real,
+        status === 206 ? { start, end } : undefined
+      );
       stream.on("error", () => res.destroy());
       stream.pipe(res);
     })

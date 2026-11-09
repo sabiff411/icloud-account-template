@@ -91,7 +91,7 @@ export default function Lightbox({
         {item.video ? (
           <video
             key={item.path}
-            src={fileUrl(owner, item.path)}
+            src={fileUrl(owner, item.play || item.path)}
             poster={item.thumb ? fileUrl(owner, item.thumb) : undefined}
             controls
             autoPlay
@@ -103,7 +103,7 @@ export default function Lightbox({
         ) : (
           (() => {
             const heic = /\.(heic|heif)$/i.test(item.name);
-            const src = heic ? item.thumb || "" : item.path;
+            const src = heic ? item.preview || item.thumb || "" : item.path;
             if (!src) {
               return (
                 <div className="rounded-[10px] bg-white/10 px-6 py-10 text-center text-[13px] text-white/70">

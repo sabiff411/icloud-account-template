@@ -324,6 +324,25 @@ def thumbnail(path: Path, target: Path, size: int = 512) -> bool:
         return False
 
 
+def preview(path: Path, target: Path, size: int = 2048) -> bool:
+    """A larger JPEG for HEIC/HEIF, which the browser cannot decode itself."""
+    try:
+        Image = _pil()
+        from PIL import ImageOps
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(path) as image:
+            upright = ImageOps.exif_transpose(image)
+            if upright is not None:
+                image = upright
+            image = image.convert("RGB")
+            image.thumbnail((size, size))
+            image.save(target, "JPEG", quality=88)
+        return True
+    except Exception:
+        return False
+
+
 def _ocr_engine():
     global _OCR
     if _OCR is None:
@@ -347,6 +366,53 @@ def ocr_image(path: Path) -> str:
         image.thumbnail((2200, 2200))
         result, _ = _ocr_engine()(np.array(image))
     return "\n".join(item[1] for item in (result or []) if item and len(item) > 1)
+
+
+def video_proxy(path: Path, target: Path) -> bool:
+    """H.264/AAC MP4 that every browser can play.
+
+    iPhone videos are HEVC (hvc1); Chrome/Chromium on many desktops cannot
+    decode HEVC, so the player stays black.  A fast 720p-class H.264 proxy
+    fixes playback without touching the original export.
+    """
+    try:
+        import imageio_ffmpeg
+
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return False
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(path),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-vf",
+                "scale='min(1280,iw)':-2",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                "-movflags",
+                "+faststart",
+                str(target),
+            ],
+            capture_output=True,
+            timeout=600,
+        )
+        return target.exists() and target.stat().st_size > 0
+    except Exception:
+        return False
 
 
 def video_thumb(path: Path, target: Path) -> bool:

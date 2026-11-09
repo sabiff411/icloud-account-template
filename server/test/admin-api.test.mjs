@@ -227,6 +227,16 @@ assert.equal(file.status, 200);
 assert.equal(file.headers.get("content-type"), "image/jpeg");
 assert.equal(Buffer.from(file.payload).toString(), "jpeg-one");
 
+const ranged = await fetch(
+  base +
+    "/api/admin/accounts/acct-1/file?path=" +
+    encodeURIComponent("Photos/Library/IMG_0001.jpg"),
+  { headers: { cookie, range: "bytes=0-3" } }
+);
+assert.equal(ranged.status, 206);
+assert.equal(await ranged.text(), "jpeg");
+assert.match(ranged.headers.get("content-range") || "", /^bytes 0-3\/8$/);
+
 const download = await request(
   "GET",
   "/api/admin/accounts/acct-1/file?path=" +

@@ -155,6 +155,30 @@ async function thumbFor(root, rel) {
   return "";
 }
 
+/** Larger JPEG for HEIC/HEIF; browsers cannot decode the original. */
+async function previewFor(root, rel) {
+  const preview = path.join(root, "Scan", "previews", `${rel}.jpg`);
+  try {
+    const stat = await fs.stat(preview);
+    if (stat.isFile()) return relPosix(root, preview);
+  } catch {
+    // No preview yet.
+  }
+  return "";
+}
+
+/** H.264/AAC playback proxy for HEVC phone videos. */
+async function playFor(root, rel) {
+  const play = path.join(root, "Scan", "play", `${rel}.mp4`);
+  try {
+    const stat = await fs.stat(play);
+    if (stat.isFile()) return relPosix(root, play);
+  } catch {
+    // No proxy yet.
+  }
+  return "";
+}
+
 /** One page of photos. `area` may be "All" (Library + Hidden + Deleted). */
 export async function gallery(root, { area = "All", q = "", page = 1, pageSize = 60 } = {}) {
   const requested = String(area || "All").replace(/[\\/]+/g, "_");
@@ -206,6 +230,8 @@ export async function gallery(root, { area = "All", q = "", page = 1, pageSize =
     slice.map(async (item) => ({
       ...item,
       thumb: await thumbFor(root, item.path),
+      preview: await previewFor(root, item.path),
+      play: await playFor(root, item.path),
       video: VIDEO_EXT.has(path.extname(item.name).toLowerCase()),
     }))
   );
@@ -351,6 +377,8 @@ export async function search(
         snippet: snippet(entry.text, needle),
         matchedName: String(entry.name || "").toLowerCase().includes(lower),
         thumb: await thumbFor(root, entry.path),
+        preview: await previewFor(root, entry.path),
+        play: await playFor(root, entry.path),
       };
       if (item.kind === "image") result.images.push(item);
       else if (item.kind === "note") result.notes.push(item);

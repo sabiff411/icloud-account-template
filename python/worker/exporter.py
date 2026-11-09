@@ -668,10 +668,17 @@ class Exporter:
             suffix = path.suffix.lower()
             if suffix in scan_module.IMAGE_EXT:
                 scan_module.thumbnail(path, target)
+                if suffix in (".heic", ".heif"):
+                    preview = self.root / "Scan" / "previews" / f"{rel}.jpg"
+                    if not preview.exists() or preview.stat().st_mtime < path.stat().st_mtime:
+                        scan_module.preview(path, preview)
             elif suffix in scan_module.VIDEO_EXT:
                 # First frame, so the grid shows what is inside the video
                 # before the operator opens the player.
                 scan_module.video_thumb(path, target)
+                play = self.root / "Scan" / "play" / f"{rel}.mp4"
+                if not play.exists() or play.stat().st_mtime < path.stat().st_mtime:
+                    scan_module.video_proxy(path, play)
         except Exception:
             pass
 

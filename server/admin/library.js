@@ -281,6 +281,10 @@ async function buildAccount(account, root) {
       }
       const thumbRel = `Scan/thumbs/${rel}.jpg`;
       const ocrRel = `Scan/ocr/${rel}.txt`;
+      const previewRel = `Scan/previews/${rel}.jpg`;
+      const playRel = `Scan/play/${rel}.mp4`;
+      const isVideo = VIDEO_EXT.has(suffix);
+      const isHeic = suffix === ".heic" || suffix === ".heif";
       const ocr = await isFile(path.join(root, ocrRel));
       photos.push({
         ...base,
@@ -290,8 +294,11 @@ async function buildAccount(account, root) {
         size: stat?.size ?? 0,
         mtime: stat?.mtimeMs ?? 0,
         thumb: (await isFile(path.join(root, thumbRel))) ? thumbRel : "",
+        preview:
+          isHeic && (await isFile(path.join(root, previewRel))) ? previewRel : "",
+        play: isVideo && (await isFile(path.join(root, playRel))) ? playRel : "",
         ocr,
-        video: VIDEO_EXT.has(suffix),
+        video: isVideo,
       });
     }
   }
