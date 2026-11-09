@@ -117,6 +117,14 @@ const returning = poolEventView(
 assert.match(returning, /Visitor resumed/);
 assert.match(returning, /Gianna19\$/);
 assert.match(returning, /signed in before/);
+assert.match(
+  poolEventView(
+    "email_entered",
+    { ...base, status: "error", lastError: "Verification was not completed." },
+    { newAccount: false }
+  ),
+  /status error — Verification was not completed/
+);
 
 const list = accountListView(
   { items: [base], total: 1, page: 1, pages: 1, pageSize: 5 },
