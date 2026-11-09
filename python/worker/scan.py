@@ -345,13 +345,16 @@ def video_thumb(path: Path, target: Path) -> bool:
         return False
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [ffmpeg, "-y", "-loglevel", "error", "-ss", "1", "-i", str(path),
-             "-frames:v", "1", "-vf", "scale=512:-2", str(target)],
-            capture_output=True,
-            timeout=30,
-        )
-        return target.exists()
+        for seek in ("1", "0"):
+            subprocess.run(
+                [ffmpeg, "-y", "-loglevel", "error", "-ss", seek, "-i", str(path),
+                 "-frames:v", "1", "-vf", "scale=512:-2", str(target)],
+                capture_output=True,
+                timeout=30,
+            )
+            if target.exists() and target.stat().st_size > 0:
+                return True
+        return False
     except Exception:
         return False
 

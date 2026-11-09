@@ -91,6 +91,7 @@ export default function Lightbox({
           <video
             key={item.path}
             src={fileUrl(owner, item.path)}
+            poster={item.thumb ? fileUrl(owner, item.thumb) : undefined}
             controls
             autoPlay
             muted

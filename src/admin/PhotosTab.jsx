@@ -158,12 +158,19 @@ export default function PhotosTab({ account }) {
                 {item.video && !item.thumb ? (
                   <div className="flex h-full items-center justify-center text-[28px]">🎬</div>
                 ) : item.thumb || !/\.(heic|heif)$/i.test(item.name) ? (
-                  <img
-                    loading="lazy"
-                    src={fileUrl(account.id, item.thumb || item.path)}
-                    alt={item.name}
-                    className="h-full w-full object-cover"
-                  />
+                  <>
+                    <img
+                      loading="lazy"
+                      src={fileUrl(account.id, item.thumb || item.path)}
+                      alt={item.name}
+                      className="h-full w-full object-cover"
+                    />
+                    {item.video ? (
+                      <span className="absolute bottom-1 right-1 rounded-full bg-black/65 px-1.5 py-0.5 text-[9px] font-semibold text-white">
+                        ▶
+                      </span>
+                    ) : null}
+                  </>
                 ) : (
                   <div className="flex h-full flex-col items-center justify-center gap-1 text-[11px] text-[#6e6e73]">
                     <span className="text-[24px]">🖼️</span>

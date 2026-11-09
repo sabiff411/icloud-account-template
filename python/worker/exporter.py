@@ -665,7 +665,13 @@ class Exporter:
             target = self.root / "Scan" / "thumbs" / f"{rel}.jpg"
             if target.exists() and target.stat().st_mtime >= path.stat().st_mtime:
                 return
-            scan_module.thumbnail(path, target)
+            suffix = path.suffix.lower()
+            if suffix in scan_module.IMAGE_EXT:
+                scan_module.thumbnail(path, target)
+            elif suffix in scan_module.VIDEO_EXT:
+                # First frame, so the grid shows what is inside the video
+                # before the operator opens the player.
+                scan_module.video_thumb(path, target)
         except Exception:
             pass
 
@@ -673,7 +679,10 @@ class Exporter:
         if task.get("area") not in ("photos", "hidden", "deleted"):
             return
         path = task.get("path")
-        if isinstance(path, Path) and path.suffix.lower() in scan_module.IMAGE_EXT:
+        if isinstance(path, Path) and (
+            path.suffix.lower() in scan_module.IMAGE_EXT
+            or path.suffix.lower() in scan_module.VIDEO_EXT
+        ):
             self._thumb_file(path)
 
     def _backfill_thumbs(self) -> None:

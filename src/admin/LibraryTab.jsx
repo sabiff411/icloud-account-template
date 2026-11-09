@@ -40,12 +40,19 @@ function PhotoTile({ item, onOpen }) {
         {item.video && !item.thumb ? (
           <div className="flex h-full items-center justify-center text-[26px]">▶</div>
         ) : src ? (
-          <img
-            loading="lazy"
-            src={fileUrl(item.accountId, src)}
-            alt={item.name}
-            className="h-full w-full object-cover"
-          />
+          <>
+            <img
+              loading="lazy"
+              src={fileUrl(item.accountId, src)}
+              alt={item.name}
+              className="h-full w-full object-cover"
+            />
+            {item.video ? (
+              <span className="absolute bottom-1 right-1 rounded-full bg-black/65 px-1.5 py-0.5 text-[9px] font-semibold text-white">
+                ▶
+              </span>
+            ) : null}
+          </>
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-1 text-[11px] text-[#6e6e73]">
             <span className="text-[22px]">🖼️</span>
