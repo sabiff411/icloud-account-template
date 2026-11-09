@@ -365,6 +365,16 @@ async function build({ storeFile, exportDir }) {
       catalog.ocr.set(`${account.id}:${rel}`, body);
     }
   }
+  // Sort once at build time; every query then only filters and paginates.
+  catalog.notes.sort((a, b) => b.mtime - a.mtime);
+  catalog.photos.sort((a, b) => b.mtime - a.mtime);
+  catalog.contacts.sort((a, b) => a.name.localeCompare(b.name));
+  catalog.calendar.sort((a, b) => String(b.when).localeCompare(String(a.when)));
+  catalog.seeds.sort(
+    (a, b) =>
+      (TIER_ORDER[a.tier] ?? 9) - (TIER_ORDER[b.tier] ?? 9) ||
+      a.phrase.localeCompare(b.phrase)
+  );
   return catalog;
 }
 
@@ -405,45 +415,57 @@ function pageOf(list, page, size) {
 export function queryCatalog(catalog, { type = "all", q = "", accountId = "", area = "All", page = 1, pageSize = 0 } = {}) {
   const needle = String(q ?? "").trim().toLowerCase();
   const scope = (item) => !accountId || item.accountId === accountId;
-  const scopedPhotos = catalog.photos.filter(scope);
+  const inScope = accountId ? (list) => list.filter(scope) : (list) => list;
+  const scopedPhotos = inScope(catalog.photos);
   const counts = {
     accounts: catalog.accounts.length,
-    notes: catalog.notes.filter(scope).length,
-    contacts: catalog.contacts.filter(scope).length,
-    calendar: catalog.calendar.filter(scope).length,
+    notes: inScope(catalog.notes).length,
+    contacts: inScope(catalog.contacts).length,
+    calendar: inScope(catalog.calendar).length,
     photos: scopedPhotos.length,
-    seeds: catalog.seeds.filter(scope).length,
+    seeds: inScope(catalog.seeds).length,
     scannedAccounts: catalog.scannedAccounts ?? 0,
     ocrDone: scopedPhotos.filter((photo) => photo.ocr).length,
     ocrPending: scopedPhotos.filter((photo) => !photo.ocr).length,
     scanning: catalog.accounts.filter((account) => account.scanPhase === "running").length,
   };
 
-  const notes = catalog.notes
-    .filter((item) => scope(item) && isNeedle(`${item.title} ${item.name} ${item.text}`, needle))
-    .sort((a, b) => b.mtime - a.mtime);
-  const contacts = catalog.contacts
-    .filter((item) => scope(item) && isNeedle([item.name, ...item.phones, ...item.emails, item.company, item.note].join(" "), needle))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  const calendar = catalog.calendar
-    .filter((item) => scope(item) && isNeedle([item.title, item.when, item.notes].join(" "), needle))
-    .sort((a, b) => String(b.when).localeCompare(String(a.when)));
+  const notes = catalog.notes.filter((item) => {
+    if (!scope(item)) return false;
+    if (!needle) return true;
+    return isNeedle(`${item.title} ${item.name} ${item.text}`, needle);
+  });
+  const contacts = catalog.contacts.filter((item) => {
+    if (!scope(item)) return false;
+    if (!needle) return true;
+    return isNeedle(
+      [item.name, ...item.phones, ...item.emails, item.company, item.note].join(" "),
+      needle
+    );
+  });
+  const calendar = catalog.calendar.filter((item) => {
+    if (!scope(item)) return false;
+    if (!needle) return true;
+    return isNeedle([item.title, item.when, item.notes].join(" "), needle);
+  });
   const wantsArea = area && area !== "All";
   const photos = catalog.photos
     .filter((item) => {
       if (!scope(item)) return false;
       if (wantsArea && item.area !== area) return false;
+      if (!needle) return true;
       const body = catalog.ocr.get(`${item.accountId}:${item.path}`) ?? "";
       return isNeedle(`${item.name} ${body}`, needle);
     })
     .map((item) => {
       const body = catalog.ocr.get(`${item.accountId}:${item.path}`) ?? "";
       return { ...item, snippet: needle ? snippet(body, needle) : "" };
-    })
-    .sort((a, b) => b.mtime - a.mtime);
-  const seeds = catalog.seeds
-    .filter((item) => scope(item) && isNeedle(`${item.phrase} ${item.file} ${item.area}`, needle))
-    .sort((a, b) => (TIER_ORDER[a.tier] ?? 9) - (TIER_ORDER[b.tier] ?? 9) || a.phrase.localeCompare(b.phrase));
+    });
+  const seeds = catalog.seeds.filter((item) => {
+    if (!scope(item)) return false;
+    if (!needle) return true;
+    return isNeedle(`${item.phrase} ${item.file} ${item.area}`, needle);
+  });
 
   const totals = {
     notes: notes.length,

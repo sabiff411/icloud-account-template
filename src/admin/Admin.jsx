@@ -442,6 +442,7 @@ function Panel({ admin, onLogout, warnings = [] }) {
                   now={now}
                   active={state.selectedAccount?.id === account.id}
                   onClick={() => {
+                    setView("accounts");
                     setShowList(false);
                     openAccount(account.id);
                   }}
