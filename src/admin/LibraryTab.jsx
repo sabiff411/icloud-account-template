@@ -181,7 +181,8 @@ export default function LibraryTab({ admin }) {
   const [tick, setTick] = useState(0);
   const [flash, setFlash] = useState("");
   const dataRef = useRef(null);
-  const forcedRef = useRef(0);
+  const forceRequested = useRef(false);
+  const lastForced = useRef(0);
 
   useEffect(() => {
     dataRef.current = data;
@@ -193,6 +194,10 @@ export default function LibraryTab({ admin }) {
   }, [text]);
 
   useEffect(() => {
+    // Drop the previous payload so a type switch never renders an object as
+    // an array while the next request is in flight.
+    setData(null);
+    setLoading(true);
     setPage(1);
     setOpen(null);
   }, [type, query, accountId]);
@@ -208,8 +213,10 @@ export default function LibraryTab({ admin }) {
     if (!dataRef.current) setLoading(true);
     setError("");
     const scanning = (dataRef.current?.counts?.scanning ?? 0) > 0;
-    const force = scanning && Date.now() - forcedRef.current > 60_000;
-    if (force) forcedRef.current = Date.now();
+    const manual = forceRequested.current;
+    forceRequested.current = false;
+    const force = manual || (scanning && Date.now() - lastForced.current > 60_000);
+    if (force) lastForced.current = Date.now();
     getLibrary({
       type,
       q: query,
@@ -235,9 +242,17 @@ export default function LibraryTab({ admin }) {
 
   const counts = data?.counts ?? {};
   const totals = data?.totals ?? {};
-  const photos = type === "all" ? data?.items?.photos ?? [] : type === "photos" ? data?.items ?? [] : [];
+  const photos =
+    type === "all"
+      ? Array.isArray(data?.items?.photos)
+        ? data.items.photos
+        : []
+      : type === "photos" && Array.isArray(data?.items)
+        ? data.items
+        : [];
 
   async function openNote(item) {
+    if (type === "all") setType("notes");
     setNote({ item, body: "" });
     setNoteBusy(true);
     try {
@@ -292,7 +307,7 @@ export default function LibraryTab({ admin }) {
           <button
             type="button"
             onClick={() => {
-              forcedRef.current = Date.now();
+              forceRequested.current = true;
               setTick((value) => value + 1);
             }}
             className="h-9 rounded-[9px] border border-[#d2d2d7] px-3 text-[12px]"
@@ -459,7 +474,7 @@ export default function LibraryTab({ admin }) {
                 {data?.total ?? 0} notes
               </div>
               <div className="max-h-[620px] overflow-y-auto">
-                {(data?.items ?? []).map((item) => (
+                {(Array.isArray(data?.items) ? data.items : []).map((item) => (
                   <button
                     key={`${item.accountId}-${item.path}`}
                     type="button"
@@ -480,6 +495,9 @@ export default function LibraryTab({ admin }) {
                     </p>
                   </button>
                 ))}
+              </div>
+              <div className="border-t border-[#f0f0f2] px-3 py-2">
+                <Pager page={data?.page ?? 1} pages={data?.pages ?? 1} onPage={setPage} />
               </div>
             </div>
             <div className="rounded-[12px] border border-[#e5e5ea] bg-white">
@@ -521,7 +539,7 @@ export default function LibraryTab({ admin }) {
         {!loading && type === "photos" ? (
           <div>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-              {(data?.items ?? []).map((item, index) => (
+              {(Array.isArray(data?.items) ? data.items : []).map((item, index) => (
                 <PhotoTile key={`${item.accountId}-${item.path}`} item={item} onOpen={() => setOpen(index)} />
               ))}
             </div>
