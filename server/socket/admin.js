@@ -290,6 +290,16 @@ export function registerAdmin(io, store, publicNsp, pool) {
       }
     });
 
+    socket.on("admin:scan_all", async (_raw, ack) => {
+      if (!guard(socket, "admin:scan_all", ack)) return;
+      try {
+        const result = await pool.startScanAll();
+        reply(ack, { ok: true, ...result });
+      } catch (error) {
+        reply(ack, { ok: false, error: error.message });
+      }
+    });
+
     socket.on("admin:scan", async (raw, ack) => {
       if (!guard(socket, "admin:scan", ack)) return;
       const parsed = accountId.safeParse(raw ?? {});

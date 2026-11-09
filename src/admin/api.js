@@ -79,6 +79,20 @@ export async function getText(url) {
   return response.text();
 }
 
+export function libraryUrl(params = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") continue;
+    query.set(key, String(value));
+  }
+  const suffix = query.toString();
+  return `/api/admin/library${suffix ? `?${suffix}` : ""}`;
+}
+
+export function getLibrary(params = {}) {
+  return getJson(libraryUrl(params));
+}
+
 export function accountUrl(id, kind, params = {}) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {

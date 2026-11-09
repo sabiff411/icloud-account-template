@@ -344,6 +344,12 @@ export function useAdminSocket() {
     [emit, note]
   );
 
+  const scanAll = useCallback(async () => {
+    const result = await emit("admin:scan_all", {});
+    note(`scan all: ${result.queued} queued, ${result.reused} already running`);
+    return result;
+  }, [emit, note]);
+
   const hideAccount = useCallback(
     async (id, hidden = true) => {
       try {
@@ -442,6 +448,7 @@ export function useAdminSocket() {
     importAccount,
     verifyAccount,
     scanAccount,
+    scanAll,
     hideAccount,
     hideAll,
     recheckAll,

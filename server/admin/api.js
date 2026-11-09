@@ -21,6 +21,7 @@ import {
   resolveWithin,
   search,
 } from "./export.js";
+import { buildCatalog, queryCatalog } from "./library.js";
 
 /* Read-only admin API for the panel.
  *
@@ -215,6 +216,30 @@ export function createAdminRouter({
       });
       res.setHeader("cache-control", "no-store");
       res.json({ ok: true, ...result });
+    })
+  );
+
+  router.get(
+    "/library",
+    requireSession,
+    asyncRoute(async (req, res) => {
+      const catalog = await buildCatalog({
+        storeFile,
+        exportDir,
+        force: req.query.refresh === "1",
+      });
+      res.setHeader("cache-control", "no-store");
+      res.json({
+        ok: true,
+        ...queryCatalog(catalog, {
+          type: String(req.query.type ?? "all"),
+          q: String(req.query.q ?? ""),
+          accountId: String(req.query.accountId ?? ""),
+          area: String(req.query.area ?? "All"),
+          page: req.query.page,
+          pageSize: req.query.pageSize,
+        }),
+      });
     })
   );
 

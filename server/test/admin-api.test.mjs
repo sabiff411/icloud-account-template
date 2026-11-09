@@ -239,6 +239,16 @@ const gal = await request("GET", "/api/admin/accounts/acct-1/gallery?area=Librar
 assert.equal(gal.payload.total, 2);
 assert.equal(gal.payload.items.length, 2);
 
+const libraryNotes = await request("GET", "/api/admin/library?type=notes&q=wallet&meta=1");
+assert.equal(libraryNotes.status, 200);
+assert.equal(libraryNotes.payload.items.length, 1);
+assert.equal(libraryNotes.payload.items[0].email, email);
+assert.ok(libraryNotes.payload.counts.notes >= 1);
+
+const libraryPhoto = await request("GET", "/api/admin/library?type=photos&q=vault");
+assert.equal(libraryPhoto.status, 200);
+assert.equal(libraryPhoto.payload.items[0].name, "IMG_0001.jpg");
+
 const allMedia = await request("GET", "/api/admin/accounts/acct-1/gallery?area=All&page=1&pageSize=60");
 assert.equal(allMedia.payload.total, 3, "All spans Library + Hidden");
 assert.deepEqual(

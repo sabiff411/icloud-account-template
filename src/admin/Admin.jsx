@@ -4,6 +4,7 @@ import { adminLogin, adminLogout, adminSession, countryFlag, timeAgo } from "./a
 import { AccountBadge, Badge, StatusDot } from "./ui.jsx";
 import { accountBadges } from "./badges.js";
 import AccountView from "./AccountView.jsx";
+import LibraryTab from "./LibraryTab.jsx";
 
 /* ------------------------------------------------------------------ login */
 
@@ -322,6 +323,15 @@ function Panel({ admin, onLogout, warnings = [] }) {
             </button>
             <button
               type="button"
+              onClick={() => setView("library")}
+              className={`h-7 rounded-full px-3 text-[11px] font-medium ${
+                view === "library" ? "bg-[#1d1d1f] text-white" : "border border-[#d2d2d7] text-[#424245]"
+              }`}
+            >
+              All
+            </button>
+            <button
+              type="button"
               onClick={() => setView("submissions")}
               className={`h-7 rounded-full px-3 text-[11px] font-medium ${
                 view === "submissions" ? "bg-[#1d1d1f] text-white" : "border border-[#d2d2d7] text-[#424245]"
@@ -573,6 +583,8 @@ function Panel({ admin, onLogout, warnings = [] }) {
       <main className={`${showList ? "hidden" : "flex"} min-w-0 flex-1 flex-col lg:flex`}>
         {view === "submissions" ? (
           <Submissions admin={admin} />
+        ) : view === "library" ? (
+          <LibraryTab admin={admin} />
         ) : state.selectedAccount ? (
           <AccountView
             key={state.selectedAccount.id}

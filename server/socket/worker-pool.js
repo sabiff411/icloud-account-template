@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
 import { safeName } from "../admin/export.js";
+import { accountsWithExport } from "../admin/library.js";
 import { countsFromExport } from "../export-counts.js";
 import { isAnyIpCountry } from "../proxy-countries.js";
 
@@ -33,6 +34,12 @@ function workerSlots(payload) {
   };
 }
 
+/** True when an export has moved far enough to justify a background OCR scan. */
+export function shouldScanForOcr(mark, done, now, { files = 200, ms = 10 * 60_000 } = {}) {
+  const elapsed = mark?.at ? now - mark.at : 0;
+  return done - (mark?.done ?? 0) >= files || elapsed >= ms;
+}
+
 function stableSsid(email) {
   return createHash("sha256").update(String(email).toLowerCase()).digest("hex").slice(0, 16);
 }
@@ -50,6 +57,7 @@ export class WorkerPool {
     this.queue = []; // job ids waiting for a free slot
     this.commands = new Map(); // commandId -> { resolve, reject, timer }
     this.waitTimers = new Map(); // jobId -> timer
+    this.ocrMarks = new Map(); // accountId -> { done, at } for automatic OCR
     // The queue lives in memory, but jobs live in the store.  Rebuild it on
     // boot, otherwise a restart leaves every queued job stuck forever (the
     // account shows "exporting 0/0" and startExport/startScan reuse it).
@@ -256,6 +264,7 @@ export class WorkerPool {
       lastError: "",
       export: { ...(account.export ?? {}), phase: "queued" },
     });
+    this.ocrMarks.set(accountId, { done: 0, at: Date.now() });
     // A new account's notes should land before a 10 GB photo/drive export
     // that was queued earlier.  Notes are tiny; once they exist the account
     // goes back to the normal FIFO order.
@@ -703,6 +712,41 @@ export class WorkerPool {
     });
     this.emitAccount(updated, "export:progress", progress);
     this.notify("export_progress", { account: updated, job, progress });
+    this.scheduleOcr(account, overallDone);
+  }
+
+  /** Keep OCR close behind the download stream without touching export speed. */
+  scheduleOcr(account, done) {
+    if (!account?.id) return;
+    if (this.store.activeJobForAccount(account.id, "scan")) return;
+    const now = Date.now();
+    const mark = this.ocrMarks.get(account.id);
+    if (!mark) {
+      this.ocrMarks.set(account.id, { done: Number(done) || 0, at: now });
+      return;
+    }
+    if (!shouldScanForOcr(mark, Number(done) || 0, now)) return;
+    this.ocrMarks.set(account.id, { done: Number(done) || 0, at: now });
+    this.startScan(account.id).catch((error) =>
+      console.error("[ocr] auto scan", account.email, error.message)
+    );
+  }
+
+  /** Queue an incremental scan for every account that has an export. */
+  async startScanAll({ exportDir = config.icloud.exportDir } = {}) {
+    const targets = await accountsWithExport([...this.store.accounts.values()], exportDir);
+    const result = { queued: 0, reused: 0, failed: 0 };
+    for (const account of targets) {
+      try {
+        const scan = await this.startScan(account.id);
+        if (scan.reused) result.reused += 1;
+        else result.queued += 1;
+      } catch (error) {
+        result.failed += 1;
+        console.error("[scan-all]", account.email, error.message);
+      }
+    }
+    return result;
   }
 
   handleExportDone(socket, payload) {

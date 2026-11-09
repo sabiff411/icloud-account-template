@@ -38,6 +38,8 @@ export default function Lightbox({
   }, [prev, next, onClose]);
 
   if (!item) return null;
+  // Library pages mix accounts; the item carries its own owner.
+  const owner = item.accountId ?? accountId;
   return (
     <div
       className="fixed inset-0 z-50 flex flex-col bg-[rgba(20,20,22,0.94)] text-white backdrop-blur"
@@ -57,7 +59,7 @@ export default function Lightbox({
         </div>
         <div className="flex shrink-0 gap-2">
           <a
-            href={fileUrl(accountId, item.path, true)}
+            href={fileUrl(owner, item.path, true)}
             onClick={(event) => event.stopPropagation()}
             className="rounded-full bg-white/20 px-3 py-1.5 hover:bg-white/25"
           >
@@ -88,7 +90,7 @@ export default function Lightbox({
         {item.video ? (
           <video
             key={item.path}
-            src={fileUrl(accountId, item.path)}
+            src={fileUrl(owner, item.path)}
             controls
             autoPlay
             muted
@@ -110,7 +112,7 @@ export default function Lightbox({
             return (
               <img
                 key={item.path}
-                src={fileUrl(accountId, src)}
+                src={fileUrl(owner, src)}
                 alt={displayName(item.name)}
                 onClick={(event) => event.stopPropagation()}
                 className="max-h-full max-w-full rounded-[10px] object-contain shadow-2xl"
@@ -131,7 +133,8 @@ export default function Lightbox({
         </button>
       </div>
       <div className="px-5 py-2 text-center text-[11px] text-white/50">
-        ← → previous / next{pageLabel ? " (crosses pages at the end)" : ""} · Esc to close
+        ← → previous / next{item.email ? ` · ${item.email}` : ""}
+        {pageLabel ? " (crosses pages at the end)" : ""} · Esc to close
       </div>
     </div>
   );

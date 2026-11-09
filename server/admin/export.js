@@ -56,7 +56,9 @@ export function safeName(value, fallback = "unnamed") {
 }
 
 export function safeEmail(email) {
-  return safeName(String(email ?? "").trim().toLowerCase(), "account");
+  // Preserve case like the Python exporter's safe_name; accountRoot falls
+  // back to the lowercase directory when an older export used it.
+  return safeName(String(email ?? "").trim(), "account");
 }
 
 export function accountRoot(exportDir, email) {
