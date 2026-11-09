@@ -333,9 +333,11 @@ def _handle_hsa2(api, ctx: JobContext) -> bool:
     while attempts < 3:
         if ctx.cancel.is_set():
             return False
+        email = ctx.account.get("email", "")
         try:
             command = ctx.commands.get(timeout=600)
         except queue.Empty:
+            log.info("2fa timed out waiting for a code: %s", email)
             ctx.state("twofa", "The code timed out")
             return False
         action = command.get("action", "submit")
@@ -384,6 +386,7 @@ def _handle_hsa2(api, ctx: JobContext) -> bool:
                 continue
             accepted, matched = twofa.submit_code_any(api, code, options, choice)
             if accepted:
+                log.info("2fa accepted: %s via %s", ctx.account.get("email", ""), matched or choice)
                 trusted = twofa.ensure_trusted(api)
                 label = next(
                     (o.get("label") for o in options if o.get("id") == matched),
@@ -402,6 +405,12 @@ def _handle_hsa2(api, ctx: JobContext) -> bool:
                 )
                 return True
             attempts += 1
+            log.info(
+                "2fa code rejected: %s (%d/3, choice %s)",
+                ctx.account.get("email", ""),
+                attempts,
+                choice,
+            )
             ctx.state("twofa", f"Code not accepted ({attempts}/3)")
             if attempts >= 3:
                 return False

@@ -58,6 +58,20 @@ export default function Verify({ onContinue }) {
   }, [twofa]);
 
   useEffect(() => {
+    if (auth.state !== "twofa") return;
+    if (!/not accepted|incorrect|expired|wrong code|invalid code|timed out/i.test(auth.message || "")) {
+      return;
+    }
+    // A rejected code must not stay in the boxes: the next code would be
+    // typed over it one digit at a time and auto-submit could fire on a
+    // half-old code.  Clear and focus the first box.
+    setDigits(["", "", "", "", "", ""]);
+    autoSubmitted.current = "";
+    setFocusIdx(0);
+    refs.current[0]?.focus();
+  }, [auth.state, auth.message]);
+
+  useEffect(() => {
     if (cooldown <= 0) return;
     const timer = setTimeout(() => setCooldown((value) => Math.max(0, value - 1)), 1000);
     return () => clearTimeout(timer);

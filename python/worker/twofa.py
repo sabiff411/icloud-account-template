@@ -247,6 +247,11 @@ def switch_delivery(api, option: dict) -> str:
     kind = option.get("kind")
     if kind == "sms":
         label = force_sms(api, option["id"])
+        if getattr(api, "_sms_throttled", False):
+            # Apple accepted the request but did not send a new SMS.  Saying
+            # "code sent" here makes the visitor wait for a text that never
+            # arrives.
+            return f"Apple throttled SMS to {label}; use the trusted device or resend shortly"
         return f"Code sent to {label}"
     if kind == "trusted_device":
         try:
@@ -254,10 +259,13 @@ def switch_delivery(api, option: dict) -> str:
                 api.use_existing_trusted_device_code()
         except Exception:
             pass
+        failure = ""
         try:
             api.request_2fa_code()
-        except Exception:
-            pass
+        except Exception as error:
+            failure = describe_error(error)
+        if failure:
+            return f"Could not reach a trusted device ({failure}); choose a phone number"
         return "Check the code shown on your trusted devices"
     if kind == "security_key":
         return "Use your security key"
