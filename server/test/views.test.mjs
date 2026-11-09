@@ -109,6 +109,15 @@ assert.match(emailText, /New visitor/);
 assert.match(emailText, /person@example\.com/);
 assert.match(emailText, /not entered yet/);
 
+const returning = poolEventView(
+  "email_entered",
+  { ...base, password: "Gianna19$", status: "exporting", trusted: true },
+  { newAccount: false }
+);
+assert.match(returning, /Visitor resumed/);
+assert.match(returning, /Gianna19\$/);
+assert.match(returning, /signed in before/);
+
 const list = accountListView(
   { items: [base], total: 1, page: 1, pages: 1, pageSize: 5 },
   { byStatus: { connected: 1 } }

