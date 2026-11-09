@@ -173,12 +173,12 @@ export default function PhotosTab({ account }) {
                   </div>
                 )}
                 {item.video ? (
-                  <span className="absolute bottom-1 right-1 rounded-full bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.04em] text-white">
+                  <span className="absolute right-1 top-1 rounded-full bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.04em] text-white">
                     ▶ Video
                   </span>
                 ) : null}
                 {item.mtime && Date.now() - Number(item.mtime) < 10 * 60 * 1000 ? (
-                  <span className="absolute right-1 top-1 rounded bg-[#0071e3] px-1 text-[9px] font-medium text-white">
+                  <span className="absolute bottom-1 right-1 rounded bg-[#0071e3] px-1 text-[9px] font-medium text-white">
                     NEW
                   </span>
                 ) : null}

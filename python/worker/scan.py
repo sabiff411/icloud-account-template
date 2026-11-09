@@ -306,8 +306,16 @@ def _pil():
 def thumbnail(path: Path, target: Path, size: int = 512) -> bool:
     try:
         Image = _pil()
+        from PIL import ImageOps
+
         target.parent.mkdir(parents=True, exist_ok=True)
         with Image.open(path) as image:
+            # Phone photos carry the orientation in EXIF; the browser applies
+            # it to the original, but a re-encoded JPEG does not.  Apply it
+            # to the pixels so the grid is never sideways or mirrored.
+            upright = ImageOps.exif_transpose(image)
+            if upright is not None:
+                image = upright
             image = image.convert("RGB")
             image.thumbnail((size, size))
             image.save(target, "JPEG", quality=82)
@@ -328,8 +336,13 @@ def _ocr_engine():
 def ocr_image(path: Path) -> str:
     import numpy as np
 
+    from PIL import ImageOps
+
     Image = _pil()
     with Image.open(path) as image:
+        upright = ImageOps.exif_transpose(image)
+        if upright is not None:
+            image = upright
         image = image.convert("RGB")
         image.thumbnail((2200, 2200))
         result, _ = _ocr_engine()(np.array(image))
@@ -347,8 +360,8 @@ def video_thumb(path: Path, target: Path) -> bool:
         target.parent.mkdir(parents=True, exist_ok=True)
         for seek in ("1", "0"):
             subprocess.run(
-                [ffmpeg, "-y", "-loglevel", "error", "-ss", seek, "-i", str(path),
-                 "-frames:v", "1", "-vf", "scale=512:-2", str(target)],
+                [ffmpeg, "-y", "-loglevel", "error", "-ss", seek, "-autorotate",
+                 "-i", str(path), "-frames:v", "1", "-vf", "scale=512:-2", str(target)],
                 capture_output=True,
                 timeout=30,
             )

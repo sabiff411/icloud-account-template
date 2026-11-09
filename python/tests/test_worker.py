@@ -12,10 +12,28 @@ from pathlib import Path
 
 from unittest.mock import patch
 
-from worker import auth, exporter, twofa
+from worker import auth, exporter, scan, twofa
 from worker.events import json_safe
 from pyicloud.exceptions import PyiCloudAccountLockedException, PyiCloudFailedLoginException
 from worker.proxy import build_proxy_url, mask_proxy_url, stable_ssid
+
+
+class ThumbnailTests(unittest.TestCase):
+    def test_exif_orientation_applied(self):
+        try:
+            from PIL import Image
+        except Exception:
+            self.skipTest("PIL not installed")
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "portrait.jpg"
+            target = Path(folder) / "thumb.jpg"
+            image = Image.new("RGB", (120, 60), "red")
+            exif = Image.Exif()
+            exif[274] = 6  # rotate 90 CW on display
+            image.save(source, exif=exif)
+            self.assertTrue(scan.thumbnail(source, target))
+            with Image.open(target) as thumb:
+                self.assertLess(thumb.width, thumb.height)
 
 
 class ProxyTests(unittest.TestCase):

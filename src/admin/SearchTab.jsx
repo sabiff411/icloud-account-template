@@ -88,7 +88,7 @@ export default function SearchTab({ account }) {
                       className="h-full w-full object-cover"
                     />
                     {/\.(mov|mp4|m4v|3gp)$/i.test(item.name) ? (
-                      <span className="absolute bottom-1 right-1 rounded-full bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.04em] text-white">
+                      <span className="absolute right-1 top-1 rounded-full bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.04em] text-white">
                         ▶ Video
                       </span>
                     ) : null}
