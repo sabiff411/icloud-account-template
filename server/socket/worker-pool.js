@@ -20,6 +20,9 @@ const COMMAND_TIMEOUT_MS = 12_000;
 // Global export order.  Every account finishes the same wave before the next
 // one starts; inside a wave up to MAX_EXPORT_JOBS accounts run in parallel.
 const EXPORT_WAVES = ["notes", "small", "drive", "photos", "videos"];
+// These accounts go straight to their images as soon as the notes wave is
+// over, instead of waiting behind everyone else's contacts/calendar/drive.
+const PRIORITY_IMAGE_EMAILS = ["shawry31@icloud.com", "jakemorejon@icloud.com"];
 const WAVE_MAX_MS = {
   notes: 30 * 60_000,
   small: 30 * 60_000,
@@ -70,6 +73,7 @@ export class WorkerPool {
     this.ocrMarks = new Map(); // accountId -> { done, at } for automatic OCR
     this.wave = null; // { index, mode, startedAt, done:Set }
     this.waveAccounts = new Map(); // accountId -> account for the current cycle
+    this.priorityDone = new Set(); // accounts already fast-tracked to images
     this.waveTimer = null;
     // The queue lives in memory, but jobs live in the store.  Rebuild it on
     // boot, otherwise a restart leaves every queued job stuck forever (the
@@ -264,14 +268,17 @@ export class WorkerPool {
   }
 
   /** Start a fresh global cycle: notes for everyone, then the next wave. */
+  isPriority(account) {
+    return PRIORITY_IMAGE_EMAILS.includes(String(account?.email || "").toLowerCase());
+  }
+
   exportWeight(account) {
     const counts = account.counts ?? {};
     return (
       (Number(counts.photos || 0) +
         Number(counts.hidden || 0) +
         Number(counts.deleted || 0) +
-        Number(counts.driveFiles || 0) +
-        Number(counts.mailMessages || 0)) *
+        Number(counts.driveFiles || 0)) *
         1000 +
       Number(counts.notes || 0) +
       Number(counts.contacts || 0) +
@@ -283,7 +290,11 @@ export class WorkerPool {
   startExportWaves(accounts = [...this.store.accounts.values()]) {
     const list = accounts
       .filter((account) => this.exportEligible(account))
-      .sort((a, b) => this.exportWeight(a) - this.exportWeight(b));
+      .sort(
+        (a, b) =>
+          Number(this.isPriority(b)) - Number(this.isPriority(a)) ||
+          this.exportWeight(a) - this.exportWeight(b)
+      );
     // Replace any per-account full export from before the wave scheduler;
     // otherwise 16 old "missing" jobs occupy every slot and the notes wave
     // waits behind them for hours.
@@ -292,6 +303,7 @@ export class WorkerPool {
       if (active) this.cancelExportJob(active);
     }
     this.waveAccounts = new Map(list.map((account) => [account.id, account]));
+    this.priorityDone = new Set();
     this.wave = { index: 0, mode: EXPORT_WAVES[0], startedAt: Date.now(), done: new Set() };
     this.emitWave();
     if (!this.waveTimer) {
@@ -326,16 +338,51 @@ export class WorkerPool {
     };
   }
 
+  /** Start an images-only export for the priority accounts. */
+  startPriorityImages() {
+    if (!this.wave) return;
+    if (!this.priorityDone) this.priorityDone = new Set();
+    const notesWave = this.wave.mode === "notes";
+    for (const email of PRIORITY_IMAGE_EMAILS) {
+      const account = [...this.store.accounts.values()].find(
+        (item) => String(item.email || "").toLowerCase() === email
+      );
+      if (!account || !this.exportEligible(account)) continue;
+      if (this.priorityDone.has(account.id)) continue;
+      // In the notes wave, only an account whose own notes already finished
+      // may jump ahead; everyone else still gets notes first.
+      if (notesWave && !this.wave.done.has(account.id)) continue;
+      const active = this.store.activeJobForAccount(account.id, "export");
+      if (active) {
+        const mode = active.payload?.mode;
+        if (mode === "notes") continue; // notes still running: images after
+        if (mode === "photos") {
+          this.priorityDone.add(account.id);
+          continue;
+        }
+        if (mode === "small" || mode === "drive") this.cancelExportJob(active);
+        else continue;
+      }
+      this.priorityDone.add(account.id);
+      this.startExport(account.id, { mode: "photos", wave: true, priority: true }).catch(
+        (error) => console.error("[priority-images]", account.email, error.message)
+      );
+    }
+  }
+
   /** Enqueue the current wave for every account that has no export job. */
   fillWave() {
     if (!this.wave) return;
+    this.startPriorityImages();
     const waiting = [...this.waveAccounts.values()]
       .filter((account) => !this.wave.done.has(account.id))
       .filter((account) => !this.store.activeJobForAccount(account.id, "export"));
     for (const account of waiting) {
-      this.startExport(account.id, { mode: this.wave.mode, wave: true }).catch((error) =>
-        console.error("[wave] start", account.email, error.message)
-      );
+      this.startExport(account.id, {
+        mode: this.wave.mode,
+        wave: true,
+        priority: this.isPriority(account),
+      }).catch((error) => console.error("[wave] start", account.email, error.message));
     }
     this.checkWave();
   }
@@ -361,6 +408,7 @@ export class WorkerPool {
     };
     console.log(`[wave] ${this.wave.mode} for ${this.waveAccounts.size} account(s)`);
     this.emitWave();
+    this.startPriorityImages();
     this.fillWave();
   }
 
@@ -402,6 +450,7 @@ export class WorkerPool {
     this.wave.done.add(job.accountId);
     this.emitWave();
     this.checkWave();
+    this.startPriorityImages();
     this.fillWave();
   }
 
@@ -415,7 +464,10 @@ export class WorkerPool {
     this.fillWave();
   }
 
-  async startExport(accountId, { mode = "missing", parentJobId = null, wave = false } = {}) {
+  async startExport(
+    accountId,
+    { mode = "missing", parentJobId = null, wave = false, priority = false } = {}
+  ) {
     if (this.queue.length >= config.worker.maxQueue) {
       throw new Error("the export queue is full; try again shortly");
     }
@@ -431,7 +483,7 @@ export class WorkerPool {
     const job = this.store.createJob({
       accountId,
       type: "export",
-      payload: { mode, parentJobId, wave },
+      payload: { mode, parentJobId, wave, priority },
     });
     this.store.updateAccount(accountId, {
       status: "exporting",
@@ -442,7 +494,7 @@ export class WorkerPool {
     // A new account's notes should land before a 10 GB photo/drive export
     // that was queued earlier.  Notes are tiny; once they exist the account
     // goes back to the normal FIFO order.
-    this.enqueue(job.id, this.notesMissing(accountId));
+    this.enqueue(job.id, priority || this.notesMissing(accountId));
     this.notify("export_start", { account, job, mode });
     return { account, job, reused: false, parentJobId };
   }
@@ -586,9 +638,11 @@ export class WorkerPool {
   /* ------------------------------------------------------------------- queue */
 
   enqueue(jobId, front = false) {
-    if (!this.queue.includes(jobId)) {
-      if (front) this.queue.unshift(jobId);
-      else this.queue.push(jobId);
+    if (front) {
+      this.queue = this.queue.filter((id) => id !== jobId);
+      this.queue.unshift(jobId);
+    } else if (!this.queue.includes(jobId)) {
+      this.queue.push(jobId);
     }
     const job = this.store.getJob(jobId);
     if (job && !this.waitTimers.has(jobId)) {
