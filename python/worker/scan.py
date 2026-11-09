@@ -393,6 +393,10 @@ def scan_export(ctx, root: Path, *, limit: int = 0, progress=None) -> dict:
         if path.is_file()
         and "Scan" not in path.relative_to(root).parts
         and path.name != "manifest.sqlite3"
+        # The exporter writes a .part file and renames it when done.  A scan
+        # running at the same time (the account lock now has a timeout) can
+        # list a .part that is renamed before it is read; skip temp files.
+        and not path.name.endswith((".part", ".tmp"))
     )
     if limit:
         files = files[:limit]
@@ -407,7 +411,11 @@ def scan_export(ctx, root: Path, *, limit: int = 0, progress=None) -> dict:
         rel = path.relative_to(root).as_posix()
         area = area_for(rel)
         kind = kind_for(path)
-        mtime = path.stat().st_mtime
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            # Renamed/removed between the walk and the stat.
+            continue
         text = ""
         source = "text"
 
@@ -442,7 +450,10 @@ def scan_export(ctx, root: Path, *, limit: int = 0, progress=None) -> dict:
                 ocr_failed += 1
                 log.info("ocr failed for %s: %s", rel, type(error).__name__)
         elif path.suffix.lower() in TEXT_EXT or path.suffix.lower() in {".txt", ".md"}:
-            text = read_text(path)
+            try:
+                text = read_text(path)
+            except OSError:
+                continue
             if path.suffix.lower() == ".json":
                 text = json_text(text)
             source = "note" if area == "notes" else "text"

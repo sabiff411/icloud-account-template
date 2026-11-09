@@ -993,6 +993,9 @@ export class WorkerPool {
     scan.newTiers = payload.newTiers ?? scan.tiers;
     const updated = this.store.updateAccount(account.id, {
       scan,
+      // A completed scan proves the export tree is readable; drop a stale
+      // scan error (e.g. FileNotFoundError from a concurrent export).
+      lastError: "",
       ...(newFindings > 0
         ? { badges: { newSeedsUntil: badgeUntil(), newSeeds: newFindings } }
         : {}),
