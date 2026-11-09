@@ -27,9 +27,17 @@ that same screen.
 
 ## Goals
 
-- A new top-level **Library** tab next to Accounts/Submissions.
+- A new top-level **Library** tab next to Accounts/Submissions, opening on
+  two large buttons: **All notes** and **All images (OCR)**.
 - Cross-account search over: note text, contacts, calendar, reminders,
   image filenames, cached OCR text, and seed findings.
+- **Every downloaded image gets OCR automatically.** The export already
+  schedules a full scan on completion; while an export runs, Node now also
+  schedules an incremental scan after roughly every 200 new files or 10
+  minutes, at most one scan per account at a time. Cached OCR makes each
+  follow-up scan cheap; only newly downloaded images are OCR'd. A photo
+  shows an OCR badge when its `Scan/ocr/<rel>.txt` exists and a "pending"
+  state while it does not, and global image search matches OCR text.
 - Every result shows the account email (and short id) and opens the
   original file.
 - Photo results as a paginated thumbnail grid, with the existing HEIC
@@ -39,6 +47,8 @@ that same screen.
 - A **Scan all** action that queues the existing scan job for every
   account that has an export directory, without touching anything else.
   Scans stay incremental: unchanged images reuse cached OCR.
+- Automatic OCR scheduling during exports, so the library's image search is
+  populated without waiting for a 10 GB export to finish.
 - Catalog refresh: lazy 2-minute TTL plus an explicit Refresh button.
 
 ## Non-goals
@@ -75,7 +85,7 @@ that same screen.
   notes:    [{ accountId, email, path, name, title, size, mtime, text }],
   contacts: [{ accountId, email, name, phones[], emails[], company, note }],
   calendar: [{ accountId, email, kind: "calendar"|"reminder", title, when, notes }],
-  photos:   [{ accountId, email, path, name, area, size, mtime, thumb }],
+  photos:   [{ accountId, email, path, name, area, size, mtime, thumb, ocr }],
   seeds:    [{ accountId, email, file, area, phrase, words, tier, checksum, snippet }],
   ocr:      { "<accountId>:<path>": text }   // for image search
 }
@@ -121,7 +131,8 @@ Notes match name + text. Contacts match name/phones/emails/company/note.
 Calendar matches title/notes. Seeds match phrase/file.
 
 Response: `{ ok, builtAt, counts: { accounts, notes, contacts, calendar,
-photos, seeds, scannedAccounts }, accounts?, items, total, page, pages }`.
+photos, seeds, scannedAccounts, ocrDone, ocrPending }, accounts?, items,
+total, page, pages }`.
 Each item carries `accountId` and `email` so the UI can link to
 `/accounts/:id/file?path=…`.
 
@@ -140,17 +151,37 @@ The Library header shows `Scan all` and the ack (`queued N, already running
 M`). While any scanned account has `scan.phase === "running"` the catalog
 re-fetches every 30 s so new findings appear as scans finish.
 
+### 3b. Automatic OCR while an export runs
+
+`AUTO_SCAN_AFTER_EXPORT` already scans an account when its export finishes.
+The gap is a multi-hour export: early images have no OCR until the end.
+
+Add to `handleExportProgress` in `server/socket/worker-pool.js`:
+
+- keep `ocr: { done, at }` on the account;
+- when `overallDone - ocr.done >= 200` or `now - ocr.at >= 10 min`, and the
+  account has no active scan, call `startScan(account.id)` and update the
+  marker;
+- `startScan` is idempotent and scans are queued ahead of exports.
+
+The scan is filesystem-only (no iCloud session), reuses `Scan/ocr` for
+unchanged files and only OCRs new images. The catalog marks each photo
+`ocr: true/false` by checking `Scan/ocr/<rel>.txt`, so the UI and the
+counts show what is searchable and what is still pending.
+
 ### 4. UI (`src/admin/LibraryTab.jsx`)
 
 - `Admin.jsx` gains a third view `library` in the existing header pills.
+- Landing: two large buttons, **All notes (N)** and **All images (N ·
+  OCR x/y)**, plus the type pills for Contacts / Calendar / Seeds.
 - Layout: sticky toolbar (search, type pills, account select, Refresh, Scan
-  all), meta line (`N notes · N images · N contacts · N findings · indexed
-  1m ago`), then the result area.
+  all), meta line (`N notes · N images · OCR x/y · N contacts · N findings
+  · indexed 1m ago`), then the result area.
 - Notes: two-pane list + reader (reuse the `file` endpoint for the body).
 - Contacts/Calendar: compact tables with an Account column.
 - Photos: 3/5/6-column grid, 120 per page, lazy thumbs, account badge on
-  each tile, click opens the existing `Lightbox` (pass that item's
-  `accountId`).
+  each tile, an OCR badge or "pending" state, click opens the existing
+  `Lightbox` (pass that item's `accountId`).
 - Seeds: rows with phrase, tier badge, account, file; link opens the image.
 - Empty states distinguish "no export yet" from "no match".
 - Phone/tablet: single column, toolbar wraps (same as current tabs).
@@ -170,6 +201,11 @@ re-fetches every 30 s so new findings appear as scans finish.
 ## Decisions made here
 
 - Catalog is read-only and includes hidden accounts (flagged).
+- The Library landing is two buttons (All notes, All images with OCR
+  status); contacts/calendar/seeds stay one pill away.
+- OCR runs automatically during exports (200 new files or 10 minutes,
+  whichever first) and once when an export finishes. The manual `Scan all`
+  remains for forcing a pass.
 - Photo grid paginates; text lists paginate at 100.
 - `type=all` is a grouped landing view: notes (12), contacts (12),
   calendar (12), photos (24), seeds (12), each with a total and a "see all"
@@ -203,6 +239,10 @@ re-fetches every 30 s so new findings appear as scans finish.
 - Scan-all over 15k unscanned images is hours of OCR on 2 slots. It is
   incremental, so the first full pass is the expensive one; the UI should say
   so before queuing.
+- Automatic OCR uses the same 2 scan slots as manual scans. With many
+  exports at once, OCR can lag behind downloads; the library shows the
+  OCR-done/pending counts so the operator can see it. Raising
+  `MAX_SCAN_JOBS` is the knob if the backlog matters.
 
 ## What is left to the builder
 
