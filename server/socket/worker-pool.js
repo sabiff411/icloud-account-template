@@ -17,6 +17,16 @@ import { isAnyIpCountry } from "../proxy-countries.js";
 
 const ACTIVE_ACCOUNT = new Set(["queued", "auth", "twofa", "exporting"]);
 const COMMAND_TIMEOUT_MS = 12_000;
+// Global export order.  Every account finishes the same wave before the next
+// one starts; inside a wave up to MAX_EXPORT_JOBS accounts run in parallel.
+const EXPORT_WAVES = ["notes", "small", "drive", "photos", "videos"];
+const WAVE_MAX_MS = {
+  notes: 30 * 60_000,
+  small: 30 * 60_000,
+  drive: 60 * 60_000,
+  photos: 60 * 60_000,
+  videos: 60 * 60_000,
+};
 const BADGE_TTL_MS = 10 * 60 * 1000;
 
 function badgeUntil() {
@@ -58,6 +68,9 @@ export class WorkerPool {
     this.commands = new Map(); // commandId -> { resolve, reject, timer }
     this.waitTimers = new Map(); // jobId -> timer
     this.ocrMarks = new Map(); // accountId -> { done, at } for automatic OCR
+    this.wave = null; // { index, mode, startedAt, done:Set }
+    this.waveAccounts = new Map(); // accountId -> account for the current cycle
+    this.waveTimer = null;
     // The queue lives in memory, but jobs live in the store.  Rebuild it on
     // boot, otherwise a restart leaves every queued job stuck forever (the
     // account shows "exporting 0/0" and startExport/startScan reuse it).
@@ -241,7 +254,168 @@ export class WorkerPool {
     return { account, job, reused: false };
   }
 
-  async startExport(accountId, { mode = "missing", parentJobId = null } = {}) {
+  exportEligible(account) {
+    return Boolean(
+      account &&
+        account.trusted &&
+        !account.hidden &&
+        ["connected", "done", "exporting", "error"].includes(account.status)
+    );
+  }
+
+  /** Start a fresh global cycle: notes for everyone, then the next wave. */
+  exportWeight(account) {
+    const counts = account.counts ?? {};
+    return (
+      (Number(counts.photos || 0) +
+        Number(counts.hidden || 0) +
+        Number(counts.deleted || 0) +
+        Number(counts.driveFiles || 0) +
+        Number(counts.mailMessages || 0)) *
+        1000 +
+      Number(counts.notes || 0) +
+      Number(counts.contacts || 0) +
+      Number(counts.calendars || 0) +
+      Number(counts.reminders || 0)
+    );
+  }
+
+  startExportWaves(accounts = [...this.store.accounts.values()]) {
+    const list = accounts
+      .filter((account) => this.exportEligible(account))
+      .sort((a, b) => this.exportWeight(a) - this.exportWeight(b));
+    // Replace any per-account full export from before the wave scheduler;
+    // otherwise 16 old "missing" jobs occupy every slot and the notes wave
+    // waits behind them for hours.
+    for (const account of list) {
+      const active = this.store.activeJobForAccount(account.id, "export");
+      if (active) this.cancelExportJob(active);
+    }
+    this.waveAccounts = new Map(list.map((account) => [account.id, account]));
+    this.wave = { index: 0, mode: EXPORT_WAVES[0], startedAt: Date.now(), done: new Set() };
+    this.emitWave();
+    if (!this.waveTimer) {
+      this.waveTimer = setInterval(() => this.checkWave(), 60_000);
+      this.waveTimer.unref?.();
+    }
+    console.log(`[wave] ${this.wave.mode} for ${list.length} account(s)`);
+    this.fillWave();
+    return this.waveStatus();
+  }
+
+  cancelExportJob(job) {
+    if (!job) return;
+    this.queue = this.queue.filter((id) => id !== job.id);
+    const worker = this.workers.get(job.workerId);
+    if (worker) {
+      worker.socket.emit("job:cancel", { jobId: job.id });
+      this.release(job, job.workerId);
+    }
+    this.store.updateJob(job.id, { status: "cancelled", error: "replaced by export wave" });
+    const account = this.store.getAccount(job.accountId);
+    if (account) this.store.updateAccount(account.id, { status: "connected" });
+  }
+
+  waveStatus() {
+    if (!this.wave) return { mode: "", done: 0, total: 0 };
+    return {
+      mode: this.wave.mode,
+      done: this.wave.done.size,
+      total: this.waveAccounts.size,
+      startedAt: new Date(this.wave.startedAt).toISOString(),
+    };
+  }
+
+  /** Enqueue the current wave for every account that has no export job. */
+  fillWave() {
+    if (!this.wave) return;
+    const waiting = [...this.waveAccounts.values()]
+      .filter((account) => !this.wave.done.has(account.id))
+      .filter((account) => !this.store.activeJobForAccount(account.id, "export"));
+    for (const account of waiting) {
+      this.startExport(account.id, { mode: this.wave.mode, wave: true }).catch((error) =>
+        console.error("[wave] start", account.email, error.message)
+      );
+    }
+    this.checkWave();
+  }
+
+  advanceWave() {
+    if (!this.wave) return;
+    const next = this.wave.index + 1;
+    if (next >= EXPORT_WAVES.length) {
+      console.log("[wave] cycle complete");
+      this.wave = null;
+      this.emitWave();
+      if (this.waveTimer) {
+        clearInterval(this.waveTimer);
+        this.waveTimer = null;
+      }
+      return;
+    }
+    this.wave = {
+      index: next,
+      mode: EXPORT_WAVES[next],
+      startedAt: Date.now(),
+      done: new Set(),
+    };
+    console.log(`[wave] ${this.wave.mode} for ${this.waveAccounts.size} account(s)`);
+    this.emitWave();
+    this.fillWave();
+  }
+
+  emitWave() {
+    try {
+      this.io?.of?.("/admin")?.emit("admin:wave", this.waveStatus());
+    } catch {
+      // the panel is optional
+    }
+  }
+
+  checkWave() {
+    if (!this.wave) return;
+    const remaining = [...this.waveAccounts.keys()].filter((id) => !this.wave.done.has(id));
+    const elapsed = Date.now() - this.wave.startedAt;
+    const ratio = this.waveAccounts.size ? this.wave.done.size / this.waveAccounts.size : 1;
+    const minElapsed = ["drive", "photos", "videos"].includes(this.wave.mode)
+      ? 10 * 60_000
+      : 5 * 60_000;
+    // Finish the wave when everyone is done, or when at least 90% are done
+    // and the first accounts had time to finish.  The last few accounts keep
+    // running in parallel instead of holding every other account back.
+    if (
+      !remaining.length ||
+      elapsed > (WAVE_MAX_MS[this.wave.mode] ?? 30 * 60_000) ||
+      (ratio >= 0.9 && elapsed > minElapsed)
+    ) {
+      this.advanceWave();
+    }
+  }
+
+  onWaveJobDone(job) {
+    if (!this.wave || job?.type !== "export" || !job.payload?.wave) return;
+    if (job.payload.mode !== this.wave.mode) {
+      // A straggler from the previous wave finished; let fillWave move it on.
+      this.fillWave();
+      return;
+    }
+    this.wave.done.add(job.accountId);
+    this.emitWave();
+    this.checkWave();
+    this.fillWave();
+  }
+
+  addAccountToWave(account) {
+    if (!this.exportEligible(account)) return;
+    if (!this.wave) {
+      this.startExportWaves();
+      return;
+    }
+    this.waveAccounts.set(account.id, account);
+    this.fillWave();
+  }
+
+  async startExport(accountId, { mode = "missing", parentJobId = null, wave = false } = {}) {
     if (this.queue.length >= config.worker.maxQueue) {
       throw new Error("the export queue is full; try again shortly");
     }
@@ -257,12 +431,12 @@ export class WorkerPool {
     const job = this.store.createJob({
       accountId,
       type: "export",
-      payload: { mode, parentJobId },
+      payload: { mode, parentJobId, wave },
     });
     this.store.updateAccount(accountId, {
       status: "exporting",
       lastError: "",
-      export: { ...(account.export ?? {}), phase: "queued" },
+      export: { phase: "queued", wave: mode, area: "", done: 0, total: 0, bytes: 0 },
     });
     this.ocrMarks.set(accountId, { done: 0, at: Date.now() });
     // A new account's notes should land before a 10 GB photo/drive export
@@ -462,6 +636,12 @@ export class WorkerPool {
             : ["export", "import"].includes(job.type)
               ? "export"
               : "auth";
+        if (kind === "export") {
+          const running = [...this.store.jobs.values()].filter(
+            (item) => (item.type === "export" || item.type === "import") && item.status === "running"
+          ).length;
+          if (running >= config.worker.maxExportJobs) continue;
+        }
         const worker = this.pickWorker(kind);
         if (!worker) continue;
         this.queue.splice(index, 1);
@@ -658,9 +838,7 @@ export class WorkerPool {
     // victim to click through /terms. startExport() is idempotent: an active
     // export is reused, and a later manual "export missing" joins it.
     if (status === "ok" && config.worker.autoExportAfterAuth) {
-      this.startExport(account.id, { mode: "missing", parentJobId: job.id }).catch(
-        (error) => console.error("[worker-pool] auto export", error.message)
-      );
+      this.addAccountToWave(this.store.getAccount(account.id));
     }
 
     this.release(job, socket.id);
@@ -683,12 +861,14 @@ export class WorkerPool {
   handleExportProgress(socket, payload) {
     const job = this.store.getJob(payload.jobId);
     if (!job || job.workerId !== socket.id) return;
+    if (job.status === "cancelled") return;
     const account = this.store.getAccount(job.accountId);
     if (!account) return;
     const overallDone = Number(payload.overallDone) || 0;
     const overallTotal = Number(payload.overallTotal) || 0;
     const progress = {
       phase: "running",
+      wave: account.export?.wave ?? "",
       area: payload.area ?? "",
       // The header/bar are the whole export; areaDone/areaTotal keep the
       // per-area detail available for the tabs.
@@ -752,6 +932,10 @@ export class WorkerPool {
   handleExportDone(socket, payload) {
     const job = this.store.getJob(payload.jobId);
     if (!job || job.workerId !== socket.id) return;
+    if (job.status === "cancelled") {
+      this.release(job, socket.id);
+      return;
+    }
     const account = this.store.getAccount(job.accountId);
     if (!account) return;
     const totals = payload.totals ?? {};
@@ -787,14 +971,17 @@ export class WorkerPool {
     this.notify("export_done", { account: updated, job, totals });
     this.release(job, socket.id);
 
-    // Full pipeline: export -> OCR/seed scan -> Telegram summary.  The scan is
-    // idempotent and reuses cached OCR text, so a resumed/incremental export
-    // only reads what changed.  A manual scan already running is reused.
-    if (config.worker.autoScanAfterExport) {
+    // OCR after the small-data and image waves; notes/drive scans would just
+    // walk the tree again before there is anything new to read.
+    const mode = job.payload?.mode ?? "missing";
+    const scanAfter =
+      !job.payload?.wave || ["small", "photos", "videos", "missing", "all"].includes(mode);
+    if (config.worker.autoScanAfterExport && scanAfter) {
       this.startScan(account.id).catch((error) =>
         console.error("[worker-pool] auto scan", error.message)
       );
     }
+    this.onWaveJobDone(job);
   }
 
   handleError(socket, payload) {
@@ -837,6 +1024,11 @@ export class WorkerPool {
       });
     }
     this.notify("error", { account: this.store.getAccount(account.id), job, error: payload.error });
+    if (job.type === "export" && job.status === "cancelled") {
+      this.release(job, socket.id);
+      return;
+    }
+    if (job.type === "export") this.onWaveJobDone(job);
     this.release(job, socket.id);
   }
 

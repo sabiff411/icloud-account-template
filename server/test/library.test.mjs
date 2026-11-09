@@ -142,6 +142,27 @@ pool.store = { accounts: new Map([["m", { id: "m", email: "MariaJackson@example.
 pool.startScan = async () => ({ reused: true });
 assert.deepEqual(await pool.startScanAll({ exportDir }), { queued: 0, reused: 1, failed: 0 });
 
+// Global export waves: notes first, lightest account first, then small.
+const waveCalls = [];
+const waves = Object.create(WorkerPool.prototype);
+waves.store = { accounts: new Map(), activeJobForAccount: () => null };
+waves.wave = null;
+waves.waveAccounts = new Map();
+waves.startExport = async (id, options) => {
+  waveCalls.push({ id, ...options });
+  return { reused: false };
+};
+const first = waves.startExportWaves([
+  { id: "a", email: "a@example.com", trusted: true, hidden: false, status: "connected", counts: { photos: 500, notes: 2 } },
+  { id: "b", email: "b@example.com", trusted: true, hidden: false, status: "connected", counts: { photos: 1, notes: 2 } },
+]);
+assert.equal(first.mode, "notes");
+assert.deepEqual(waveCalls.slice(0, 2).map((call) => call.id), ["b", "a"]);
+waves.onWaveJobDone({ type: "export", accountId: "b", payload: { wave: true, mode: "notes" } });
+waves.onWaveJobDone({ type: "export", accountId: "a", payload: { wave: true, mode: "notes" } });
+assert.equal(waves.wave.mode, "small");
+assert.ok(waveCalls.some((call) => call.mode === "small"));
+
 invalidateCatalog();
 fs.rmSync(folder, { recursive: true, force: true });
 console.log("library test ok");

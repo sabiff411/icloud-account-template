@@ -211,6 +211,7 @@ class Exporter:
         self.mode = mode
         self.force = mode in ("force", "mail-force", "all-force")
         self.only_mail = mode in ("mail", "mail-force")
+        self.phase = mode if mode in ("notes", "small", "drive", "photos", "videos") else ""
         self.include_mail = mode in ("mail", "mail-force", "all", "all-force")
         self.root = Path(export_dir) / safe_name(ctx.account.get("email", "account"))
         self.root.mkdir(parents=True, exist_ok=True)
@@ -225,6 +226,10 @@ class Exporter:
         self._last_emit = 0.0
 
     # ------------------------------------------------------------- enumeration
+
+    def _cancelled(self) -> bool:
+        cancel = getattr(self.ctx, "cancel", None)
+        return bool(cancel is not None and cancel.is_set())
 
     def add(
         self,
@@ -271,7 +276,7 @@ class Exporter:
             kind="bytes",
         )
 
-    def enumerate_photos(self, api, seen: set[str]):
+    def enumerate_photos(self, api, seen: set[str], only: str = ""):
         try:
             albums = api.photos.albums
         except Exception:
@@ -286,8 +291,10 @@ class Exporter:
                 album = api.photos.albums[album_name]
             except Exception:
                 continue
+            if self._cancelled():
+                return
             try:
-                self._add_album(api, album, area, album_name, seen)
+                self._add_album(api, album, area, album_name, seen, only)
                 self._drain(8)
             except Exception as error:
                 log.info("photo album failed: %s", type(error).__name__)
@@ -297,20 +304,22 @@ class Exporter:
                 if name in ("Hidden", "Recently Deleted", "Library"):
                     continue
                 try:
-                    self._add_album(api, album, "photos", name, seen)
+                    self._add_album(api, album, "photos", name, seen, only)
                     self._drain(8)
                 except Exception as error:
                     log.info("photo album failed: %s", type(error).__name__)
         except Exception:
             pass
 
-    def _add_album(self, api, album, area: str, album_name: str, seen: set[str]):
+    def _add_album(self, api, album, area: str, album_name: str, seen: set[str], only: str = ""):
         try:
             assets = iter(album)
         except Exception:
             return
         count = 0
         for asset in assets:
+            if self._cancelled():
+                return
             asset_id = str(getattr(asset, "id", "") or "")
             if not asset_id or asset_id in seen:
                 continue
@@ -326,6 +335,11 @@ class Exporter:
                     original.get("filename") or getattr(asset, "filename", "") or asset_id,
                     f"{asset_id}.bin",
                 )
+                is_video = Path(filename).suffix.lower() in VIDEO_EXT
+                if only == "image" and is_video:
+                    continue
+                if only == "video" and not is_video:
+                    continue
                 dest = self.root / "Photos" / safe_name(album_name) / f"{safe_name(asset_id[:8])}_{filename}"
                 key = f"photo:{asset_id}"
 
@@ -355,6 +369,8 @@ class Exporter:
         except Exception:
             return
         for summary in summaries:
+            if self._cancelled():
+                return
             note_id = str(getattr(summary, "id", "") or "")
             if not note_id:
                 continue
@@ -382,12 +398,16 @@ class Exporter:
         stack = [(root, self.root / "Drive")]
         seen = set()
         while stack:
+            if self._cancelled():
+                return
             node, dest_dir = stack.pop()
             try:
                 children = node.get_children()
             except Exception:
                 continue
             for child in children or []:
+                if self._cancelled():
+                    return
                 name = safe_name(getattr(child, "name", "") or "file")
                 if getattr(child, "type", "") == "folder":
                     stack.append((child, dest_dir / name))
@@ -742,22 +762,44 @@ class Exporter:
                 # Notes first, then contacts/calendar/reminders/account.  Each
                 # phase drains before the next enumeration starts, so a large
                 # photo library or mailbox cannot delay the small items.
-                self.enumerate_notes(api)
-                self._drain(0)
-                # Notes are on disk now; previews for older photos can be
-                # prepared in the background while contacts/calendar load.
-                threading.Thread(
-                    target=self._backfill_thumbs, daemon=True, name="thumb-backfill"
-                ).start()
-                self.enumerate_json(api)
-                self._drain(4)
-                if self.include_mail:
-                    self.enumerate_mail(api)
-                    self._drain(5)
-                self.enumerate_drive(api)
-                self._drain(6)
-                self.enumerate_photos(api, seen)
-                self._drain(99)
+                if self.phase == "notes":
+                    self.enumerate_notes(api)
+                    self._drain(0)
+                    self._drain(99)
+                elif self.phase == "small":
+                    self.enumerate_json(api)
+                    self._drain(4)
+                    self._drain(99)
+                elif self.phase == "drive":
+                    self.enumerate_drive(api)
+                    self._drain(6)
+                    # Large drive files are priority 90; they still belong to
+                    # the drive wave, not to a later wave.
+                    self._drain(99)
+                elif self.phase == "photos":
+                    self.enumerate_photos(api, seen, only="image")
+                    self._drain(99)
+                elif self.phase == "videos":
+                    self.enumerate_photos(api, seen, only="video")
+                    self._drain(99)
+                else:
+                    # Notes first, then contacts/calendar/reminders/account.
+                    self.enumerate_notes(api)
+                    self._drain(0)
+                    # Notes are on disk now; previews for older photos can be
+                    # prepared in the background while contacts/calendar load.
+                    threading.Thread(
+                        target=self._backfill_thumbs, daemon=True, name="thumb-backfill"
+                    ).start()
+                    self.enumerate_json(api)
+                    self._drain(4)
+                    if self.include_mail:
+                        self.enumerate_mail(api)
+                        self._drain(5)
+                    self.enumerate_drive(api)
+                    self._drain(6)
+                    self.enumerate_photos(api, seen)
+                    self._drain(99)
         else:
             self._drain(99)
 

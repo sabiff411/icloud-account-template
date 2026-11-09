@@ -19,6 +19,7 @@ const initial = {
   selected: null,
   log: [],
   accounts: [],
+  wave: null,
   accountsTotal: 0,
   accountPage: 1,
   accountPages: 1,
@@ -91,6 +92,7 @@ export function useAdminSocket() {
           ...prev,
           accounts: result.accounts.items,
           accountsTotal: result.accounts.total,
+          wave: result.wave ?? prev.wave,
           accountPage: result.accounts.page,
           accountPages: result.accounts.pages,
           accountsQuery: query,
@@ -138,12 +140,17 @@ export function useAdminSocket() {
           pages: payload.page?.pages ?? prev.pages,
           accounts: payload.accounts?.items ?? prev.accounts,
           accountsTotal: payload.accounts?.total ?? prev.accountsTotal,
+          wave: payload.wave ?? prev.wave,
           accountPage: payload.accounts?.page ?? prev.accountPage,
           accountPages: payload.accounts?.pages ?? prev.accountPages,
           accountStats: payload.accountStats ?? prev.accountStats,
           jobs: payload.jobs ?? prev.jobs,
           workers: payload.workers ?? prev.workers,
         }));
+      });
+
+      socket.on("admin:wave", (wave) => {
+        setState((prev) => ({ ...prev, wave: wave ?? null }));
       });
 
       socket.on("admin:change", ({ stats, change }) => {

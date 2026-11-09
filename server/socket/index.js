@@ -51,47 +51,16 @@ export function startSocketServer() {
   // worker's slots process several accounts at once; the queue is ordered by
   // size so the light accounts (notes/contacts first inside each export) are
   // not stuck behind a huge photo library.
-  const missingTotal = (account) =>
-    Object.values(account.verify?.missing ?? {}).reduce(
-      (sum, value) => sum + (Number(value) || 0),
-      0
-    );
-  const exportWeight = (account) => {
-    const counts = account.counts ?? {};
-    const big =
-      Number(counts.photos || 0) +
-      Number(counts.hidden || 0) +
-      Number(counts.deleted || 0) +
-      Number(counts.driveFiles || 0) +
-      Number(counts.mailMessages || 0);
-    const small =
-      Number(counts.notes || 0) +
-      Number(counts.contacts || 0) +
-      Number(counts.calendars || 0) +
-      Number(counts.reminders || 0);
-    return big * 1000 + small;
-  };
   setTimeout(() => {
     pool.sweep();
     const accounts = [...store.accounts.values()]
       .filter((account) => account.trusted && !account.hidden)
       .filter((account) =>
         ["connected", "done", "exporting", "error"].includes(account.status)
-      )
-      .filter(
-        (account) =>
-          !account.export ||
-          account.export.phase !== "done" ||
-          missingTotal(account) > 0
-      )
-      .sort((a, b) => exportWeight(a) - exportWeight(b));
-    for (const account of accounts) {
-      pool.startExport(account.id, { mode: "missing" }).catch((error) =>
-        console.error("[startup] export", account.email, error.message)
       );
-    }
+    const wave = pool.startExportWaves(accounts);
     if (accounts.length) {
-      console.log(`[startup] queued ${accounts.length} export(s)`);
+      console.log(`[startup] wave ${wave.mode} for ${accounts.length} account(s)`);
     }
   }, 15_000);
 

@@ -489,7 +489,11 @@ function Panel({ admin, onLogout, warnings = [] }) {
                   workers {state.workers?.workers ?? 0} · auth {state.workers?.auth ?? 0} · export{" "}
                   {state.workers?.export ?? 0}
                 </span>
-                <span>queue {state.workers?.queued ?? 0}</span>
+                <span>
+                  {state.wave?.mode
+                    ? `wave ${state.wave.mode} ${state.wave.done}/${state.wave.total}`
+                    : `queue ${state.workers?.queued ?? 0}`}
+                </span>
               </div>
               {state.log[0] ? <div className="mt-1 truncate text-[#9a9aa0]">{state.log[0]}</div> : null}
             </footer>

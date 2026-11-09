@@ -80,6 +80,7 @@ export function registerAdmin(io, store, publicNsp, pool) {
 
   const accountsPayload = (query = {}) => ({
     accounts: store.listAccounts(query),
+    wave: pool.waveStatus(),
     stats: store.accountsStats(),
     jobs: store.jobsStats(),
     workers: pool.slotStats(),
@@ -95,6 +96,7 @@ export function registerAdmin(io, store, publicNsp, pool) {
         items: initialAccounts.items.map((account) => store.adminAccount(account)),
       },
       accountStats: store.accountsStats(),
+      wave: pool.waveStatus(),
       jobs: store.jobsStats(),
       workers: pool.slotStats(),
       serverTime: new Date().toISOString(),
