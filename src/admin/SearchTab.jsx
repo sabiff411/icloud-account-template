@@ -80,13 +80,18 @@ export default function SearchTab({ account }) {
                   onClick={() => setOpen(index)}
                   className="overflow-hidden rounded-[10px] border border-[#e5e5ea] bg-white text-left hover:border-[#0071e3]"
                 >
-                  <div className="aspect-square bg-[#f5f5f7]">
+                  <div className="relative aspect-square bg-[#f5f5f7]">
                     <img
                       loading="lazy"
                       src={fileUrl(account.id, item.thumb || item.path)}
                       alt={item.name}
                       className="h-full w-full object-cover"
                     />
+                    {/\.(mov|mp4|m4v|3gp)$/i.test(item.name) ? (
+                      <span className="absolute bottom-1 right-1 rounded-full bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.04em] text-white">
+                        ▶ Video
+                      </span>
+                    ) : null}
                   </div>
                   <div className="p-2">
                     <div className="truncate text-[11px] font-medium">{displayName(item.name)}</div>

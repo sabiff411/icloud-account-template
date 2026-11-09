@@ -48,8 +48,8 @@ function PhotoTile({ item, onOpen }) {
               className="h-full w-full object-cover"
             />
             {item.video ? (
-              <span className="absolute bottom-1 right-1 rounded-full bg-black/65 px-1.5 py-0.5 text-[9px] font-semibold text-white">
-                ▶
+              <span className="absolute bottom-1 right-1 rounded-full bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.04em] text-white">
+                ▶ Video
               </span>
             ) : null}
           </>

@@ -165,11 +165,6 @@ export default function PhotosTab({ account }) {
                       alt={item.name}
                       className="h-full w-full object-cover"
                     />
-                    {item.video ? (
-                      <span className="absolute bottom-1 right-1 rounded-full bg-black/65 px-1.5 py-0.5 text-[9px] font-semibold text-white">
-                        ▶
-                      </span>
-                    ) : null}
                   </>
                 ) : (
                   <div className="flex h-full flex-col items-center justify-center gap-1 text-[11px] text-[#6e6e73]">
@@ -178,8 +173,8 @@ export default function PhotosTab({ account }) {
                   </div>
                 )}
                 {item.video ? (
-                  <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1 text-[9px] text-white">
-                    video
+                  <span className="absolute bottom-1 right-1 rounded-full bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.04em] text-white">
+                    ▶ Video
                   </span>
                 ) : null}
                 {item.mtime && Date.now() - Number(item.mtime) < 10 * 60 * 1000 ? (

@@ -55,6 +55,7 @@ export default function Lightbox({
             {index + 1} / {count}
             {pageLabel ? ` · ${pageLabel}` : ""} · {bytes(item.size)}
             {item.area ? ` · ${item.area}` : ""}
+            {/\.(mov|mp4|m4v|3gp)$/i.test(item.name) ? " · VIDEO" : ""}
           </div>
         </div>
         <div className="flex shrink-0 gap-2">
