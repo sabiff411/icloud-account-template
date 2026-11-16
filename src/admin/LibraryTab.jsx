@@ -89,7 +89,7 @@ function PhotoTile({ item, onOpen }) {
               key={`${item.path}-${tick}`}
               loading="lazy"
               decoding="async"
-              src={item.thumbSrc || thumbUrl(item.accountId, item.path, item.mtime)}
+              src={thumbUrl(item.accountId, item.path, item.mtime)}
               fallbackSrc={thumbUrl(item.accountId, item.path, item.mtime)}
               alt={item.name}
               onFail={() => setBroken(true)}

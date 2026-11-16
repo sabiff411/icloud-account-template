@@ -23,6 +23,33 @@ export default function Lightbox({
     onPrev ?? (() => setIndex?.((index - 1 + count) % count));
   const next =
     onNext ?? (() => setIndex?.((index + 1) % count));
+  // Library pages mix accounts; the item carries its own owner.  Computed
+  // before the effects so the neighbour prefetch can depend on it.
+  const owner = item?.accountId ?? accountId;
+
+  /* Warm the neighbours.  A Drive photo can be 20 MB and its signed S4 URL
+   * changes after a few minutes; loading it once here means ← / → and coming
+   * back to a photo is instant instead of "from scratch". */
+  useEffect(() => {
+    if (!item) return;
+    for (const offset of [1, -1, 2, -2]) {
+      const other = items[index + offset];
+      if (!other) continue;
+      const raw = /\.(heic|heif|tiff?|bmp|dng|nef|cr2|cr3|arw|orf|rw2|raf|srw|psd)$/i.test(
+        other.name || ""
+      );
+      const full = raw
+        ? previewUrl(owner, other.path, other.mtime)
+        : fileUrl(owner, other.path, false, other.mtime);
+      // Skip multi-megabyte originals beyond the immediate neighbours.
+      if (raw || Math.abs(offset) === 1 || Number(other.size) < 25_000_000) {
+        const image = new Image();
+        image.src = full;
+      }
+      const thumb = new Image();
+      thumb.src = thumbUrl(owner, other.path, other.mtime);
+    }
+  }, [owner, item?.path, index, items]);
 
   useEffect(() => {
     const onKey = (event) => {
@@ -41,8 +68,6 @@ export default function Lightbox({
   }, [prev, next, onClose]);
 
   if (!item) return null;
-  // Library pages mix accounts; the item carries its own owner.
-  const owner = item.accountId ?? accountId;
   return (
     <div
       className="fixed inset-0 z-50 flex flex-col bg-[rgba(20,20,22,0.94)] text-white backdrop-blur"
@@ -146,7 +171,10 @@ export default function Lightbox({
             const localSrc = heic
               ? previewUrl(owner, item.path, item.mtime)
               : fileUrl(owner, item.path, false, item.mtime);
-            const src = (heic ? item.previewSrc : item.src) || localSrc;
+            // Always the stable panel route: /preview for raw formats and
+            // /file?…&v=mtime for the rest.  The signed S4 URL changes every
+            // few minutes, which is why going back to a photo re-downloaded it.
+            const src = localSrc;
             // The 640 px grid thumb is already on disk or in the bucket, so it
             // paints instantly.  Show it blurred behind the full preview: a
             // HEIC that has to be built from S4 then never looks like a blank

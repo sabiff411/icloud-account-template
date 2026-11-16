@@ -280,7 +280,7 @@ export default function PhotosTab({ account }) {
                     key={`${item.path}-${retryTick}`}
                     loading="lazy"
                     decoding="async"
-                    src={item.thumbSrc || thumbUrl(account.id, item.path, item.mtime)}
+                    src={thumbUrl(account.id, item.path, item.mtime)}
                     fallbackSrc={thumbUrl(account.id, item.path, item.mtime)}
                     alt={item.name}
                     onFail={() =>

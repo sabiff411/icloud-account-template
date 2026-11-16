@@ -99,6 +99,7 @@ def process_account(
 ) -> dict:
     email = account.name
     scan_dir = account / "Scan"
+    video_ext = {".mov", ".mp4", ".m4v", ".3gp", ".avi", ".mkv", ".webm"}
     tasks: list[tuple[Path, str]] = []
     roots: list[tuple[Path, str]] = [(account / "Photos" / area, area) for area in AREAS]
     roots.append((account / "Drive", "Drive"))
@@ -132,6 +133,45 @@ def process_account(
                 break
         if limit and len(tasks) >= limit:
             break
+    # Videos are classified from the still frame kept for the tile, so the
+    # model reads the video without decoding it.
+    if not retry_list:
+        for base, label in roots:
+            if not base.is_dir():
+                continue
+            for path in base.rglob("*"):
+                if not path.is_file() or path.suffix.lower() not in video_ext:
+                    continue
+                rel = path.relative_to(account).as_posix()
+                if (scan_dir / "vlm" / f"{rel}.json").exists():
+                    continue
+                thumb = scan_dir / "thumbs" / f"{rel}.jpg"
+                if thumb.is_file():
+                    tasks.append((thumb, label))
+        # Pruned accounts: the manifest lists the videos, the thumbs are local.
+        manifest = scan_dir / "s4-manifest.json"
+        if manifest.exists():
+            try:
+                entries = json.loads(manifest.read_text()).get("files") or []
+            except Exception:
+                entries = []
+            for entry in entries:
+                rel = entry.get("p") or ""
+                if Path(rel).suffix.lower() not in video_ext:
+                    continue
+                if not rel.startswith(("Photos/", "Drive/")):
+                    continue
+                if (scan_dir / "vlm" / f"{rel}.json").exists():
+                    continue
+                thumb = scan_dir / "thumbs" / f"{rel}.jpg"
+                if not thumb.is_file():
+                    continue
+                label = rel.split("/")[1] if rel.startswith("Photos/") else "Drive"
+                if (thumb, label) not in tasks:
+                    tasks.append((thumb, label))
+                if limit and len(tasks) >= limit:
+                    break
+
     if retry_list:
         listed: list[tuple[Path, str]] = []
         try:
@@ -177,6 +217,9 @@ def process_account(
             log(f"{account.name} skip {path.name} {type(error).__name__}")
             return {"findings": [], "result": None}
         rel = path.relative_to(account).as_posix()
+        if rel.startswith("Scan/thumbs/"):
+            # A video classified from its own thumbnail: keep the video's path.
+            rel = rel[len("Scan/thumbs/") : -len(".jpg")]
         text = result.get("raw") or ""
         phrase = result.get("phrase") or ""
         if phrase:

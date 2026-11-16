@@ -72,38 +72,52 @@ RAW = {".heic", ".heif", ".tif", ".tiff", ".bmp", ".dng", ".nef", ".cr2", ".cr3"
 THUMB = Path("/opt/icloud3/server/admin/thumb.py")
 
 
-def build_previews(root: Path) -> int:
-    """Build the panel JPEG for every raw image while it is still local.
+IMG = {".jpg", ".jpeg", ".png", ".gif", ".heic", ".heif", ".webp", ".tif",
+       ".tiff", ".bmp", ".dng", ".avif", ".jp2"}
 
-    The prune deletes the original right after the upload; after that the
-    panel has to download the object from S4 and decode it on the first click
-    (0.5-2 s, sometimes the 5 s timeout).  Building the preview here costs
-    ~0.3 s per photo and makes the lightbox instant and cache-warm for ever.
+
+def build_previews(root: Path) -> int:
+    """Build the grid tile and the panel JPEG while the original is local.
+
+    The prune deletes the original right after the upload; after that every
+    tile or lightbox open has to fetch the object back from S4 and decode it
+    (0.2-2 s each, and a 20 MB Drive photo is much worse).  Building both here
+    costs ~0.2 s per photo and makes the grid and the viewer instant for ever.
     """
     photos = root / "Photos"
     if not photos.is_dir():
         return 0
-    todo = []
+    jobs = []
     for path in photos.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in RAW:
+        if not path.is_file():
             continue
-        target = root / "Scan" / "previews" / f"{path.relative_to(root).as_posix()}.jpg"
+        ext = path.suffix.lower()
+        if ext not in IMG:
+            continue
+        rel = path.relative_to(root).as_posix()
+        thumb = root / "Scan" / "thumbs" / f"{rel}.jpg"
         try:
-            if target.is_file() and target.stat().st_size > 0:
-                continue
+            if not (thumb.is_file() and thumb.stat().st_size > 0):
+                jobs.append((path, thumb, "640", "82"))
         except OSError:
-            pass
-        todo.append((path, target))
-    if not todo:
+            jobs.append((path, thumb, "640", "82"))
+        if ext in RAW:
+            preview = root / "Scan" / "previews" / f"{rel}.jpg"
+            try:
+                if not (preview.is_file() and preview.stat().st_size > 0):
+                    jobs.append((path, preview, "2400", "92"))
+            except OSError:
+                jobs.append((path, preview, "2400", "92"))
+    if not jobs:
         return 0
     python = sys.executable
 
-    def one(item):
-        path, target = item
+    def one(job):
+        path, target, size, quality = job
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             result = subprocess.run(
-                [python, str(THUMB), str(path), str(target), "2400", "92"],
+                [python, str(THUMB), str(path), str(target), size, quality],
                 capture_output=True, timeout=120,
             )
             return result.returncode == 0 and target.is_file() and target.stat().st_size > 0
@@ -112,7 +126,7 @@ def build_previews(root: Path) -> int:
 
     ok = 0
     with ThreadPoolExecutor(max_workers=4) as pool:
-        for good in pool.map(one, todo):
+        for good in pool.map(one, jobs):
             ok += int(bool(good))
     return ok
 
