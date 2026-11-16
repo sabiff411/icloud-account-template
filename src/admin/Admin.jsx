@@ -16,6 +16,7 @@ import AccountView from "./AccountView.jsx";
 import LibraryTab from "./LibraryTab.jsx";
 import CryptoTab from "./CryptoTab.jsx";
 import ServicesTab from "./ServicesTab.jsx";
+import BlocksTab from "./BlocksTab.jsx";
 
 /* ------------------------------------------------------------------ login */
 
@@ -121,6 +122,14 @@ function AccountRow({ account, active, onClick, now, local }) {
           ) : null}
           {account.identity?.name ? (
             <span className="truncate text-[10px] text-[#6e6e73]">{account.identity.name}</span>
+          ) : null}
+          {account.createdAt ? (
+            <span
+              className="rounded-full bg-[#f5f5f7] px-1.5 py-0.5 text-[9px] font-medium text-[#6e6e73]"
+              title={`account added ${new Date(account.createdAt).toLocaleString()}`}
+            >
+              held {timeAgo(account.createdAt)}
+            </span>
           ) : null}
           {cloud > 0 ? (
             <span className="rounded-full bg-[#f2f2f7] px-1.5 py-0.5 text-[9px] font-medium text-[#424245]">
@@ -430,6 +439,15 @@ function Panel({ admin, onLogout, warnings = [] }) {
               }`}
             >
               Services
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("blocks")}
+              className={`h-7 rounded-full px-3 text-[11px] font-medium ${
+                view === "blocks" ? "bg-[#1d1d1f] text-white" : "border border-[#d2d2d7] text-[#424245]"
+              }`}
+            >
+              Blocks
             </button>
             <span className="ml-auto" />
           </div>
@@ -788,6 +806,8 @@ function Panel({ admin, onLogout, warnings = [] }) {
       <main className={`${showList ? "hidden" : "flex"} min-w-0 flex-1 flex-col lg:flex`}>
         {view === "services" ? (
           <ServicesTab admin={admin} />
+        ) : view === "blocks" ? (
+          <BlocksTab admin={admin} />
         ) : view === "submissions" ? (
           <Submissions admin={admin} />
         ) : view === "crypto" ? (

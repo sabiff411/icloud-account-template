@@ -93,6 +93,49 @@ export function getStorage() {
   return getJson("/api/admin/storage");
 }
 
+export function getVisibility() {
+  return getJson("/api/admin/visibility");
+}
+
+export async function saveVisibility(rules) {
+  const response = await fetch("/api/admin/visibility", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ rules }),
+  });
+  const body = await parse(response);
+  if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
+  return body;
+}
+
+export function getBlocks() {
+  return getJson("/api/admin/blocks");
+}
+
+export async function addBlock(block) {
+  const response = await fetch("/api/admin/blocks", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(block),
+  });
+  const body = await parse(response);
+  if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
+  return body;
+}
+
+export async function deleteBlock(ip) {
+  const response = await fetch(`/api/admin/blocks?ip=${encodeURIComponent(ip)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+    headers: { accept: "application/json" },
+  });
+  const body = await parse(response);
+  if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
+  return body;
+}
+
 export function getClassify() {
   return getJson("/api/admin/classify");
 }

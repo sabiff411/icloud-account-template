@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import RetryImage from "./RetryImage.jsx";
-import { fileUrl, getLibrary, getText, thumbUrl, timeAgo } from "./api.js";
+import { fileUrl, getLibrary, getText, getVisibility, saveVisibility, thumbUrl, timeAgo } from "./api.js";
 import { Badge, Empty, Section, Spinner, displayName } from "./ui.jsx";
 import Lightbox from "./Lightbox.jsx";
 import CopyModal from "./CopyModal.jsx";
@@ -246,6 +246,12 @@ export default function LibraryTab({ admin }) {
   const [copyText, setCopyText] = useState("");
   const [copyCount, setCopyCount] = useState(0);
   const [copyBusy, setCopyBusy] = useState(false);
+  const [visOpen, setVisOpen] = useState(false);
+  const [rules, setRules] = useState([]);
+  const [visEmail, setVisEmail] = useState("");
+  const [visKind, setVisKind] = useState("");
+  const [visBusy, setVisBusy] = useState(false);
+  const [visError, setVisError] = useState("");
   const dataRef = useRef(null);
   const forceRequested = useRef(false);
   const lastForced = useRef(0);
@@ -265,6 +271,39 @@ export default function LibraryTab({ admin }) {
   useEffect(() => {
     dataRef.current = data;
   }, [data]);
+
+  // Visibility rules: which account/category is kept out of the All lists.
+  const loadVisibility = useCallback(async () => {
+    try {
+      const body = await getVisibility();
+      setRules(Array.isArray(body?.rules) ? body.rules : []);
+      setVisError("");
+    } catch (error) {
+      setVisError(error.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadVisibility();
+  }, [loadVisibility]);
+
+  const applyRules = useCallback(
+    async (next) => {
+      setVisBusy(true);
+      try {
+        const body = await saveVisibility(next);
+        setRules(Array.isArray(body?.rules) ? body.rules : next);
+        setVisError("");
+        forceRequested.current = true;
+        setTick((value) => value + 1);
+      } catch (error) {
+        setVisError(error.message);
+      } finally {
+        setVisBusy(false);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     const timer = setTimeout(() => setQuery(text.trim()), 300);
@@ -495,6 +534,14 @@ export default function LibraryTab({ admin }) {
             className="h-9 rounded-[9px] border border-[#d2d2d7] px-3 text-[12px]"
           >
             Refresh
+          </button>
+          <button
+            type="button"
+            onClick={() => setVisOpen(true)}
+            className="h-9 rounded-[9px] border border-[#d2d2d7] px-3 text-[12px]"
+            title="Hide an account or a category from the All page"
+          >
+            Hidden{rules.length ? ` (${rules.length})` : ""}
           </button>
           <button
             type="button"
@@ -871,6 +918,103 @@ export default function LibraryTab({ admin }) {
           setIndex={setOpen}
           onClose={() => setOpen(null)}
         />
+      ) : null}
+
+
+      {visOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setVisOpen(false)}
+        >
+          <div
+            className="w-full max-w-[560px] rounded-[14px] bg-white p-5 text-[13px] shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-1 text-[15px] font-semibold">Hidden from the All page</div>
+            <div className="mb-3 text-[12px] text-[#6e6e73]">
+              A rule hides one account, or only some of its categories. Nothing is deleted.
+            </div>
+
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <select
+                value={visEmail}
+                onChange={(event) => setVisEmail(event.target.value)}
+                className="h-9 min-w-[220px] flex-1 rounded-[9px] border border-[#d2d2d7] px-2 text-[12px]"
+              >
+                <option value="">Choose an account…</option>
+                {(data?.accounts ?? []).map((account) => (
+                  <option key={account.id} value={account.email}>
+                    {account.email}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={visKind}
+                onChange={(event) => setVisKind(event.target.value)}
+                className="h-9 rounded-[9px] border border-[#d2d2d7] px-2 text-[12px]"
+              >
+                {VIS_KINDS.map(([value, label]) => (
+                  <option key={value || "all"} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={!visEmail || visBusy}
+                onClick={() => {
+                  const kinds = visKind ? [visKind] : [];
+                  const next = rules.filter((rule) => rule.email !== visEmail);
+                  next.push({ email: visEmail, kinds });
+                  applyRules(next);
+                }}
+                className="h-9 rounded-[9px] bg-[#0071e3] px-3 text-[12px] font-medium text-white disabled:opacity-40"
+              >
+                Add rule
+              </button>
+            </div>
+
+            {visError ? <div className="mb-2 text-[12px] text-[#c0392b]">{visError}</div> : null}
+
+            <div className="max-h-[280px] overflow-auto rounded-[9px] border border-[#ececf0]">
+              {rules.length === 0 ? (
+                <div className="px-3 py-4 text-[12px] text-[#6e6e73]">No rules yet.</div>
+              ) : (
+                rules.map((rule) => (
+                  <div
+                    key={rule.email}
+                    className="flex items-center justify-between gap-3 border-b border-[#f4f4f6] px-3 py-2 last:border-0"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{rule.email}</div>
+                      <div className="text-[11px] text-[#6e6e73]">
+                        {(rule.kinds || []).length ? `hides: ${rule.kinds.join(", ")}` : "hides everything"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={visBusy}
+                      onClick={() => applyRules(rules.filter((item) => item.email !== rule.email))}
+                      className="rounded-full border border-[#d2d2d7] px-2.5 py-1 text-[11px]"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setVisOpen(false)}
+                className="h-9 rounded-[9px] border border-[#d2d2d7] px-4 text-[12px]"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {copyOpen ? (

@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { s4exists, s4Key, s4url } from "./s4.js";
+import { isAccountHidden, isHidden } from "./visibility.js";
 import { safeName } from "./export.js";
 import { dedupeSeeds, filterSeeds, seedLabel, isImagePath } from "./seeds.js";
 
@@ -892,13 +893,17 @@ export function queryCatalog(
     compact = "",
     cryptoKind = "",
     kind = "",
+    visibility = [],
   } = {}
 ) {
   const needle = String(q ?? "").trim().toLowerCase();
-  const scope = (item) => !accountId || item.accountId === accountId;
+  // Rules hide an account (or just some of its categories) from every list.
+  const hidden = (item) =>
+    isHidden(visibility, item.email, item.kind) || isAccountHidden(visibility, item.email);
+  const scope = (item) => (!accountId || item.accountId === accountId) && !hidden(item);
   const inScope = accountId ? (list) => list.filter(scope) : (list) => list;
-  const scopedPhotos = inScope(catalog.photos);
-  const scopedSeeds = inScope(catalog.seeds);
+  const scopedPhotos = inScope(catalog.photos).filter((item) => !hidden(item));
+  const scopedSeeds = inScope(catalog.seeds).filter((item) => !hidden(item));
   // The counts are the same for every page of one catalog: a full-library
   // query used to walk 179k photos + 224k seeds on every keystroke.
   let countsByScope = countCache.get(catalog);
@@ -906,7 +911,8 @@ export function queryCatalog(
     countsByScope = new Map();
     countCache.set(catalog, countsByScope);
   }
-  const counts = countsByScope.get(accountId) || (() => {
+  const visitKey = `${accountId}|${JSON.stringify(visibility)}`;
+  const counts = countsByScope.get(visitKey) || (() => {
     const value = {
     accounts: catalog.accounts.length,
     notes: inScope(catalog.notes).length,
@@ -928,18 +934,19 @@ export function queryCatalog(
       return acc;
     }, {}),
     };
-    countsByScope.set(accountId, value);
+    countsByScope.set(visitKey, value);
     return value;
   })();
 
   // Without a search term the scoped lists are already the answer: the
   // predicate used to be run over 270k items on every page load.
-  const notes = needle
+  const notes = (needle
     ? catalog.notes.filter(
         (item) =>
           scope(item) && isNeedle(`${item.title} ${item.name} ${item.text}`, needle)
       )
-    : inScope(catalog.notes);
+    : inScope(catalog.notes)
+  ).filter((item) => !hidden(item));
   const contacts = needle
     ? catalog.contacts.filter(
         (item) =>

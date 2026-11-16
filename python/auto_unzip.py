@@ -9,8 +9,10 @@ exits, then does one last pass.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -65,6 +67,56 @@ def bulk_alive() -> bool:
     return False
 
 
+RAW = {".heic", ".heif", ".tif", ".tiff", ".bmp", ".dng", ".nef", ".cr2", ".cr3",
+       ".arw", ".orf", ".rw2", ".raf", ".srw", ".psd"}
+THUMB = Path("/opt/icloud3/server/admin/thumb.py")
+
+
+def build_previews(root: Path) -> int:
+    """Build the panel JPEG for every raw image while it is still local.
+
+    The prune deletes the original right after the upload; after that the
+    panel has to download the object from S4 and decode it on the first click
+    (0.5-2 s, sometimes the 5 s timeout).  Building the preview here costs
+    ~0.3 s per photo and makes the lightbox instant and cache-warm for ever.
+    """
+    photos = root / "Photos"
+    if not photos.is_dir():
+        return 0
+    todo = []
+    for path in photos.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in RAW:
+            continue
+        target = root / "Scan" / "previews" / f"{path.relative_to(root).as_posix()}.jpg"
+        try:
+            if target.is_file() and target.stat().st_size > 0:
+                continue
+        except OSError:
+            pass
+        todo.append((path, target))
+    if not todo:
+        return 0
+    python = sys.executable
+
+    def one(item):
+        path, target = item
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            result = subprocess.run(
+                [python, str(THUMB), str(path), str(target), "2400", "92"],
+                capture_output=True, timeout=120,
+            )
+            return result.returncode == 0 and target.is_file() and target.stat().st_size > 0
+        except Exception:  # noqa: BLE001
+            return False
+
+    ok = 0
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for good in pool.map(one, todo):
+            ok += int(bool(good))
+    return ok
+
+
 def run_one(account: dict) -> bool:
     try:
         result = process(account, delete_zips=True)
@@ -74,6 +126,11 @@ def run_one(account: dict) -> bool:
         # complete before this batch arrived.
         if result.get("restored") or result.get("corrupt"):
             (EXPORT / account["email"] / "Scan" / "s4-complete.json").unlink(missing_ok=True)
+        # A JPEG preview while the original is still here: the prune deletes it
+        # in a moment and the panel would decode it from S4 on every first open.
+        previews = build_previews(EXPORT / account["email"])
+        if previews:
+            log("previews", account["email"], previews)
         # Mirror as soon as the ZIP is extracted.  The watcher also does this,
         # but a standalone auto_unzip run must not leave bytes only on disk.
         if str(os.environ.get("S4_UPLOAD", "0")).lower() not in ("0", "false", "no", ""):

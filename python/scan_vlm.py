@@ -95,6 +95,7 @@ def process_account(
     tiers: tuple[str, ...] = ("medium", "high", "valid"),
     retry_list: bool = False,
     retry_side: int = 2400,
+    force: bool = False,
 ) -> dict:
     email = account.name
     scan_dir = account / "Scan"
@@ -124,7 +125,7 @@ def process_account(
                     stub = int(payload.get("attempts") or 0) < 3
                 else:
                     stub = False
-                if not stub and not only_seeds:
+                if not stub and not only_seeds and not force:
                     continue
             tasks.append((path, label))
             if limit and len(tasks) >= limit:
@@ -298,6 +299,7 @@ def main() -> None:
     parser.add_argument("--tiers", default="medium,high,valid", help="tiers to include with --only-seeds")
     parser.add_argument("--retry-list", action="store_true", help="re-read the images listed in Scan/vlm-retry.txt at high resolution")
     parser.add_argument("--retry-side", type=int, default=2400, help="pixels for --retry-list reads")
+    parser.add_argument("--force", action="store_true", help="re-read images that already have a result")
     args = parser.parse_args()
 
     accounts = sorted(
@@ -319,7 +321,7 @@ def main() -> None:
             tiers = tuple(part.strip() for part in args.tiers.split(",") if part.strip())
             result = process_account(
                 account, args.concurrency, args.limit, args.only_seeds, tiers,
-                retry_list=args.retry_list, retry_side=args.retry_side,
+                retry_list=args.retry_list, retry_side=args.retry_side, force=args.force,
             )
         except Exception as error:  # noqa: BLE001
             log(f"{account.name} failed {type(error).__name__}: {str(error)[:160]}")

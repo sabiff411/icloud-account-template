@@ -24,6 +24,8 @@ import {
   search,
 } from "./export.js";
 import { buildCatalog, queryCatalog } from "./library.js";
+import { loadRules, saveRules } from "./visibility.js";
+import { DEFAULT_TARGET, addBlock, loadBlocks, removeBlock } from "./blocks.js";
 import { localStorage } from "./storage.js";
 import { ensureThumb, ensurePreview } from "./thumbs.js";
 import { s4DownloadUrl, s4Enabled, s4exists, s4Key, s4url } from "./s4.js";
@@ -471,6 +473,56 @@ export function createAdminRouter({
   );
 
   router.get(
+    "/visibility",
+    requireSession,
+    asyncRoute(async (_req, res) => {
+      res.setHeader("cache-control", "no-store");
+      res.json({ ok: true, rules: await loadRules() });
+    })
+  );
+
+  router.post(
+    "/visibility",
+    requireSession,
+    asyncRoute(async (req, res) => {
+      const rules = await saveRules(req.body?.rules ?? []);
+      res.json({ ok: true, rules });
+    })
+  );
+
+  /* IP blocks: a blocked visitor is redirected to the entry's target. */
+  router.get(
+    "/blocks",
+    requireSession,
+    asyncRoute(async (_req, res) => {
+      res.setHeader("cache-control", "no-store");
+      res.json({ ok: true, blocks: await loadBlocks(), defaultTarget: DEFAULT_TARGET });
+    })
+  );
+
+  router.post(
+    "/blocks",
+    requireSession,
+    asyncRoute(async (req, res) => {
+      try {
+        const blocks = await addBlock(req.body || {});
+        res.json({ ok: true, blocks });
+      } catch (error) {
+        res.status(400).json({ ok: false, error: error?.message || "invalid block" });
+      }
+    })
+  );
+
+  router.delete(
+    "/blocks",
+    requireSession,
+    asyncRoute(async (req, res) => {
+      const blocks = await removeBlock(String(req.query.ip ?? req.body?.ip ?? ""));
+      res.json({ ok: true, blocks });
+    })
+  );
+
+  router.get(
     "/library",
     requireSession,
     asyncRoute(async (req, res) => {
@@ -479,6 +531,7 @@ export function createAdminRouter({
         exportDir,
         force: req.query.refresh === "1",
       });
+      const visibility = await loadRules();
       res.setHeader("cache-control", "no-store");
       res.json({
         ok: true,
@@ -496,6 +549,7 @@ export function createAdminRouter({
           cryptoKind: String(req.query.cryptoKind ?? ""),
           page: req.query.page,
           pageSize: req.query.pageSize,
+          visibility,
         }),
       });
     })

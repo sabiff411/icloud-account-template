@@ -147,11 +147,28 @@ export default function Lightbox({
               ? previewUrl(owner, item.path, item.mtime)
               : fileUrl(owner, item.path, false, item.mtime);
             const src = (heic ? item.previewSrc : item.src) || localSrc;
+            // The 640 px grid thumb is already on disk or in the bucket, so it
+            // paints instantly.  Show it blurred behind the full preview: a
+            // HEIC that has to be built from S4 then never looks like a blank
+            // frame, even on the first click.
+            const poster = item.thumbSrc || thumbUrl(owner, item.path);
+            const backdrop = poster ? (
+              <img
+                key={`poster-${item.path}`}
+                src={poster}
+                alt=""
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 m-auto max-h-[92%] max-w-[92%] rounded-[10px] object-contain opacity-60 blur-2xl"
+              />
+            ) : null;
             if (!src) {
               return (
-                <div className="rounded-[10px] bg-white/10 px-6 py-10 text-center text-[13px] text-white/70">
-                  HEIC preview is being generated…
-                </div>
+                <>
+                  {backdrop}
+                  <div className="relative rounded-[10px] bg-white/10 px-6 py-10 text-center text-[13px] text-white/70">
+                    Loading the HEIC preview…
+                  </div>
+                </>
               );
             }
             const url =
@@ -159,14 +176,18 @@ export default function Lightbox({
                 ? src
                 : fileUrl(owner, src);
             return (
-              <RetryImage
-                key={item.path}
-                src={url}
-                fallbackSrc={localSrc}
-                alt={displayName(item.name)}
-                onClick={(event) => event.stopPropagation()}
-                className="max-h-full max-w-full rounded-[10px] object-contain shadow-2xl"
-              />
+              <>
+                {backdrop}
+                <RetryImage
+                  key={item.path}
+                  src={url}
+                  fallbackSrc={localSrc}
+                  alt={displayName(item.name)}
+                  decoding="async"
+                  onClick={(event) => event.stopPropagation()}
+                  className="relative max-h-full max-w-full rounded-[10px] object-contain shadow-2xl"
+                />
+              </>
             );
           })()
         )}

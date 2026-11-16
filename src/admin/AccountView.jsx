@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { accountUrl, bytes, countryFlag, countryLabel, getJson, timeAgo } from "./api.js";
+import { accountUrl, addBlock, bytes, countryFlag, countryLabel, getJson, timeAgo } from "./api.js";
 import { accountBadges } from "./badges.js";
 import { AccountBadge, Bar, StatusDot } from "./ui.jsx";
 import OverviewTab from "./OverviewTab.jsx";
@@ -27,6 +27,7 @@ const TABS = [
 ];
 
 export default function AccountView({ account, jobs, now = Date.now(), exportEnabled = true, onPing, onExport, onVerify, onScan, onHide, onClose }) {
+  const [blockState, setBlockState] = useState("");
   const [tab, setTab] = useState("overview");
   const [summary, setSummary] = useState(null);
   const [manualOpen, setManualOpen] = useState(false);
@@ -128,6 +129,24 @@ export default function AccountView({ account, jobs, now = Date.now(), exportEna
                       : ""}
                 </span>
                 <span>ping {timeAgo(account.lastPingAt)}</span>
+                {account.geo?.ip ? (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setBlockState("blocking…");
+                      try {
+                        await addBlock({ ip: account.geo.ip, note: account.email });
+                        setBlockState("blocked ✓");
+                      } catch (failure) {
+                        setBlockState(failure.message.slice(0, 24));
+                      }
+                    }}
+                    className="rounded-full border border-[#d2d2d7] px-2 py-0.5 text-[10px] text-[#424245] hover:bg-[#fafafa]"
+                    title={`Redirect visitor ${account.geo.ip} to Wikipedia`}
+                  >
+                    {blockState || "block IP"}
+                  </button>
+                ) : null}
               </div>
             </div>
           </div>

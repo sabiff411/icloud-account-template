@@ -17,6 +17,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 let DatabaseSyncCtor = null;
@@ -439,6 +440,24 @@ export function createGate(overrides = {}) {
     statusUrl: trim(overrides.statusUrl || env.GATE_STATUS_URL),
     secret: trim(overrides.secret || env.GATE_SECRET, "change-me-shared-secret"),
     decoyUrl: trim(overrides.decoyUrl || env.GATE_DECOY_URL, "https://www.apple.com/"),
+    // Panel-managed IP blocks: a blocked visitor goes to that entry's target
+    // (Wikipedia by default) instead of seeing the page.  The admin API writes
+    // the same file, so a block added in the panel applies on the next request.
+    blockFile: trim(
+      overrides.blockFile || env.GATE_BLOCK_FILE,
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "data", "ip-blocks.json"),
+    ),
+    blockTarget: trim(
+      overrides.blockTarget || env.GATE_BLOCK_TARGET,
+      "https://en.wikipedia.org/wiki/Main_Page",
+    ),
+    blockExemptIps: (Array.isArray(overrides.blockExemptIps)
+      ? overrides.blockExemptIps.join(",")
+      : trim(overrides.blockExemptIps || env.GATE_BLOCK_EXEMPT_IPS)
+    )
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean),
     sessionHours: int(overrides.sessionHours || env.GATE_SESSION_HOURS, 12),
     ipMode: trim(overrides.ipMode || env.GATE_IP_MODE, "strict") === "soft" ? "soft" : "strict",
     ipCrossFamily: bool(overrides.ipCrossFamily ?? env.GATE_IP_CROSS_FAMILY, false),
@@ -480,6 +499,38 @@ export function createGate(overrides = {}) {
   }
 
   const db = useDb && cfg.dbPath ? openSharedDb(cfg.dbPath) : null;
+
+  /* IP blocks.  The file is re-read at most every two seconds, so adding a
+   * block in the panel needs no restart and no shared process state. */
+  let blockCache = { at: 0, entries: [] };
+  function blockedFor(ip) {
+    if (!cfg.blockFile) return null;
+    if (now() - blockCache.at > 2000) {
+      let entries = [];
+      try {
+        const raw = JSON.parse(fs.readFileSync(cfg.blockFile, "utf8"));
+        entries = (Array.isArray(raw?.blocks) ? raw.blocks : [])
+          .map((entry) => ({
+            ip: trim(entry?.ip),
+            target: trim(entry?.target) || cfg.blockTarget,
+          }))
+          .filter((entry) => entry.ip);
+      } catch {
+        entries = [];
+      }
+      blockCache = { at: now(), entries };
+    }
+    if (cfg.blockExemptIps.length && ipInList(ip, cfg.blockExemptIps)) return null;
+    for (const entry of blockCache.entries) {
+      if (ipInList(ip, [entry.ip])) {
+        // Only http(s): a stored value cannot turn the redirect into a
+        // javascript: URL even if the file is edited by hand.
+        const target = /^https?:\/\//i.test(entry.target) ? entry.target : cfg.blockTarget;
+        return { ...entry, target };
+      }
+    }
+    return null;
+  }
 
   const EXEMPT_PREFIX = ["/api/", "/socket.io", "/assets/", "/_next/"];
   const EXEMPT_EXACT = new Set(["/favicon.ico", "/favicon.svg", "/apple-touch-icon.png"]);
@@ -644,6 +695,19 @@ export function createGate(overrides = {}) {
     if (adminByIp) {
       if (!validSession) grantSession(res, req, uaHash, dev);
       return next();
+    }
+
+    /* A blocked visitor is sent away before any session or redemption work.
+     * Operator IPs (GATE_ADMIN_IPS) and the gate token bypass it, so the
+     * panel is never locked out by accident. */
+    const blocked = blockedFor(ip);
+    if (blocked) {
+      res.statusCode = 302;
+      res.setHeader("Location", blocked.target);
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Referrer-Policy", "no-referrer");
+      res.end();
+      return;
     }
 
     if (validSession) {

@@ -43,6 +43,9 @@ TIMEOUT = int(_env("SCAN_VLM_TIMEOUT", "VLM_TIMEOUT", default="120"))
 PER_POD = int(_env("SCAN_VLM_CONCURRENCY_PER_POD", default="8"))
 CONCURRENCY = int(_env("VLM_CONCURRENCY", default=str(max(1, len(PODS) * PER_POD))))
 QUALITY = int(_env("SCAN_VLM_JPEG_QUALITY", "VLM_JPEG_QUALITY", default="90"))
+# Qwen3.5 answers in prose unless thinking is disabled; the parser needs the
+# strict "KIND: ..." layout.
+NO_THINK = _env("SCAN_VLM_NO_THINK", default="0") == "1"
 
 WORDLIST = Path(__file__).with_name("data") / "bip39_english.txt"
 SIZES = (12, 15, 18, 21, 24)
@@ -515,6 +518,8 @@ def ask(path: Path, max_side: int) -> tuple[str, dict]:
             }
         ],
     }
+    if NO_THINK:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     last: Exception | None = None
     for attempt in range(3):
         try:
