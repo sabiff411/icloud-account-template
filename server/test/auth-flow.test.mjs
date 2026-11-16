@@ -171,7 +171,13 @@ async function main() {
   });
   let doneSeen = false;
   for (let i = 0; i < 30 && !doneSeen; i += 1) {
-    if (adminEvents.some((event) => event.account?.export?.phase === "done")) doneSeen = true;
+    if (
+      adminEvents.some(
+        (event) =>
+          event.account?.id === start.accountId && event.account?.export?.phase === "done"
+      )
+    )
+      doneSeen = true;
     else await wait(100);
   }
   check("export completes account", doneSeen);

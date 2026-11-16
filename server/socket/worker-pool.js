@@ -42,6 +42,23 @@ function badgeUntil() {
  * so its previous value is kept.  Workers from before that change only send
  * `areas`, so derive the main counters from those as a fallback.
  */
+/** Merge disk/inventory counts into the panel's counts.
+ *
+ * The export tree is pruned to S4, so a disk walk reports 0 for files that are
+ * still in iCloud.  A disk or login-inventory count may therefore never lower
+ * a live number; only a live verify (countsFromVerify) can lower it.
+ */
+export function mergeCounts(previous = {}, incoming = {}) {
+  const counts = { ...(previous ?? {}) };
+  for (const [key, value] of Object.entries(incoming ?? {})) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) continue;
+    counts[key] =
+      key === "driveSkipped" ? number : Math.max(Number(counts[key]) || 0, number);
+  }
+  return counts;
+}
+
 export function countsFromVerify(payload = {}) {
   const counts = {};
   for (const [key, value] of Object.entries(payload.counts ?? {})) {
@@ -680,6 +697,9 @@ export class WorkerPool {
   async startPing(accountId) {
     const account = this.store.getAccount(accountId);
     if (!account) throw new Error("account not found");
+    // The 15-minute session loop pings every trusted account; without a cap a
+    // 10x account list fills the queue with pings.
+    if (this.queue.length >= config.worker.maxQueue) return { account, job: null };
     const active = this.store.activeJobForAccount(accountId, "ping");
     if (active) return { account, job: active, reused: true };
     const job = this.store.createJob({ accountId, type: "ping" });
@@ -1131,13 +1151,7 @@ export class WorkerPool {
     const identity = payload.identity ?? payload.account?.identity ?? {};
     // A zero-seeded inventory must not wipe the live numbers the panel shows.
     const incoming = payload.counts ?? payload.account?.counts ?? {};
-    const counts = { ...(account.counts ?? {}) };
-    for (const [key, value] of Object.entries(incoming)) {
-      const number = Number(value);
-      if (!Number.isFinite(number)) continue;
-      counts[key] =
-        key === "driveSkipped" ? number : Math.max(Number(counts[key]) || 0, number);
-    }
+    const counts = mergeCounts(account.counts, incoming);
     const patch = { identity, counts };
     if (Object.keys(counts).length) patch.countsUpdatedAt = new Date().toISOString();
     if (payload.proxy) patch.proxy = { ...(account.proxy ?? {}), ...payload.proxy };
@@ -1240,16 +1254,7 @@ export class WorkerPool {
     // The export tree is pruned to S4, so a disk walk reports 0 for files
     // that are still in iCloud.  Merge instead of replacing: a disk count may
     // never lower a live number.  The 5-hour verify is what can lower it.
-    const counts = { ...(account.counts ?? {}) };
-    for (const [key, value] of Object.entries(incoming)) {
-      const number = Number(value);
-      if (!Number.isFinite(number)) continue;
-      if (key === "driveSkipped") {
-        counts[key] = number;
-        continue;
-      }
-      counts[key] = Math.max(Number(counts[key]) || 0, number);
-    }
+    const counts = mergeCounts(account.counts, incoming);
     const previousDone = Number(account.export?.done) || 0;
     const added = Math.max(0, (Number(totals.done) || 0) - previousDone);
     const updated = this.store.updateAccount(account.id, {
@@ -1630,7 +1635,7 @@ export class WorkerPool {
   addWorker(socket) {
     this.workers.set(socket.id, {
       socket,
-      slots: { auth: 0, export: 0 },
+      slots: { auth: 0, export: 0, scan: 0 },
       connectedAt: new Date().toISOString(),
     });
     this.workersChanged();

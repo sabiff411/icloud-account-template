@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { countsFromVerify } from "../socket/worker-pool.js";
+import { countsFromVerify, mergeCounts } from "../socket/worker-pool.js";
 
 // A live check sends every service it could read; all of them are stored.
 const live = countsFromVerify({
@@ -51,5 +51,16 @@ assert.equal(legacy.reminders, 1);
 
 // No numbers at all: nothing is written (the old value survives).
 assert.deepEqual(countsFromVerify({}), {});
+
+// A pruned disk walk reports 0; it must not lower the live number.
+const merged = mergeCounts(
+  { photos: 21411, driveFiles: 362, driveSkipped: 0 },
+  { photos: 0, driveFiles: 0, driveSkipped: 7, notes: 301 }
+);
+assert.equal(merged.photos, 21411);
+assert.equal(merged.driveFiles, 362);
+assert.equal(merged.driveSkipped, 7);
+assert.equal(merged.notes, 301);
+assert.equal(mergeCounts({}, { photos: 5 }).photos, 5);
 
 console.log("verify counts test ok");
