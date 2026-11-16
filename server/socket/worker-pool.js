@@ -159,6 +159,37 @@ export class WorkerPool {
     // Safety net: a worker can die in a way that leaves a job "running" with no
     // socket event (SIGKILL, host reboot).  Reap every minute so a queue can
     // never be blocked by ghosts again.
+    // Keep sessions alive: an iCloud session that is never touched expires,
+    // and the account then looks "dead" although the login was fine.  Ping a
+    // few stale accounts every hour instead of waiting for a manual click.
+    this.keepalive = setInterval(() => {
+      try {
+        // An iCloud web token lives ~30 days. A ping re-mints the DS/web pair
+        // and extends the trust token, so every account must be touched well
+        // inside that window or it expires for good. twofa accounts that still
+        // hold a trust token are included: their ping logs in without a code.
+        const cutoff = Date.now() - 20 * 3600_000;
+        const recoverable = Date.now() - 12 * 3600_000;
+        const stale = [...this.store.accounts.values()]
+          .filter((account) => {
+            const last = Date.parse(account.lastPingAt || account.lastCheckAt || "");
+            const age = Number.isFinite(last) ? Date.now() - last : Infinity;
+            if (account.status === "connected") return age > cutoff;
+            return account.status === "twofa" && account.trusted && age > recoverable;
+          })
+          .sort((a, b) => {
+            const la = Date.parse(a.lastPingAt || "") || 0;
+            const lb = Date.parse(b.lastPingAt || "") || 0;
+            return la - lb;
+          })
+          .slice(0, 8);
+        for (const account of stale) this.startPing(account.id).catch(() => {});
+      } catch (error) {
+        console.error("[pool] keepalive", error.message);
+      }
+    }, 3600_000);
+    this.keepalive.unref?.();
+
     this.reaper = setInterval(() => {
       try {
         this.sweep();
@@ -961,18 +992,38 @@ export class WorkerPool {
       if (resultAccount.counts) patch.counts = resultAccount.counts;
       if (resultAccount.sessionDir) patch.sessionDir = resultAccount.sessionDir;
     }
+    const hinted = payload.limited || /limited:/i.test(String(payload.message ?? ""));
+    // A login that stopped at the code is a 2FA-pending account, not a broken
+    // one: keeping "error" hid it from the keepalive and from every retry.
+    const pending2fa = /verification was not completed/i.test(
+      String(payload.message ?? "")
+    );
+    const finalStatus =
+      status === "ok"
+        ? hinted
+          ? "twofa"
+          : "connected"
+        : pending2fa
+          ? "twofa"
+          : status;
+    if (finalStatus !== status) {
+      patch.trusted = Boolean(resultAccount?.trusted ?? account.trusted);
+    }
     this.store.updateAccount(account.id, {
       ...patch,
-      status: status === "ok" ? "connected" : status,
+      status: finalStatus,
+      ...(hinted && status === "ok"
+        ? { lastError: "limited: session needs a 2FA code (web token missing or expiring)" }
+        : {}),
     });
     this.store.updateJob(job.id, {
-      status: status === "ok" ? "done" : status,
+      status: finalStatus === "connected" ? "done" : finalStatus === "twofa" ? "twofa" : status,
       error: status === "ok" ? "" : payload.message || "",
       reason: locked ? "locked" : payload.reason ?? "",
       unlockUrl: locked ? String(payload.unlockUrl ?? "") : "",
     });
     this.emitJob(job, account, "auth:result", {
-      status,
+      status: finalStatus,
       reason: locked ? "locked" : payload.reason ?? "",
       message: payload.message ?? "",
       unlockUrl: locked ? String(payload.unlockUrl ?? "") : "",
@@ -1207,19 +1258,27 @@ export class WorkerPool {
     const ok = Boolean(payload.ok);
     const limited = Boolean(payload.limited);
     const counts = countsFromVerify({ counts: payload.counts });
+    // A DS-only session authenticates but cannot read Drive: Apple still wants
+    // the 2FA code. Reporting it as "connected" hid that, so it is twofa now.
+    const status = ok ? (limited ? "twofa" : "connected") : "dead";
     const updated = this.store.updateAccount(account.id, {
-      status: ok ? "connected" : "dead",
+      status,
       // Never demote a trusted account from a health check: a worker payload
       // may omit the flag, and a dead session is still the account's trust
       // record (it is what makes a cookie refresh enough to recover it).
       trusted: Boolean(account.trusted || payload.trusted),
       lastPingAt: new Date().toISOString(),
-      lastError: ok ? payload.error ?? "" : payload.error ?? "session dead",
+      lastError: ok
+        ? payload.error ?? (limited ? "limited: session needs a 2FA code (web token missing or expiring)" : "")
+        : payload.error ?? "session dead",
       ...(Object.keys(counts).length
         ? { counts, countsUpdatedAt: new Date().toISOString() }
         : {}),
     });
-    this.store.updateJob(job.id, { status: ok ? "done" : "error", error: ok ? "" : payload.error ?? "" });
+    this.store.updateJob(job.id, {
+      status: ok ? "done" : "error",
+      error: ok ? (limited ? "limited" : "") : payload.error ?? "",
+    });
     this.emitAccount(updated, "account:info", {
       identity: updated.identity,
       counts: updated.counts,

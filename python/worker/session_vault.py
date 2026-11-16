@@ -65,6 +65,8 @@ def _key() -> bytes | None:
 
 
 def _session_files(session_dir: Path) -> list[Path]:
+    if not session_dir.is_dir():
+        return []
     return sorted(
         p for p in session_dir.iterdir()
         if p.is_file() and p.name.endswith(SESSION_SUFFIXES)
@@ -230,6 +232,54 @@ def restore_if_empty(session_dir: str | Path, email: str = "", vault: str | Path
     return restore(session_dir, vault=vault)
 
 
+def _has_web_token(directory: Path) -> bool:
+    for jar in directory.glob("*.cookiejar"):
+        try:
+            if "X-APPLE-WEBAUTH-TOKEN" in jar.read_text(errors="ignore"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def restore_web_token(
+    session_dir: str | Path, email: str = "", vault: str | Path | None = None
+) -> Path | None:
+    """Put back the newest snapshot that still has the web token.
+
+    A password login that stops at the 2FA prompt rewrites the jar with a
+    pre-2FA cookie set: Apple has already invalidated the old web token, so the
+    live jar loses it even though a good snapshot exists.  Restoring that
+    snapshot is what lets the account keep working without a second code.
+    Never touch a live jar that still has its token.
+    """
+    session_dir = Path(session_dir)
+    if _has_web_token(session_dir):
+        return None
+    vault_dir = _root(vault) / session_dir.name
+    try:
+        if not vault_dir.is_dir():
+            return None
+        snapshots = sorted(
+            p
+            for p in vault_dir.iterdir()
+            if p.is_dir() and not p.is_symlink() and not p.name.startswith(".")
+        )
+    except OSError:
+        return None
+    for candidate in reversed(snapshots):
+        if not _has_web_token(candidate):
+            continue
+        try:
+            ok, _errors = verify(candidate)
+        except Exception:
+            continue
+        if not ok:
+            continue
+        return restore(session_dir, candidate, vault=vault)
+    return None
+
+
 def snapshot_all(sessions_root: str | Path, vault: str | Path | None = None) -> int:
     """Back up every session directory that changed.  Returns snapshots written."""
     root = Path(sessions_root)
@@ -251,6 +301,12 @@ def _cli() -> int:
     parser.add_argument("--vault", default=None)
     parser.add_argument("--backup-all", action="store_true")
     parser.add_argument("--restore", metavar="EMAIL")
+    parser.add_argument(
+        "--restore-all",
+        action="store_true",
+        help="restore every vault entry (empty session dirs only unless --force)",
+    )
+    parser.add_argument("--force", action="store_true", help="overwrite non-empty sessions")
     parser.add_argument("--verify-all", action="store_true")
     parser.add_argument("--keep", type=int, default=None)
     args = parser.parse_args()
@@ -268,6 +324,28 @@ def _cli() -> int:
             print(f"[vault] no snapshot for {args.restore}", file=sys.stderr)
             return 1
         print(f"[vault] restored {args.restore} from {snap}")
+        return 0
+
+    if args.restore_all:
+        root = _root(args.vault)
+        sessions_root = Path(args.sessions_root)
+        if not root.is_dir():
+            print(f"[vault] no vault at {root}", file=sys.stderr)
+            return 1
+        restored = 0
+        skipped = 0
+        for account_dir in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")):
+            target = sessions_root / account_dir.name
+            try:
+                snap = restore(target, vault=args.vault) if args.force else restore_if_empty(target, vault=args.vault)
+            except Exception as error:  # one bad account must not stop recovery
+                print(f"[vault] {account_dir.name}: {error}", file=sys.stderr)
+                continue
+            if snap:
+                restored += 1
+            else:
+                skipped += 1
+        print(f"[vault] restored {restored} session(s), skipped {skipped} already present")
         return 0
 
     if args.verify_all:

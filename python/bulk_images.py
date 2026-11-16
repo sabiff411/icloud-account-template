@@ -328,11 +328,45 @@ def open_api(account: dict, attempt: int = 0):
         if not password:
             raise RuntimeError("session not authenticated")
         log("account", email, "session stale, logging in again")
+        # A password login rotates Apple's cookies.  If it stops at the 2FA
+        # prompt, the jar on disk would lose its web token and the account
+        # would look dead; keep a copy and put it back unless the login
+        # finished with a token pair.
+        backup = backup_session(api)
         api.authenticate()
+        if getattr(api, "requires_2fa", False) or not api.session.cookies.get(
+            "X-APPLE-WEBAUTH-TOKEN"
+        ):
+            restore_session(backup)
+            raise RuntimeError("2fa required: session needs a code")
         status = api.get_auth_status() or {}
     if not status.get("authenticated"):
         raise RuntimeError("session not authenticated")
     return api
+
+
+def backup_session(api) -> list[tuple[Path, Path]]:
+    """Copy the session/cookiejar before a re-login can rewrite them."""
+    saved: list[tuple[Path, Path]] = []
+    for attribute in ("session_path", "cookiejar_path"):
+        path = Path(getattr(api.session, attribute, "") or "")
+        if not path.is_file():
+            continue
+        backup = path.with_suffix(path.suffix + ".relogin")
+        try:
+            shutil.copy2(path, backup)
+            saved.append((path, backup))
+        except OSError:
+            pass
+    return saved
+
+
+def restore_session(saved: list[tuple[Path, Path]]) -> None:
+    for path, backup in saved:
+        try:
+            shutil.copy2(backup, path)
+        except OSError:
+            pass
 
 
 def open_api_safe(account: dict, attempts: int = 3):

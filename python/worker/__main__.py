@@ -283,7 +283,7 @@ class Manager:
                     "error": "" if ok else "session invalid",
                 }
                 if limited:
-                    result["error"] = "limited: web token missing (browser refresh needed)"
+                    result["error"] = "limited: session needs a 2FA code (web token missing or expiring)"
                 if ok:
                     # A ping is also the cheap way to refresh the counters the
                     # panel shows (album lengths, contacts, mail, ...); the
@@ -294,6 +294,15 @@ class Manager:
                             result["counts"] = counts
                     except Exception as error:
                         log.info("ping counts skipped: %s", type(error).__name__)
+                    # Keep the freshest cookie jar: if a later request drops
+                    # the web token, restoring this snapshot is what saves the
+                    # session (no second 2FA prompt).
+                    try:
+                        session_dir = Path(ctx.account.get("sessionDir") or "")
+                        if session_dir.is_dir():
+                            session_vault.snapshot(session_dir, key)
+                    except Exception as error:
+                        log.info("ping snapshot skipped: %s", error)
                 ctx.emit("job:ping_result", result)
             except Exception as error:
                 ctx.emit("job:ping_result", {"ok": False, "error": type(error).__name__})

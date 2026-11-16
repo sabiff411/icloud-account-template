@@ -98,6 +98,25 @@ class SessionVaultTests(unittest.TestCase):
         self.session.mkdir()
         self.assertIsNotNone(session_vault.restore(self.session, vault=self.vault))
 
+    def test_restore_web_token_puts_back_a_lost_cookie(self) -> None:
+        token = b'Set-Cookie3: X-APPLE-WEBAUTH-TOKEN="abc"; path="/"; domain=".icloud.com"\n'
+        (self.session / "account.cookiejar").write_bytes(token)
+        snap = session_vault.snapshot(self.session, vault=self.vault)
+        # A login that stopped at the 2FA prompt replaces the jar with one
+        # that has no web token.
+        (self.session / "account.cookiejar").write_bytes(b"pre-2fa")
+        restored = session_vault.restore_web_token(self.session, vault=self.vault)
+        self.assertEqual(restored, snap)
+        self.assertIn(b"X-APPLE-WEBAUTH-TOKEN", (self.session / "account.cookiejar").read_bytes())
+
+    def test_restore_web_token_never_touches_a_good_jar(self) -> None:
+        token = b'Set-Cookie3: X-APPLE-WEBAUTH-TOKEN="abc"; path="/"; domain=".icloud.com"\n'
+        (self.session / "account.cookiejar").write_bytes(token)
+        session_vault.snapshot(self.session, vault=self.vault)
+        (self.session / "account.cookiejar").write_bytes(token + b"newer")
+        self.assertIsNone(session_vault.restore_web_token(self.session, vault=self.vault))
+        self.assertTrue((self.session / "account.cookiejar").read_bytes().endswith(b"newer"))
+
     def test_snapshot_all(self) -> None:
         second = self.root / "sessions" / "fedcba9876543210"
         second.mkdir(parents=True)

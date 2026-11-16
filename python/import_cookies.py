@@ -64,6 +64,33 @@ def to_lwp(rows: list[dict]) -> LWPCookieJar:
     return jar
 
 
+def sync_session_tokens(session_dir: Path, jar: LWPCookieJar) -> dict:
+    """Copy the web/trust tokens from the jar into the pyicloud session file.
+
+    Drive rejects a session that has DS token but no X-APPLE-WEBAUTH-TOKEN, and
+    a missing trust token means Apple asks for the 2FA code again.
+    """
+    session_file = next(iter(sorted(session_dir.glob("*.session"))), None)
+    data: dict = {}
+    if session_file and session_file.exists():
+        try:
+            data = json.loads(session_file.read_text())
+        except Exception:
+            data = {}
+    web = next((c.value for c in jar if c.name == "X-APPLE-WEBAUTH-TOKEN"), "")
+    trust = next((c.value for c in jar if c.name == "X-APPLE-WEBAUTH-HSA-TRUST"), "")
+    ds = next((c.value for c in jar if c.name == "X-APPLE-DS-WEB-SESSION-TOKEN"), "")
+    if web:
+        data["session_token"] = web
+    elif ds and not data.get("session_token"):
+        data["session_token"] = ds
+    if trust:
+        data["trust_token"] = trust
+    if session_file and data:
+        session_file.write_text(json.dumps(data))
+    return {"web_token": bool(web), "trust_token": bool(trust), "ds_token": bool(ds)}
+
+
 def account_for(email: str) -> dict:
     data = json.loads(STORE.read_text())
     for account in data.get("accounts") or []:
@@ -105,8 +132,39 @@ def main() -> None:
         rows = rows.get("cookies") or []
     jar = to_lwp(rows)
     target = cookiejar_path(session_dir)
+    # Merge with what the session already holds: a browser export that lacks
+    # X-APPLE-WEBAUTH-TOKEN must not wipe a working token from an earlier login.
+    if target.exists():
+        try:
+            existing = LWPCookieJar(str(target))
+            existing.load(ignore_discard=True, ignore_expires=True)
+            imported_names = {str(row.get("name") or "") for row in rows}
+            keep = [c for c in existing if c.name not in imported_names]
+            if keep:
+                rows = list(rows) + [
+                    {
+                        "name": c.name,
+                        "value": c.value,
+                        "domain": c.domain,
+                        "path": c.path,
+                        "secure": c.secure,
+                        "httpOnly": True,
+                        "expirationDate": c.expires,
+                    }
+                    for c in keep
+                ]
+                print(f"kept {len(keep)} cookies from the existing jar")
+        except Exception as error:  # noqa: BLE001
+            print(f"could not read the existing jar: {type(error).__name__}")
     jar.save(str(target), ignore_discard=True, ignore_expires=True)
     print(f"wrote {target} ({len(list(jar))} cookies)")
+    state = sync_session_tokens(session_dir, jar)
+    print(
+        "tokens: web={web_token} trust={trust_token} ds={ds_token}".format(**state)
+    )
+    if not state["web_token"]:
+        print("WARNING: no X-APPLE-WEBAUTH-TOKEN in the export -> the account will")
+        print("         stay 'limited' (Drive 421) until the login completes 2FA")
 
     proxy = account.get("proxy") or {}
     url = build_proxy_url(

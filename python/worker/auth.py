@@ -14,6 +14,7 @@ import queue
 import secrets
 import shutil
 import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Any
@@ -101,16 +102,28 @@ def _service(ctx: JobContext, password: str):
         session_dir.chmod(0o700)
     except OSError:
         pass
+    # A jar that lost the web token but has a snapshot that still carries it is
+    # recoverable without a code: put the snapshot back before Apple sees the
+    # pre-2FA cookie set.
+    try:
+        restored = session_vault.restore_web_token(session_dir, email)
+        if restored:
+            log.info("restored web token from %s (%s)", restored.name, email)
+    except Exception as error:
+        log.info("web-token restore skipped: %s", error)
     # If the working cookie jar is gone (new node, wiped disk), restore the
     # newest verified snapshot before Apple sees a fresh browser.
     try:
         session_vault.restore_if_empty(session_dir, email)
     except Exception as error:
         log.info("session restore skipped: %s", error)
+    # ``run_auth`` logs in inside a staging copy (ctx.working_dir) so a login
+    # that stops at the 2FA prompt can never overwrite a working jar.
+    working = Path(getattr(ctx, "working_dir", None) or session_dir)
     api = PyiCloudService(
         email,
         password,
-        cookie_directory=str(session_dir),
+        cookie_directory=str(working),
         authenticate=False,
         accept_terms=True,
     )
@@ -182,8 +195,19 @@ def _apply_browser_cookies(api, ctx: JobContext) -> bool:
             )
         except Exception:
             continue
-        if name in ("X-APPLE-DS-WEB-SESSION-TOKEN", "X-APPLE-WEBAUTH-HSA-TRUST"):
-            key = "session_token" if "DS-WEB" in name else "trust_token"
+        if name in (
+            "X-APPLE-DS-WEB-SESSION-TOKEN",
+            "X-APPLE-WEBAUTH-TOKEN",
+            "X-APPLE-WEBAUTH-HSA-TRUST",
+        ):
+            # X-APPLE-WEBAUTH-TOKEN is the web token Drive wants; the DS token
+            # is only a fallback when the browser export did not include it.
+            if name == "X-APPLE-WEBAUTH-HSA-TRUST":
+                key = "trust_token"
+            elif name == "X-APPLE-WEBAUTH-TOKEN":
+                key = "session_token"
+            else:
+                key = "session_token"
             try:
                 # Keep the DS/trust pair that the session file already holds: it
                 # is the one /accountLogin accepts.  The browser's copies are
@@ -234,6 +258,139 @@ def ensure_services(api, ctx: JobContext) -> dict:
     return body
 
 
+def _session_token_dead(error: Exception) -> bool:
+    """True when Apple says the global session/token is gone (not a blip).
+
+    ``get_auth_status`` can keep answering "authenticated" from /validate
+    while Drive and Photos return 421 "Invalid global session"; without this
+    check a ping reports the account healthy and nobody re-authenticates until
+    the token is unrecoverable.
+    """
+    if getattr(error, "code", None) == 421:
+        return True
+    text = str(error)
+    return "421" in text or "Invalid global session" in text
+
+
+def _web_expires(api) -> float:
+    """Unix expiry of the web token, 0 when unknown."""
+    try:
+        jar = api.session.cookies
+        for by_path in jar._cookies.values():
+            for by_name in by_path.values():
+                cookie = by_name.get(WEB_TOKEN)
+                if cookie is not None:
+                    return float(cookie.expires or 0)
+    except Exception:
+        pass
+    return 0.0
+
+
+REFRESH_MARGIN = 7 * 24 * 3600  # refresh a week before Apple expires it
+
+
+def renew(api, ctx: JobContext) -> bool:
+    """Password re-login that reuses the stored trust token (no code).
+
+    A web token has a fixed ~30 day life and no request extends it, so the only
+    way a session survives is a fresh sign-in before it expires.  When the
+    original 2FA ran through this client, Apple accepts the stored trust token
+    and skips the code; the result is a new 30-day token pair plus an extended
+    trust token.  If the login stops at 2FA (a trust token from someone else's
+    browser), the previous jar is put back untouched.
+    """
+    saved: list[tuple[Path, Path]] = []
+    for attribute in ("session_path", "cookiejar_path"):
+        path = Path(getattr(api.session, attribute, "") or "")
+        if not path.is_file():
+            continue
+        backup = path.with_suffix(path.suffix + ".renew")
+        try:
+            shutil.copy2(path, backup)
+            saved.append((path, backup))
+        except OSError:
+            pass
+    try:
+        api.authenticate()
+    except Exception as error:
+        log.info("renew failed: %s: %s", type(error).__name__, str(error)[:120])
+    if _has_web(api) and not getattr(api, "requires_2fa", False):
+        log.info("session renewed: %s", ctx.account.get("email", ""))
+        return True
+    for path, backup in saved:
+        try:
+            shutil.copy2(backup, path)
+        except OSError:
+            pass
+    return False
+
+
+def refresh_tokens(api, ctx: JobContext, *, force: bool = False) -> bool:
+    """Mint a fresh DS/web token pair without a 2FA code.
+
+    ``accountLogin`` with the stored ``dsWebAuthToken`` + ``trustToken``
+    returns new cookies for a trusted account.  Both the DS token and the web
+    token live about 30 days, so calling this on a schedule is what makes a
+    session outlive Apple's expiry instead of dying with it.
+    """
+    if not force and _has_web(api):
+        expires = _web_expires(api)
+        if not expires or expires - time.time() > REFRESH_MARGIN:
+            return True
+    try:
+        data = api.session.data or {}
+        if not data.get("session_token"):
+            # A browser export carries the DS token as a cookie: use it so a
+            # jar-only session can still be refreshed instead of called dead.
+            ds = api.session.cookies.get("X-APPLE-DS-WEB-SESSION-TOKEN")
+            if ds:
+                data["session_token"] = str(ds).strip('"')
+        if not data.get("session_token"):
+            return False
+        if not data.get("trust_token"):
+            trust = api.session.cookies.get("X-APPLE-WEBAUTH-HSA-TRUST")
+            if trust:
+                data["trust_token"] = str(trust).strip('"')
+        api._authenticate_with_token(require_trust=False)
+    except Exception as error:
+        log.info(
+            "token refresh failed: %s: %s", type(error).__name__, str(error)[:120]
+        )
+        return False
+    return _has_web(api)
+
+
+def _network_error(error: Exception | None) -> bool:
+    """True when the failure says nothing about the session (proxy/timeout)."""
+    if error is None:
+        return False
+    name = type(error).__name__
+    if "Connection" in name or "Proxy" in name or "Timeout" in name:
+        return True
+    text = str(error).lower()
+    return "proxyerror" in text or "max retries" in text or "timed out" in text
+
+
+def _alive_with_fresh_token(api, ctx: JobContext) -> tuple[bool, bool, bool]:
+    """Drive answered: renew the token before Apple expires it."""
+    expires = _web_expires(api)
+    if not expires:
+        return True, True, False
+    left = expires - time.time()
+    if left > REFRESH_MARGIN:
+        return True, True, False
+    if renew(api, ctx):
+        return True, True, False
+    # Working right now, but Apple drops this token within a week and the
+    # stored trust token cannot skip the code from here: ask for one in time.
+    log.warning(
+        "web token expires in %d days and needs a 2FA code: %s",
+        max(0, int(left / 86400)),
+        ctx.account.get("email", ""),
+    )
+    return True, True, True
+
+
 def check_alive(api, ctx: JobContext) -> tuple[bool, bool, bool]:
     """Return (alive, trusted, limited) without demanding a /validate success.
 
@@ -243,12 +400,15 @@ def check_alive(api, ctx: JobContext) -> tuple[bool, bool, bool]:
     My but not Drive.  Probe the real service before calling an account dead.
     """
     trusted_hint = bool(ctx.account.get("trusted"))
-    try:
-        has_web = bool(api.session.cookies.get(WEB_TOKEN))
-    except Exception:
-        has_web = False
 
-    if has_web:
+    # A missing web token is not death: a password login with the stored trust
+    # token mints a new one without a code when the original 2FA ran here.
+    if not _has_web(api):
+        if renew(api, ctx):
+            return True, True, False
+        refresh_tokens(api, ctx, force=True)
+
+    if _has_web(api):
         # Check the service first: a failed /validate clears the session's
         # webservice state and can invalidate the very token we are testing.
         ensure_services(api, ctx)
@@ -256,23 +416,46 @@ def check_alive(api, ctx: JobContext) -> tuple[bool, bool, bool]:
             api.drive.dir()
             # A browser web token that opens Drive proves the account itself is
             # trusted; the session's own flag stays false for cookie logins.
-            return True, True, False
-        except Exception:
-            pass
+            return _alive_with_fresh_token(api, ctx)
+        except Exception as drive_error:
+            # Some accounts have Drive disabled; Photos is the other proof.
+            try:
+                api.photos.albums["Library"]
+                return _alive_with_fresh_token(api, ctx)
+            except Exception as photo_error:
+                if _session_token_dead(drive_error) or _session_token_dead(photo_error):
+                    # /validate may still say yes, but the global session is
+                    # gone: report it now so the panel can ask for a code.
+                    # One password login with the stored trust token is worth
+                    # trying first: an expired token is not a dead account.
+                    if renew(api, ctx):
+                        try:
+                            api.drive.dir()
+                            return True, True, False
+                        except Exception:
+                            pass
+                    return False, trusted_hint, False
 
+    last_error: Exception | None = None
     try:
         status = api.get_auth_status() or {}
-    except Exception:
+    except Exception as error:
+        last_error = error
         status = {}
     if status.get("authenticated"):
-        return True, bool(status.get("trusted_session")) or trusted_hint, False
+        return True, bool(status.get("trusted_session")) or trusted_hint, not _has_web(api)
 
     try:
         api._authenticate_with_token(require_trust=False)
         if api.data:
-            return True, trusted_hint, True
-    except Exception:
-        pass
+            return True, trusted_hint, not _has_web(api)
+    except Exception as error:
+        last_error = error
+    if _network_error(last_error):
+        # The proxy (not Apple) failed.  Keep the session instead of writing
+        # "dead": the next ping will tell the truth, and a dead flag on a
+        # healthy account is exactly how sessions used to get lost.
+        return True, trusted_hint, False
     return False, False, False
 
 
@@ -456,6 +639,76 @@ def _restore(saved: dict[str, Path]) -> None:
                 shutil.copy2(backup, source)
         except OSError:
             pass
+
+
+def _stage_login(session_dir: Path) -> Path:
+    """Copy the session into a scratch dir so the login writes only there.
+
+    Apple rotates its cookies on every password login.  A login that stops at
+    the 2FA prompt therefore replaces a working jar with a pre-2FA one and the
+    web token is gone, although the hoster never got a code.  Logging in inside
+    ``<session>/.login`` and promoting the result only when the token pair is
+    present makes the login atomic: a timeout, a closed tab or a crash leaves
+    the live jar exactly as it was.
+    """
+    stage = session_dir / ".login"
+    shutil.rmtree(stage, ignore_errors=True)
+    stage.mkdir(parents=True, exist_ok=True)
+    for pattern in ("*.session", "*.cookiejar"):
+        for source in session_dir.glob(pattern):
+            try:
+                shutil.copy2(source, stage / source.name)
+            except OSError:
+                pass
+    return stage
+
+
+def _promote(stage: Path | str | None, session_dir: Path | str) -> bool:
+    """Replace the live jar/session with a completed login's copy."""
+    if not stage:
+        return False
+    stage, session_dir = Path(stage), Path(session_dir)
+    if not any(stage.glob("*.cookiejar")):
+        return False
+    ok = True
+    for pattern in ("*.session", "*.cookiejar"):
+        for source in stage.glob(pattern):
+            target = session_dir / source.name
+            temporary = target.with_suffix(target.suffix + ".new")
+            try:
+                shutil.copy2(source, temporary)
+                os.replace(temporary, target)
+            except OSError as error:
+                log.warning("could not promote %s: %s", target.name, error)
+                ok = False
+    return ok
+
+
+def _promote_staged(ctx: JobContext) -> None:
+    stage = getattr(ctx, "working_dir", None)
+    if not stage:
+        return
+    session_dir = Path(ctx.account.get("sessionDir") or "")
+    if session_dir and session_dir != Path(".") and _promote(stage, session_dir):
+        log.info("login promoted to %s", session_dir.name)
+
+
+def _has_web(api) -> bool:
+    try:
+        return bool(api.session.cookies.get(WEB_TOKEN))
+    except Exception:
+        return False
+
+
+def _web_expires(api) -> float:
+    """Unix expiry of the web token, 0 when unknown."""
+    try:
+        for cookie in api.session.cookies:
+            if getattr(cookie, "name", "") == WEB_TOKEN:
+                return float(getattr(cookie, "expires", 0) or 0)
+    except Exception:
+        pass
+    return 0.0
 
 
 UNLOCK_URL = (
@@ -743,6 +996,14 @@ def run_auth(ctx: JobContext) -> None:
             _finish(ctx, api, reused=True)
             return
 
+        # Apple rotates its cookies on a password login, so a login that stops
+        # at the 2FA prompt would replace a working jar with a pre-2FA one.
+        # Do it in a copy and promote only the finished result.
+        ctx.working_dir = _stage_login(session_dir)
+        api, session_dir = _service(ctx, password)
+        ctx.api = api
+        _apply_proxy(api, ctx)
+
         ctx.state("auth", "Signing in")
         for attempt in range(2):
             try:
@@ -752,6 +1013,7 @@ def run_auth(ctx: JobContext) -> None:
                 if attempt == 1:
                     raise
                 ctx.state("auth", "Retrying the connection")
+                ctx.working_dir = _stage_login(session_dir)
                 api, session_dir = _service(ctx, password)
                 ctx.api = api
                 _apply_proxy(api, ctx)
@@ -793,6 +1055,12 @@ def run_auth(ctx: JobContext) -> None:
         else:
             trusted = True
 
+        # Never promote a login that has no web token: it would erase the only
+        # cookie Drive accepts.  accountLogin with the new session is the last
+        # chance to mint it.
+        if not _has_web(api):
+            refresh_tokens(api, ctx, force=True)
+
         _finish(ctx, api, reused=False, trusted=trusted)
     except PyiCloudAccountLockedException as error:
         ctx.emit("job:result", _result_with_proxy(ctx, _locked_payload(ctx.account, error)))
@@ -805,6 +1073,11 @@ def run_auth(ctx: JobContext) -> None:
                     traceback.format_exc())
         ctx.emit("job:result", _result_with_proxy(ctx, {"status": "error", "message": type(error).__name__}))
         _restore(saved)
+    finally:
+        stage = getattr(ctx, "working_dir", None)
+        ctx.working_dir = None
+        if stage:
+            shutil.rmtree(stage, ignore_errors=True)
 
 
 def _finish(ctx: JobContext, api, *, reused: bool, trusted: bool | None = None) -> None:
@@ -813,14 +1086,23 @@ def _finish(ctx: JobContext, api, *, reused: bool, trusted: bool | None = None) 
         "sessionDir": ctx.account.get("sessionDir", ""),
         "proxy": _proxy_info(ctx),
     }
+    # A session without the web token authenticates but cannot read Drive.
+    # Say so in the result so the pool files it as "twofa", not "connected".
+    limited = not _has_web(api)
+    if limited:
+        log.warning("auth finished without a web token: %s", ctx.account.get("email", ""))
     ctx.emit(
         "job:result",
         {
             "status": "ok",
             "message": "Already connected" if reused else "Signed in",
+            "limited": limited,
             "account": account,
         },
     )
+    # The login ran in a staging dir: copy the finished jar/session back before
+    # the snapshot, otherwise the vault would store the pre-login state.
+    _promote_staged(ctx)
     try:
         from .proxy import stable_ssid
         session_dir = Path(ctx.account.get("sessionDir") or "")
@@ -834,3 +1116,10 @@ def _finish(ctx: JobContext, api, *, reused: bool, trusted: bool | None = None) 
         ctx.emit("job:account_info", info)
     except Exception as error:
         log.info("inventory skipped: %s", type(error).__name__)
+    # inventory hits the services and refreshes their per-service cookies, so
+    # promote once more and keep that richer jar in the vault too.
+    _promote_staged(ctx)
+    try:
+        session_vault.snapshot(session_dir, ctx.account.get("email", ""))
+    except Exception:
+        pass
