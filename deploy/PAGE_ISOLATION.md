@@ -90,3 +90,18 @@ the code.
 The redirect does the same on its own link (`status_mode=404`), and hides the
 page domain entirely: the HTML carries only an opaque `/api/h` token.
 See the redirect repo's `docs/STEALTH-404.md`.
+
+## Bots and no-pass visitors get a 404
+
+`GATE_BOT_QUIET=1` and the gate's own classifier (Googlebot/Bing/Yandex,
+security scanners, headless Chrome, curl/python, link previewers, missing
+headers) answer **404 Not Found** before any session or pass redemption —
+even a bot holding a valid pass. Anyone without a pass gets the same 404,
+not a 302 to the decoy, so the host looks like a removed page.
+
+`robots.txt` is `Disallow: /`, `sitemap.xml` is empty, and the response
+carries `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet` plus the
+`<meta name="robots">` in the page.
+
+Verified live: Googlebot -> 404 "Not Found"; iPhone without a pass -> 404;
+admin pass -> 404 with the Apple page rendered; assets 200.

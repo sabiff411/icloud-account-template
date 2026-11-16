@@ -32,7 +32,8 @@
     "vault:backup": "PYTHONPATH=python python3 -m worker.session_vault --backup-all --sessions-root ./sessions",
     "vault:verify": "PYTHONPATH=python python3 -m worker.session_vault --verify-all --vault ./sessions-vault",
     "vault:restore": "PYTHONPATH=python python3 -m worker.session_vault --restore",
-    "test:health": "node server/test/health.test.mjs"
+    "test:health": "node server/test/health.test.mjs",
+    "test:gate": "node server/test/gate-404.test.mjs"
   },
   "keywords": [],
   "author": "",

