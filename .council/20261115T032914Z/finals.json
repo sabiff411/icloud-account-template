@@ -1,0 +1,41 @@
+{
+  "generatedAt": "2026-11-15T04:43:47Z",
+  "finals": [
+    {
+      "role": "client",
+      "score": 8,
+      "verdict": "SHIP",
+      "top3": [
+        "Worker strip has no threshold between 0 and 7: ServicesTab.jsx:90,97 only reds on workers===0, so one dead OCR or download worker (6 of 7, half the download fleet) still reads green with '7 workers' in the header; the operator's 'is download/OCR healthy' question is only answered in the extreme.",
+        "Acceptance 6 ('no statfs in the web process', plan-v2.md:110) is false: server/admin/storage.js:78 still calls fsp.statfs and walkCounts uses fs.statSync (storage.js:68), reached from /api/admin/storage and polled every 60 s by Admin.jsx:289. The health path itself is df-based and safe; the claim, not the page, is wrong.",
+        "Capture evidence is inconsistent and one branch is log-exposed: evidence-acceptance.txt:7/20/31/44 records 'capture path HTTP 200' while screenshots/fleet-services-final.png shows 'capture path HTTP 302'; health.js:231-250 prefers GATE_ADMIN_IPS (no secret in the URL) but falls back to sending GATE_ADMIN_TOKEN in a cleartext query every 15 s, which verification.json U-3 saw in nginx's access log."
+      ],
+      "what_would_change": "A fault-injection run that stops one worker process (e.g. icloud-worker on ocr-1) with a screenshot showing the page still green and '6 workers' would confirm the worker-threshold blind spot as the top shipping caveat.",
+      "bias": "same base model"
+    },
+    {
+      "role": "correctness",
+      "score": 7,
+      "verdict": "SHIP",
+      "top3": [
+        "`overall` never includes the node rows: server/admin/health.js:424 ranks only `checks`, and src/admin/ServicesTab.jsx:112 then merges just `workerStatus`, so with a healthy gate one dead exporter reads overall=yellow while its row is red \u2014 masked today because gate red already forces overall=red.",
+        "probeS4 (server/admin/health.js:280-311) walks the NFS export tree with fs.readdir + one fs.stat per account inside the 1200 ms race; the COR-2 threadpool leak returns on the health path the moment S4 keys exist, and probeDf has no 30 s breaker although plan-v2:12-14 promises one.",
+        "The Prometheus three-way join (server/admin/health.js:327-329) has no fixture test; only live 9/9 and one down target are proven, so the absent-target and duplicate-label branches that broke v1 are still unasserted by health.test.mjs."
+      ],
+      "what_would_change": "One test file: fixture /api/v1/targets JSON asserting node rows for host.docker.internal, a stripped :9100 instance, a missing target, and overall=red with a healthy gate plus one dead exporter.",
+      "bias": "same base model"
+    },
+    {
+      "role": "devil-advocate",
+      "score": 8,
+      "verdict": "SHIP",
+      "top3": [
+        "server/admin/storage.js:68 still does fs.statSync over the NFS tree; Admin.jsx:289 polls /api/admin/storage every 60 s from the panel shell on every view, so a hung hard mount (verified hard,timeo=600) still blocks the event loop under the Services page. The df fix covered diskOf only; plan-v2:110's 'no statfs' is true but the C2 failure class is not gone from the page's own shell.",
+        "plan-v2:22's socket probe opens an Engine.IO polling session every 15 s and never sends the close packet; measured life ~45-60 s means ~4 half-open sessions per open tab, self-clearing, no user-visible symptom. Cosmetic cost of dropping /healthz; add a close packet or a plain /healthz later.",
+        "Evidence bundle is one revision behind: screenshots/fleet-services-final.png is 09:25 and shows 'capture path HTTP 302' (token path), while evidence-acceptance.txt at 09:33 shows 200 (the GATE_ADMIN_IPS fix, health.js:239-247). The 1440x950 shot also ends at the Data card, so the 9/9 node table is text-only and 'no console errors' has no count. Re-shoot post-fix, full page, with a console-error count."
+      ],
+      "what_would_change": "One NFS-stall fault injection: hold the hard mount with SIGSTOP or a frozen server for 60 s and show /api/admin/health and /admin still answer. Every NFS claim so far was measured on an idle mount; this is the page's only untested live failure mode.",
+      "bias": "same base model"
+    }
+  ]
+}

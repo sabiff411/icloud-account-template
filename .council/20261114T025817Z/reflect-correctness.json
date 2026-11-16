@@ -1,0 +1,87 @@
+{
+  "role": "correctness",
+  "review_file": ".council/20261114T025817Z/review-correctness.json",
+  "findings": [
+    {
+      "id": "COR-1",
+      "confidence": "high",
+      "basis": "checked",
+      "note": "verify.py:264-276 and OverviewTab:238-253 read at the cited lines; the matrix is already computed and rendered."
+    },
+    {
+      "id": "COR-2",
+      "confidence": "high",
+      "basis": "checked",
+      "note": "Both counts measured on the cited export (manifest 104/9, disk 124/18, countsFromExport 124/18); only the 'which branch wrote last' sequence is inferred from code paths."
+    },
+    {
+      "id": "COR-3",
+      "confidence": "high",
+      "basis": "checked",
+      "note": "The overwrite at worker-pool:1111-1118 and the export-counts.js header are read; the 'missing == 0' consequence is arithmetic on those facts, not a runtime observation."
+    },
+    {
+      "id": "COR-4",
+      "confidence": "high",
+      "basis": "checked",
+      "note": "Executed a reload + WorkerPool probe: status unknown, queue empty. Strongest evidence in the set."
+    },
+    {
+      "id": "COR-5",
+      "confidence": "high",
+      "basis": "checked",
+      "note": "Executed probe: 1005 jobs -> 5 evicted with tied createdAt. The 'stuck exporting' end state is read from pump():770-775, not observed at runtime."
+    },
+    {
+      "id": "COR-6",
+      "confidence": "high",
+      "basis": "checked",
+      "note": "Executed probe: updateAccount({priority,order,note}) returned an account with all three absent."
+    },
+    {
+      "id": "COR-7",
+      "confidence": "medium",
+      "basis": "checked",
+      "note": "unshift + pump order read, but I did not read the bulk UI's enqueue loop, so whether it lands reversed depends on unread client code."
+    },
+    {
+      "id": "COR-8",
+      "confidence": "high",
+      "basis": "checked",
+      "note": "Ran gallery() on the cited export: kind=photo -> 0 items, default -> 142 with 20 videos; extension counts on disk."
+    },
+    {
+      "id": "COR-9",
+      "confidence": "medium",
+      "basis": "checked",
+      "note": "Dead guard is certain by reading (same object mutated at 1158); the 'counted as wave-done' consequence needs a running wave to reach."
+    },
+    {
+      "id": "COR-10",
+      "confidence": "high",
+      "basis": "checked",
+      "note": "Status vocabulary grepped; tests read; the Object.create(WorkerPool.prototype) gap seen at library.test:202."
+    }
+  ],
+  "top_3_by_cost_of_inaction": [
+    {
+      "rank": 1,
+      "id": "COR-3",
+      "cost": "The matrix answers 'missing 0' for every exported account and never surfaces new iCloud data. Silent, optimistic failure on the console's central question: the operator stops rechecking and misses the accounts that gained photos/seeds. Costs the campaign, not just the UI."
+    },
+    {
+      "rank": 2,
+      "id": "COR-1",
+      "cost": "Two reconciliation models ship side by side with different numbers (104 vs 124 assets) and an acceptance test that compares the plan's own two derived values. Expensive to unwind later: API, UI and the P0 gate all encode the duplicate, while the working Verify panel keeps contradicting it."
+    },
+    {
+      "rank": 3,
+      "id": "COR-5",
+      "cost": "At the plan's own 500-account scale, a queued job can vanish mid-flight; the account sticks at 'exporting' with no row to retry - the exact blind spot P0-1 exists to close. Fix cost is small now and grows once retry/priority are layered on top of a queue that silently loses entries."
+    }
+  ],
+  "drop_if_forced": {
+    "id": "COR-7",
+    "reason": "Lowest independent value: P2, mechanism-visible on the first manual run (three selected accounts finish in reverse), and it rests on an unread client enqueue loop, so it is the one finding a verifier can plausibly refute. Near-miss: COR-9, which I also did not exercise at runtime."
+  }
+}

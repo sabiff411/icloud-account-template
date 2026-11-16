@@ -13,3 +13,11 @@ sessions/
 *.sqlite3
 
 .superpowers/
+
+# exported pyicloud sessions (contain cookies + passwords)
+session-export/
+
+# benchmark virtualenvs and extracted packages
+bench/**/.venv/
+bench/ocr/tess/
+*.deb

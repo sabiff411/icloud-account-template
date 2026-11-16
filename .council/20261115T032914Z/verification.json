@@ -1,0 +1,77 @@
+{
+  "verifier": "verifier seat (read-only; ssh read-only to session-1 82.221.139.233, db-mon-1 82.221.141.135)",
+  "results": [
+    {
+      "id": "C1",
+      "sources": [
+        "CLI-1",
+        "DEV-1",
+        "COR-1"
+      ],
+      "status": "FIXED-IN-V2",
+      "severity_after": "P2",
+      "evidence": "db-mon-1 `curl 127.0.0.1:9090/api/v1/targets?state=active` -> 9 active, all up: 8 x '10.20.0.NN:9100' + 'host.docker.internal:9100'; labels are exactly {'instance','job'}, no 'node' key. /opt/mon/prometheus/prometheus.yml is static_configs only, no relabel_configs. plan-v2.md:9 'strips `:port` from `labels.instance` and maps `host.docker.internal` to `db-mon-1`', :10 prometheusInstance, :11 'acceptance asserts **all 9 rows green before fault injection**'.",
+      "notes": "Defect real live (no 10.20.0.30 target). plan-v2 fixes it, but the primary key labels.node does not exist on this Prometheus; only the alias fallback works. Port-suffix strip also needed: every instance carries ':9100'."
+    },
+    {
+      "id": "C2",
+      "sources": [
+        "CLI-3",
+        "DEV-2",
+        "COR-2"
+      ],
+      "status": "FIXED-IN-V2",
+      "severity_after": "P2",
+      "evidence": "session-1 /proc/mounts: '10.20.0.30:/srv/icloud /srv/icloud nfs4 ... hard,proto=tcp,nconnect=8,timeo=600,retrans=2'. web env (pid 12521 /proc/PID/environ) has no UV_THREADPOOL_SIZE. Empirical on session-1 node: with 4 FIFO reads pinning the pool, 'stat after 1002 ms -> PENDING >1000ms' while 'df after 13 ms -> ... 6% /srv/icloud' resolved. plan-v2.md:12-14 'Replace `fs.promises.statfs` with `execFile(\"df\", [\"-P\", dir])`, timeout: 1200, SIGKILL, single-flight ... 30 s circuit breaker'.",
+      "notes": "4-thread starvation reproduced; execFile/df runs off the pool (13 ms while starved), so the child fix is sound. Caveat: SIGKILL cannot reap a child in D state, so one hung df may persist until the mount returns."
+    },
+    {
+      "id": "U-1",
+      "sources": [
+        "C2"
+      ],
+      "status": "CONFIRMED",
+      "severity_after": "P2",
+      "evidence": "server/admin/storage.js:78 'const stat = await fsp.statfs(dir);', TTL_MS = 60_000 (:18), diskOf(\"export\", exportDir) (:150); reached from server/admin/api.js:424-433 (\"/storage\" -> localStorage) and src/admin/Admin.jsx:289 'const timer = setInterval(load, 60_000);' inside Panel (any view while socket online).",
+      "notes": "Survives plan-v2, so acceptance 6 'no `statfs` in the web process' (plan-v2:110) is false. The same route also walks the NFS tree with fs.statSync (storage.js:68), which blocks the loop, not just a thread."
+    },
+    {
+      "id": "CLI-2",
+      "sources": [
+        "CLI-2"
+      ],
+      "status": "FIXED-IN-V2",
+      "severity_after": "P2",
+      "evidence": "live /opt/icloud3/.env:8 'PANEL_URL=http://82.221.139.233'. From 127.0.0.1: bare '/' with browser UA + Accept text/html -> 302 Location https://www.apple.com/; '/api/health -> 200' body {\"ok\":true,...}; '/socket.io/?EIO=4&transport=polling' -> 200 body '0{\"sid\":\"...\",\"upgrades\":[\"websocket\"],\"pingInterval\":25000'. plan-v2.md:20-24 names those three edge URLs.",
+      "notes": "v1 probes were loopback-only (config.js:78-79, plan.md:66); v2's set crosses nginx and closes it. Residual: gate green is '302/200' (plan-v2:51), and a token-less fetch gets the quiet-bot 200 (gate.js:448 botQuiet default true)."
+    },
+    {
+      "id": "U-2",
+      "sources": [
+        "U-2"
+      ],
+      "status": "DOWNGRADE",
+      "severity_after": "P3",
+      "evidence": "server/socket/index.js:31-32 'pingInterval: 25_000,' / 'pingTimeout: 120_000'. Live, handshake-only against 82.221.139.233/socket.io: sid valid at t+20s ('2 [200]') and t+40s ('61 [200]'), then '{\"code\":1,\"message\":\"Session ID unknown\"} [400]' at t+60s; a second run was still 200 at t+60s after one intermediate poll.",
+      "notes": "An abandoned session is real, but measured life is ~45-60 s, not 145 s: ~4 not 8-10 per 15 s tab, and it self-clears. No user-visible symptom, clientsCount skew only. Close-packet fix stands."
+    },
+    {
+      "id": "U-3",
+      "sources": [
+        "U-3"
+      ],
+      "status": "CONFIRMED",
+      "severity_after": "P2",
+      "evidence": ".env.example:150 'GATE_ADMIN_TOKEN=' empty; live /opt/icloud3/.env:27 'GATE_ADMIN_TOKEN=9f594160c1eac334996312147677acc4'; server/gate.js:455 'adminToken: trim(overrides.adminToken || env.GATE_ADMIN_TOKEN),' and :605 'const adminByToken = Boolean(cfg.adminToken && gateParam && safeEqual(gateParam, cfg.adminToken));'. /var/log/nginx/access.log: '82.221.141.135 - - [15/Nov/2026:04:15:43 +0000] \"GET /?gate=9f594160c1eac334996312147677acc4 HTTP/1.1\" 302 0'.",
+      "notes": "Dependency and cleartext log exposure both real; token works live (302 -> cleanUrl). plan-v2 change 6 adds only Redis/PG vars. With it unset, a token-less probe can read green off the quiet-bot 200."
+    }
+  ],
+  "not_examined": [
+    "S10 df-vs-statvfs ratio, C3/C4/C5, S3-S9: checked only where they intersect the six items above",
+    "the gate provider on :4100 (a transient python3 stub on 127.0.0.1:4100 at 04:24 UTC exited; no stable listener)",
+    "server/socket/admin.js admin:ready payload and src/admin/useAdminSocket.js (D2 worker-count path)",
+    "nginx site config and per-host UFW; only that one :4001 listener exists (pid 12520)",
+    "Python worker behaviour on a hung NFS mount; no fault injection on the live fleet",
+    "why the abandoned handshake dies at ~60 s rather than the 145 s implied by pingInterval+pingTimeout (connector not instrumented)"
+  ]
+}

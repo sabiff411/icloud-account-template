@@ -1,0 +1,13 @@
+## Demo facts
+
+- store accounts: 21
+- library files: 124
+- hidden files: 18
+- deleted files: 0
+- notes txt: 2
+- drive files: 2
+- scan summary:
+{"generatedAt": "2026-11-05T00:32:22Z", "files": 146, "images": 142, "ocrOk": 108, "ocrFailed": 0, "findings": 90, "tiers": {"minimum": 25, "medium": 11, "high": 54, "valid": 13}, "imported": true}
+- findings count: 90
+- gallery page 1 kinds:
+(server not running at capture time)

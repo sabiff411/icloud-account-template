@@ -1,8 +1,10 @@
-import { bytes, timeAgo, countryFlag, countryLabel } from "./api.js";
+import { useState } from "react";
+import { bytes, fileUrl, timeAgo, countryFlag, countryLabel } from "./api.js";
 import { Badge, Bar, Section } from "./ui.jsx";
 
 const COUNT_ROWS = [
-  ["Photos", "photos"],
+  ["Photos (all assets)", "photos"],
+  ["Images", "images"],
   ["Hidden", "hidden"],
   ["Recently Deleted", "deleted"],
   ["Albums", "albums"],
@@ -12,6 +14,7 @@ const COUNT_ROWS = [
   ["Contacts with phone", "contactsPhone"],
   ["Contacts with email", "contactsEmail"],
   ["Drive files", "driveFiles"],
+  ["Drive apps skipped", "driveSkipped"],
   ["Reminders", "reminders"],
   ["Calendars", "calendars"],
   ["Mail folders", "mailFolders"],
@@ -44,7 +47,8 @@ function AreaRow({ name, data, onMissing }) {
   );
 }
 
-export default function OverviewTab({ account, summary, jobs, onExport }) {
+export default function OverviewTab({ account, summary, jobs, onExport, exportEnabled = true }) {
+  const [showPassword, setShowPassword] = useState(false);
   const identity = account.identity || {};
   const counts = account.counts || {};
   const storage = identity.storage || {};
@@ -108,7 +112,18 @@ export default function OverviewTab({ account, summary, jobs, onExport }) {
             ) : null}
           </dd>
           <dt className="text-[#6e6e73]">Password</dt>
-          <dd className="break-all font-mono text-[12px]">{account.password || "—"}</dd>
+          <dd className="flex items-center gap-2 break-all font-mono text-[12px]">
+            <span>{showPassword ? account.password || "—" : "••••••••"}</span>
+            {account.password ? (
+              <button
+                type="button"
+                onClick={() => setShowPassword((value) => !value)}
+                className="rounded-full border border-[#d2d2d7] px-2 py-0.5 text-[10px] font-medium text-[#0066cc] hover:bg-[#f5faff]"
+              >
+                {showPassword ? "Hide" : "Show"}
+              </button>
+            ) : null}
+          </dd>
           <dt className="text-[#6e6e73]">Session</dt>
           <dd className="break-all font-mono text-[11px] text-[#6e6e73]">{account.sessionDir || "—"}</dd>
         </dl>
@@ -124,7 +139,16 @@ export default function OverviewTab({ account, summary, jobs, onExport }) {
         ) : null}
       </Section>
 
-      <Section title="Counts">
+      <Section
+        title="Counts"
+        right={
+          <span className="text-[11px] text-[#6e6e73]">
+            {account.countsUpdatedAt || verify?.finishedAt
+              ? `updated ${timeAgo(account.countsUpdatedAt || verify.finishedAt)}`
+              : "not checked"}
+          </span>
+        }
+      >
         <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[13px] sm:grid-cols-3">
           {COUNT_ROWS.map(([label, key]) => (
             <div key={key} className="flex flex-col rounded-[9px] bg-[#f5f5f7] px-3 py-2">
@@ -133,6 +157,11 @@ export default function OverviewTab({ account, summary, jobs, onExport }) {
             </div>
           ))}
         </dl>
+        <p className="mt-2 text-[11px] leading-4 text-[#6e6e73]">
+          <b>Photos</b> = individual assets in the library. <b>Albums</b> = collections
+          (Screenshots, Videos, Live, Favorites, your own albums). One photo can be in many
+          albums, so albums are not additional photos. Values refresh on every live check.
+        </p>
       </Section>
 
       <Section
@@ -162,18 +191,40 @@ export default function OverviewTab({ account, summary, jobs, onExport }) {
           <button
             type="button"
             onClick={() => onExport("missing")}
-            className="h-8 rounded-[8px] bg-[#0071e3] px-3 text-[12px] font-medium text-white"
+            disabled={!exportEnabled}
+            title={!exportEnabled ? "Exports are disabled (EXPORT_ENABLED=false)" : undefined}
+            className="h-8 rounded-[8px] bg-[#0071e3] px-3 text-[12px] font-medium text-white disabled:opacity-50"
           >
             Export missing
           </button>
           <button
             type="button"
             onClick={() => onExport("force")}
-            className="h-8 rounded-[8px] border border-[#d2d2d7] px-3 text-[12px]"
+            disabled={!exportEnabled}
+            title={!exportEnabled ? "Exports are disabled (EXPORT_ENABLED=false)" : undefined}
+            className="h-8 rounded-[8px] border border-[#d2d2d7] px-3 text-[12px] disabled:opacity-50"
           >
             Redownload all
           </button>
+          <button
+            type="button"
+            onClick={() => onExport("urls")}
+            className="h-8 rounded-[8px] border border-[#0071e3] bg-[#eef5ff] px-3 text-[12px] font-medium text-[#0066cc]"
+            title="Write the signed iCloud URLs to Photos/urls.json — no image download"
+          >
+            Photo URLs (no download)
+          </button>
+          <a
+            href={fileUrl(account.id, "Photos/urls.json", true)}
+            className="flex h-8 items-center rounded-[8px] border border-[#d2d2d7] px-3 text-[12px] hover:bg-[#fafafa]"
+          >
+            Download URLs JSON
+          </a>
         </div>
+        <p className="mt-2 text-[11px] leading-4 text-[#6e6e73]">
+          Signed iCloud URLs open without cookies. They expire about 15 minutes after
+          generation, so press <b>Photo URLs</b> again before using them.
+        </p>
       </Section>
 
       <Section

@@ -89,6 +89,18 @@ export function libraryUrl(params = {}) {
   return `/api/admin/library${suffix ? `?${suffix}` : ""}`;
 }
 
+export function getStorage() {
+  return getJson("/api/admin/storage");
+}
+
+export function getClassify() {
+  return getJson("/api/admin/classify");
+}
+
+export function getHealth() {
+  return getJson("/api/admin/health");
+}
+
 export function getLibrary(params = {}) {
   return getJson(libraryUrl(params));
 }
@@ -103,8 +115,23 @@ export function accountUrl(id, kind, params = {}) {
   return `/api/admin/accounts/${encodeURIComponent(id)}/${kind}${suffix ? `?${suffix}` : ""}`;
 }
 
-export function fileUrl(id, path, download = false) {
-  return accountUrl(id, "file", { path, download: download ? "1" : "" });
+export function fileUrl(id, path, download = false, version = "") {
+  return accountUrl(id, "file", {
+    path,
+    download: download ? "1" : "",
+    v: version ? String(version) : "",
+  });
+}
+
+/* `version` is the file mtime.  It is only a cache key: the browser then
+ * keeps the image for a day and still refreshes it when the file changes. */
+export function thumbUrl(id, path, version = "") {
+  return accountUrl(id, "thumb", { path, v: version ? String(version) : "" });
+}
+
+/** Large JPEG for a HEIC/HEIF original (browsers cannot decode those). */
+export function previewUrl(id, path, version = "") {
+  return accountUrl(id, "preview", { path, v: version ? String(version) : "" });
 }
 
 export function bytes(value) {

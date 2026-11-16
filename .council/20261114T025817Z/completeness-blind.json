@@ -1,0 +1,298 @@
+{
+  "role": "completeness",
+  "findings": [
+    {
+      "id": "CB-1",
+      "title": "P0-2's coverage matrix has no reachable manifest/last-export source in the evidence run",
+      "severity": "P1",
+      "file": "server/socket/worker-pool.js",
+      "line": 1131,
+      "line_end": 1132,
+      "quote": "areas: totals.areas ?? account.export?.areas ?? {},\n        manifestPath: payload.manifest ?? \"\",",
+      "claim": "Panel assumption: the panel treated manifest.sqlite3 as an existing readable reconciliation oracle. P0-2 needs per-area last-export data and manifest totals, but `handleExportDone` stores only what the worker sends. The mock worker's `job:export_done` sends no `totals.areas` and hard-codes `manifest: \"/tmp/mock-manifest.sqlite3\"`; the demo record copied the result verbatim (`areas: {}`, `manifestPath: \"/tmp/mock-manifest.sqlite3\"`). No Node code opens `<root>/manifest.sqlite3`; the only mention in the dashboard server is a filename skip in `walkNames`. So the acceptance artefact for the cited `example.harvest` account cannot populate the matrix's per-area or manifest columns.",
+      "impact": "P0-2 ships a matrix whose 'last export' and 'reconcile with manifest' cells are empty or read a nonexistent /tmp path; the acceptance run proves only the mock's 10/10/10000 numbers, not the 142-file tree.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'areas\\|manifestPath' server/socket/worker-pool.js | sed -n '1,12p'; grep -n 'manifest' server/test/mock-worker.mjs; grep -rn 'manifest.sqlite3' server/admin/*.js; sed -n '340,360p' /tmp/v3-demo-store.json",
+      "fix": "Have the mock (and any acceptance fixture) return `totals.areas` and the real path (`<exportDir>/<safeName(email)>/manifest.sqlite3`), and add a Node-side manifest reader (e.g. `node:sqlite` or a Python command) before writing the matrix; do not trust `account.export.manifestPath` from a mock run.",
+      "citations": [
+        {
+          "file": "server/test/mock-worker.mjs",
+          "line": 151,
+          "quote": "manifest: \"/tmp/mock-manifest.sqlite3\","
+        },
+        {
+          "file": "server/admin/export.js",
+          "line": 452,
+          "quote": "if (entry.name === \"Scan\" || entry.name === \"manifest.sqlite3\") continue;"
+        },
+        {
+          "file": "/tmp/v3-demo-store.json",
+          "line": 351,
+          "quote": "\"areas\": {},"
+        },
+        {
+          "file": "/tmp/v3-demo-store.json",
+          "line": 359,
+          "quote": "\"manifestPath\": \"/tmp/mock-manifest.sqlite3\""
+        }
+      ]
+    },
+    {
+      "id": "CB-2",
+      "title": "The mock worker cannot produce the P0-1/P0-3 job states it is the evidence for",
+      "severity": "P1",
+      "file": "server/test/mock-worker.mjs",
+      "line": 55,
+      "line_end": 55,
+      "quote": "worker.emit(\"worker:ready\", { slots: { auth: 10, export: 4 } });",
+      "claim": "Panel assumption: the mock worker can exercise every job type the acceptance criteria name. The mock advertises no `scan` slot (Node normalises the missing value to 0) and implements only `job:start`, `job:2fa`, `job:export` and `job:ping`; there is no `job:scan`, `job:verify` or `job:import` handler. `pump` needs `slots.scan > 0`, so selected scan jobs never leave `queued`, and any verify/import job that did dispatch would sit `running` forever because nothing replies. The demo store's three scan jobs are `queued`, and its 125 jobs contain zero `running`; the plan's acceptance requires at least one of each state and a scan-selected bulk action.",
+      "impact": "P0-1's 'queued/running/done/failed' screenshot and P0-3's 'scan selected' acceptance cannot be produced from the only worker in the evidence run; a green mock run would actually show a permanently stuck queue.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'worker:ready' server/test/mock-worker.mjs; grep -n 'job:scan\\|job:verify\\|job:import' server/test/mock-worker.mjs; grep -n 'slots\\[kind\\]' server/socket/worker-pool.js; grep -n '\"type\": \"scan\"' /tmp/v3-demo-store.json",
+      "fix": "Advertise `scan` slots and add `job:scan` / `job:verify` / `job:import` handlers that hold a job long enough to screenshot and then complete it; alternatively stop claiming P0-1/P0-3 acceptance from the mock run.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 759,
+          "quote": "if (worker.slots[kind] > 0) return worker;"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 778,
+          "quote": "job.type === \"scan\""
+        },
+        {
+          "file": "/tmp/v3-demo-store.json",
+          "line": 1927,
+          "quote": "\"status\": \"queued\","
+        },
+        {
+          "file": "server/test/mock-worker.mjs",
+          "line": 134,
+          "quote": "worker.on(\"job:export\", (payload) => {"
+        }
+      ]
+    },
+    {
+      "id": "CB-3",
+      "title": "The admin API test suite is red and asserts the pre-fix session contract",
+      "severity": "P2",
+      "file": "server/test/admin-api.test.mjs",
+      "line": 225,
+      "line_end": 225,
+      "quote": "assert.equal(anon.status, 401, \"session needs a cookie\");",
+      "claim": "Panel assumption: the test evidence on disk is green and describes the shipped API. DASHBOARD_AUDIT records the deliberate change to a 200 `{ok:false}` probe, and `server/admin/api.js` now does exactly that, so this assertion fails (200 !== 401). The same file's next contract assertion is also stale: it expects gallery `area=All` to total 3, but `gallery` deliberately adds Drive media (`wantsDrive`), so a temp tree with 2 Library + 1 Hidden + 1 Drive clip returns 4. The suite aborts on the first, hiding the second. Neither test appears in `evidence-tests.txt` or FEATURES' test line.",
+      "impact": "Global acceptance criterion 1 ('an automated test on disk') can be satisfied by a suite that is already failing, so a P0 regression cannot be distinguished from the standing failure; a developer following DASHBOARD_AUDIT sees red immediately.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '207,212p' server/admin/api.js; sed -n '224,226p;308,311p' server/test/admin-api.test.mjs; sed -n '25,25p' DASHBOARD_AUDIT.md",
+      "fix": "Update the test to expect 200 `{ok:false}` (and 401 on a data route), and change the All assertion to include the Drive clip or query `area=Library`; then add `test:admin-api` to the test evidence.",
+      "citations": [
+        {
+          "file": "server/admin/api.js",
+          "line": 209,
+          "quote": "if (!session.ok) return res.json({ ok: false });"
+        },
+        {
+          "file": "server/test/admin-api.test.mjs",
+          "line": 310,
+          "quote": "assert.equal(allMedia.payload.total, 3, \"All spans Library + Hidden\");"
+        },
+        {
+          "file": "DASHBOARD_AUDIT.md",
+          "line": 25,
+          "quote": "| 2 | `/api/admin/session` answers **401** before login, so every load logs a red console error | Looks broken; hides real errors | 200 `{ok:false}` for the probe; middleware still 401 on data routes | `server/admin/api.js` |"
+        }
+      ]
+    },
+    {
+      "id": "CB-4",
+      "title": "The cross-account Library's kind filter drops its payload and spins until the 30 s tick",
+      "severity": "P2",
+      "file": "src/admin/LibraryTab.jsx",
+      "line": 309,
+      "line_end": 309,
+      "quote": "  }, [type, query, accountId, page, tick, tier, checksum, words, showSpam, pageSize]);",
+      "claim": "Panel assumption: the kind-filter bug is confined to PhotosTab. Here the reset effect includes `kind` and does `setData(null); setLoading(true)`, but the fetch effect's dependency list omits `kind` even though it sends `kind` in `getLibrary`. Changing the Image type therefore renders the loading state with no request until the 30-second `tick` fires (or another dependency changes). The same omission means the planned P1-1/P1-3 kind/video controls will hang in the All/global view too.",
+      "impact": "An operator who changes 'Image type' in All/Photos sees a spinner for up to 30 seconds; with the export running or the tab idle, it looks like the library died.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '246,260p;305,310p' src/admin/LibraryTab.jsx",
+      "fix": "Add `kind` to the fetch effect's dependency list at line 309 (the request already uses it).",
+      "citations": [
+        {
+          "file": "src/admin/LibraryTab.jsx",
+          "line": 260,
+          "quote": "  }, [type, query, accountId, tier, checksum, words, showSpam, kind]);"
+        },
+        {
+          "file": "src/admin/LibraryTab.jsx",
+          "line": 254,
+          "quote": "    setData(null);"
+        },
+        {
+          "file": "src/admin/LibraryTab.jsx",
+          "line": 290,
+          "quote": "      kind,"
+        }
+      ]
+    },
+    {
+      "id": "CB-5",
+      "title": "Fixing updateAccount's allowlist still loses new fields on restart through defaultAccount",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 142,
+      "line_end": 142,
+      "quote": "        const record = defaultAccount(account);",
+      "claim": "Panel assumption: the drop point for P0-3/P0-4 fields is `updateAccount`'s scalar allowlist. `load()` rebuilds every account through `defaultAccount`, a closed object literal with no `note`, `priority`, `order` or per-file failure map. Even after adding them to `updateAccount` (the allowlist finding), a process restart silently strips them. A quick reload test writing `note`/`priority` directly confirms both are `undefined` after `new Store({file})`.",
+      "impact": "P0-3's 'order persists after restart' and 'per-account note ... state survives reload', and any P0-4 failure state stored on the account, pass in-session and vanish on the first deploy/restart.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '50,60p;136,146p' server/store.js; grep -n 'for (const key of \\[' server/store.js",
+      "fix": "Add the new fields to `defaultAccount`'s literal (and to the reload migration), not only to `updateAccount`'s allowlist; add a store test that sets them, flushes, reloads, and asserts they survive.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 141,
+          "quote": "      for (const account of raw.accounts ?? []) {"
+        },
+        {
+          "file": "server/store.js",
+          "line": 50,
+          "quote": "function defaultAccount(input) {"
+        },
+        {
+          "file": "server/store.js",
+          "line": 398,
+          "quote": "    for (const key of ["
+        }
+      ]
+    },
+    {
+      "id": "CB-6",
+      "title": "The dashboard's CONNECTED and LOCKED headline counters measure the wrong statuses",
+      "severity": "P2",
+      "file": "src/admin/Admin.jsx",
+      "line": 141,
+      "line_end": 145,
+      "quote": "          <Metric label=\"Connected\" value={stats?.byStatus?.connected ?? 0} />\n          <Metric label=\"2FA pending\" value={stats?.byStatus?.twofa ?? 0} />\n          <Metric label=\"Exporting\" value={stats?.byStatus?.exporting ?? 0} />\n          <Metric label=\"Trusted\" value={stats?.trusted ?? 0} />\n          <Metric label=\"Locked\" value={stats?.byStatus?.error ?? 0} />",
+      "claim": "Panel assumption: the metrics strip answers the operator's trust questions. A successful export sets the account status to `done` (`handleExportDone`), so it leaves `byStatus.connected`; the demo store has three `done` accounts and `01-accounts.png` shows CONNECTED 0. LOCKED is the whole `error` bucket, so an ordinary network/password error inflates 'locked' and a genuinely locked account (status `error`, `locked:true`) is not counted separately. FEATURES #4 calls this strip 'computed from account array'; it is actually server status aggregates.",
+      "impact": "On first load of a 500-account campaign the operator sees CONNECTED 0 after hundreds of successful exports, and a LOCKED number that includes every transient failure; the P0 'operator trust' screen answers the first question wrong.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '139,146p' src/admin/Admin.jsx; sed -n '1108,1115p' server/socket/worker-pool.js; sed -n '459,470p' server/store.js",
+      "fix": "Count `connected` and `done` (or trusted-and-not-dead) as usable, and add an explicit `locked` count in `accountsStats()`; fix FEATURES #4's description.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1112,
+          "quote": "      status: \"done\","
+        },
+        {
+          "file": "server/store.js",
+          "line": 462,
+          "quote": "      byStatus[account.status] = (byStatus[account.status] ?? 0) + 1;"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 30,
+          "quote": "| 4 | Metrics strip | ACCOUNTS / CONNECTED / 2FA PENDING / EXPORTING / TRUSTED / LOCKED | computed from account array | `01-accounts.png`, `15-import.png` | No \"downloaded bytes\", \"crypto accounts\", or \"stale > 24 h\" metric |"
+        }
+      ]
+    },
+    {
+      "id": "CB-7",
+      "title": "\"Hide all\" confirmation counts the filtered list, but the server hides every visible account",
+      "severity": "P2",
+      "file": "src/admin/Admin.jsx",
+      "line": 437,
+      "line_end": 440,
+      "quote": "                          `Hide all ${state.accountsTotal} visible account(s) from the list?\\n\\nSessions, exports and files are kept.`",
+      "claim": "Panel assumption: the \"Hide all\" confirmation describes the action. `accountsTotal` is the server `listAccounts` total for the current query/scope (the text search is applied server-side), while `admin:hideAll` iterates every account with `hidden !== true` and ignores the query. Search a single account (one row) and the dialog says \"Hide all 1 visible account(s)\", but the click hides every visible account. There is no bulk undo; recovery is the Hidden filter, open each account, Unhide.",
+      "impact": "A destructive action's confirmation understates the blast radius by the size of the search result, so an operator hiding one searched account clears the visible list.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '432,441p' src/admin/Admin.jsx; sed -n '228,238p' server/socket/admin.js; sed -n '433,457p' server/store.js",
+      "fix": "Pass the active query to `admin:hideAll` (and filter there), or make the confirmation use the unfiltered visible total; keep the P2-2 bulk-undo.",
+      "citations": [
+        {
+          "file": "server/socket/admin.js",
+          "line": 231,
+          "quote": "      for (const account of store.accounts.values()) {"
+        },
+        {
+          "file": "server/store.js",
+          "line": 438,
+          "quote": "        if (scope === \"visible\" && account.hidden) return false;"
+        },
+        {
+          "file": "server/store.js",
+          "line": 451,
+          "quote": "      items: filtered.slice(offset, offset + size),"
+        }
+      ]
+    }
+  ],
+  "attempted_counterexamples": [
+    {
+      "scenario": "Account page arrows drop the Hidden scope because Admin.jsx calls loadAccounts(page, query) without scope.",
+      "assumption": "The pagination handlers would need to pass the scope explicitly.",
+      "evidence": "src/admin/useAdminSocket.js:84 `(page = 1, query = \"\", scope = state.accountScope)`; Admin.jsx:490/498 pass two args, so the default preserves the current scope.",
+      "result": "refuted",
+      "uncertainty": "Only checked the default-parameter path, not stale state during a rapid filter switch."
+    },
+    {
+      "scenario": "The gallery 'All' area excludes Drive, so the admin-api test's total of 3 is correct.",
+      "assumption": "`wantsDrive` is only true for area=Drive.",
+      "evidence": "server/admin/export.js:293 `const wantsDrive = requested.toLowerCase() === \"all\" || ...`; a temp tree with a Drive clip returned `total 4` (Drive/Hidden/Library).",
+      "result": "supported",
+      "uncertainty": "The test tree also has non-media Drive files; only the mp4 is counted."
+    },
+    {
+      "scenario": "The session probe returns 401 when unauthenticated, as the test says.",
+      "assumption": "The test reflects current behavior.",
+      "evidence": "`node server/test/admin-api.test.mjs` fails at line 225 with `200 !== 401`; api.js:209 returns `res.json({ok:false})`; DASHBOARD_AUDIT:25 documents the 200 change.",
+      "result": "refuted",
+      "uncertainty": "The rest of the suite is hidden behind the first failure; line 310 is inferred from code and a direct gallery call, not a full test run."
+    },
+    {
+      "scenario": "The demo run contains a running job that P0-1 can screenshot.",
+      "assumption": "The 125 job records include every state.",
+      "evidence": "store status counts: done 94, error 23, invalid 5, queued 3, running 0; the three queued jobs are scans and the mock advertises no scan slot.",
+      "result": "supported",
+      "uncertainty": "A job can be running for 400 ms during a mock auth/export; no at-rest evidence exists."
+    },
+    {
+      "scenario": "Changing the Library Image-type select refetches because the reset effect depends on kind.",
+      "assumption": "A state change that resets the data also triggers the fetch",
+      "evidence": "LibraryTab.jsx:251-260 resets with kind in deps, but the fetch effect at 268-309 omits kind; the request at 282-295 includes it.",
+      "result": "supported",
+      "uncertainty": "I did not run the browser; the 30 s tick is the only other trigger I found."
+    }
+  ],
+  "not_examined": [
+    "CryptoTab.jsx, Lightbox.jsx, CopyModal.jsx, PreviewModal.jsx, RetryImage.jsx, seedFilters.jsx — read only via imports/usage, not line by line.",
+    "The Python worker beyond exporter manifest handling and worker slot/config code; live iCloud behavior, OCR accuracy, and queue concurrency are unverified.",
+    "dist/ bundle (assumed to be the current source build: 07:24 build after 07:24 source).",
+    "nginx.conf.example, gate.js, geo, telegram, session_vault, and the capture page (out of scope).",
+    "Full README and docs/superpowers specs; only grepped for contract/env claims.",
+    "All screenshots except 01, 03 and 17; 19/20 were listed on disk but not opened."
+  ],
+  "open_questions": [
+    ".env.example never lists ADMIN_SESSION_SECRET although config.js warns for it and FEATURES #1 relies on it; is the password-derived fallback the intended deploy story?",
+    "MAX_SCAN_JOBS is documented in .env.example/README for the Python worker, but only Node loads dotenv; under `npm run worker`/`npm run all` does the setting ever reach Python?",
+    "Is the panel's CL-7/COR-6 fix known to include the defaultAccount reload path (CB-5), or only the updateAccount allowlist?",
+    "Does the plan intend P1-2/P2-6 to preserve the Submissions status editor (admin:update), the only place legacy item status is editable today?",
+    "Are the post-07:57 screenshots 19-ping/20b-unhide/18-all-library-search part of the reviewed evidence, or were they added after evidence-screens.md was written?"
+  ]
+}

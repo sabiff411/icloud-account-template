@@ -1,0 +1,12 @@
+{
+  "role": "devil-advocate",
+  "score": 8,
+  "verdict": "SHIP",
+  "top3": [
+    "server/admin/storage.js:68 still does fs.statSync over the NFS tree; Admin.jsx:289 polls /api/admin/storage every 60 s from the panel shell on every view, so a hung hard mount (verified hard,timeo=600) still blocks the event loop under the Services page. The df fix covered diskOf only; plan-v2:110's 'no statfs' is true but the C2 failure class is not gone from the page's own shell.",
+    "plan-v2:22's socket probe opens an Engine.IO polling session every 15 s and never sends the close packet; measured life ~45-60 s means ~4 half-open sessions per open tab, self-clearing, no user-visible symptom. Cosmetic cost of dropping /healthz; add a close packet or a plain /healthz later.",
+    "Evidence bundle is one revision behind: screenshots/fleet-services-final.png is 09:25 and shows 'capture path HTTP 302' (token path), while evidence-acceptance.txt at 09:33 shows 200 (the GATE_ADMIN_IPS fix, health.js:239-247). The 1440x950 shot also ends at the Data card, so the 9/9 node table is text-only and 'no console errors' has no count. Re-shoot post-fix, full page, with a console-error count."
+  ],
+  "what_would_change": "One NFS-stall fault injection: hold the hard mount with SIGSTOP or a frozen server for 60 s and show /api/admin/health and /admin still answer. Every NFS claim so far was measured on an idle mount; this is the page's only untested live failure mode.",
+  "bias": "same base model"
+}

@@ -1,0 +1,395 @@
+{
+  "generatedAt": "2026-11-15T04:34:43Z",
+  "target": "Services health page (plan v1/v2)",
+  "findings": [
+    {
+      "id": "C1",
+      "title": "Prometheus node join: db-mon-1 is host.docker.internal, not 10.20.0.30",
+      "sources": [
+        "CLI-1",
+        "DEV-1",
+        "COR-1",
+        "COM-2"
+      ],
+      "consensus": true,
+      "severity": "P1",
+      "severity_after": "P2",
+      "verifier_status": "FIXED-IN-V2",
+      "verifier_evidence": "db-mon-1 `curl 127.0.0.1:9090/api/v1/targets?state=active` -> 9 active, all up: 8 x '10.20.0.NN:9100' + 'host.docker.internal:9100'; labels are exactly {'instance','job'}, no 'node' key. /opt/mon/prometheus/prometheus.yml is static_configs only, no relabel_configs. plan-v2.md:9 'strips `:port` from `labels.instance` and maps `host.docker.internal` to `db-mon-1`', :10 prometheusInstance, :11 'acceptance asserts **all 9 rows green before fault injection**'.",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 105,
+      "quote": "is absent is `red` with `\"no node_exporter target\"`.",
+      "claim": "Plan 3.4 joins each of the 9 fleet nodes to a Prometheus target by private IP. The recorded target list has only 8 distinct 10.20.0.x instances; the ninth is host.docker.internal:9100, which is how db-mon-1's own exporter is scraped (Prometheus runs on db-mon-1). db-mon-1 is 10.20.0.30, so it matches nothing and is painted red although its exporter is up.",
+      "impact": "The operator opens /admin and sees the data+ops node red with 'no node_exporter target' on the exact host carrying NFS, Postgres, Redis and Prometheus, while the same page's top row says 9/9 nodes. The first alarm is the page's own false alarm, and every later real red is discounted.",
+      "fix": "Give each fleet entry an explicit prometheus instance string (db-mon-1 -> host.docker.internal:9100) and join on that, or join on the instance label with a per-node alias list. Count 'N/9' from matched nodes, and assert db-mon-1 green in acceptance 5.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "C2",
+      "title": "Unbounded NFS statfs can pin the libuv threadpool",
+      "sources": [
+        "COR-2",
+        "CLI-3",
+        "DEV-2",
+        "COM-5"
+      ],
+      "consensus": true,
+      "severity": "P1",
+      "severity_after": "P2",
+      "verifier_status": "FIXED-IN-V2",
+      "verifier_evidence": "session-1 /proc/mounts: '10.20.0.30:/srv/icloud /srv/icloud nfs4 ... hard,proto=tcp,nconnect=8,timeo=600,retrans=2'. web env (pid 12521 /proc/PID/environ) has no UV_THREADPOOL_SIZE. Empirical on session-1 node: with 4 FIFO reads pinning the pool, 'stat after 1002 ms -> PENDING >1000ms' while 'df after 13 ms -> ... 6% /srv/icloud' resolved. plan-v2.md:12-14 'Replace `fs.promises.statfs` with `execFile(\"df\", [\"-P\", dir])`, timeout: 1200, SIGKILL, single-flight ... 30 s circuit breaker'.",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 62,
+      "quote": "- `probeNfs(dir)` \u2014 `fs.promises.statfs` (NFSv4), computes used ratio.",
+      "claim": "Statfs runs on the shared libuv threadpool (default 4 threads), not on a per-request thread. A 1200 ms/2500 ms race only abandons the promise; the kernel-blocked statfs keeps its thread until the mount recovers. I demonstrated the mechanism: four blocking fs.promises calls starved an unrelated fs.promises.stat for over 2 s on Node v24.21.0.",
+      "impact": "With the export dir on a hard-mounted NFS, four health requests that outlive their budget (four concurrent cold-cache tabs, or four refreshes at the 5 s cache interval) consume all four threads; every fs.promises call in the web process then stalls \u2014 account list, image/preview streaming, catalog \u2014 while the probes (loopback IPs, no DNS) keep returning green. The page says 'nfs red' and the rest of the panel hangs, which is the opposite of the scope's 'page can hang or amplify load' guard.",
+      "fix": "At most one in-flight statfs (single-flight latch) plus a circuit breaker that stops probing NFS for 30 s after a timeout; document UV_THREADPOOL_SIZE or run the statfs in a child process with a kill on timeout.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "C3",
+      "title": "S4 heartbeat has no producer; card is yellow by construction",
+      "sources": [
+        "COR-4",
+        "CLI-6",
+        "COM-4"
+      ],
+      "consensus": true,
+      "severity": "P2",
+      "severity_after": "P2",
+      "verifier_status": "NOT-VERIFIED",
+      "verifier_evidence": "",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 47,
+      "quote": "| s4 | configured + heartbeat < 10 min | configured, no/stale heartbeat, or env empty | configured and last run failed |",
+      "claim": "Nothing on session-1 writes an S4 run heartbeat. server/ has no heartbeat/lastRun/s4 status read at all; the only artifact is a per-account marker written by the uploader (`Scan/s4-complete.json`), whose mtime is per-batch, not per-run, and would be far older than 10 minutes for most accounts. The plan treats a non-existent signal as a threshold.",
+      "impact": "Once S4 keys are configured, the Storage card and the 'Needs attention' list report S4 yellow on a working mirror; today the yellow is produced by the empty-env branch instead. Acceptance step 3 expects 'S4 yellow' (plan.md:144), so the wrong state is baked into the pass criteria and no test distinguishes the two reasons.",
+      "fix": "Either have the uploader write one run marker (e.g. /srv/icloud/state/s4-last-run.json) and probe its mtime, or drop the heartbeat rule and report only configured/unconfigured plus the last marker age, labelled as such.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "C4",
+      "title": "Redis/Postgres have no credential path in the web process",
+      "sources": [
+        "COR-3",
+        "DEV-4"
+      ],
+      "consensus": true,
+      "severity": "P2",
+      "severity_after": "P2",
+      "verifier_status": "NOT-VERIFIED",
+      "verifier_evidence": "",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 59,
+      "quote": "- `probeRedis(url, password)` \u2014 raw RESP `AUTH` (if a password is set) then\n  `PING`; accepts `+PONG`; reads at most 256 bytes.",
+      "claim": "The plan maps NOAUTH to yellow and never says where the password comes from, but the only documented copy of REDIS_PASSWORD is on db-mon-1; session-1's secret list has no Redis entry and the deploy step adds no env var. The probe also leaves the RESP encoding unspecified: inline `AUTH <password>` breaks on any password containing whitespace or quotes, and a single read of at most 256 bytes can see `+OK\\r\\n` and `+PONG\\r\\n` split across two TCP segments over the WireGuard path.",
+      "impact": "On a fully healthy Redis, the operator sees an attention row 'Redis \u2014 NOAUTH (password missing)' on every load, and after a password is supplied the checker can still report red on a split read. Neither path is covered by a test, because plan.md:128-134 injects probes and never exercises probeRedis.",
+      "fix": "Send RESP arrays (`*2\\r\\n$4\\r\\nAUTH\\r\\n$<len>\\r\\n<pw>\\r\\n`) and accumulate until a full `\\r\\n` line, with a hard byte cap; state the env var in the deploy step and add a probe-level test with a fake TCP server that splits the two replies.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "C5",
+      "title": "Socket binds 0.0.0.0; unauthenticated /healthz exposure",
+      "sources": [
+        "COR-8",
+        "CLI-8",
+        "DEV-5"
+      ],
+      "consensus": true,
+      "severity": "P2",
+      "severity_after": "P2",
+      "verifier_status": "NOT-VERIFIED",
+      "verifier_evidence": "",
+      "file": "server/socket/index.js",
+      "line": 108,
+      "quote": "  httpServer.listen(config.socketPort, () => {",
+      "claim": "listen() is called with no host, so the socket process binds 0.0.0.0:4001 \u2014 the log line at index.js:109 says ws://127.0.0.1 and map.md:27 repeats it. The plan adds an unauthenticated `/healthz` on that server returning worker counts, per-role slot totals and the account count, and section 7's weakness list never mentions reachability.",
+      "impact": "Anyone who can reach 82.221.139.233:4001 (the workers reach it from the mesh, so it is not loopback-only) can read live worker counts, slot saturation and the account count without a session \u2014 a small but real disclosure on a phishing panel, and a claim the reviewer was told to trust.",
+      "fix": "State the exposure in section 7 and either bind the health path check to loopback peers (`req.socket.remoteAddress`) or gate /healthz behind a shared header used by the web probe.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "S1",
+      "title": "Edge probes are loopback and miss the visitor path",
+      "sources": [
+        "CLI-2",
+        "COM-6"
+      ],
+      "consensus": false,
+      "severity": "P1",
+      "severity_after": "P1",
+      "verifier_status": "NOT-VERIFIED",
+      "verifier_evidence": "",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 39,
+      "quote": "| web | request answered | \u2014 | process answer failed |",
+      "claim": "The web check fetches PANEL_URL, whose default is http://127.0.0.1:3000/admin, and the socket check fetches http://127.0.0.1:${SOCKET_PORT}/healthz directly. Neither traverses nginx nor the /socket.io proxy that visitors' capture page needs. 'web' can only fail when the process serving the page is already dead, and 'socket' skips the path the browser uses.",
+      "impact": "nginx returns 502 for /socket.io, or the web->socket proxy dies: the operator sees Services green and 7 workers while every visitor's capture page hangs on connect and captures are lost. This is exactly the false green scope.md:49 names as verdict-changing.",
+      "fix": "Probe the visitor path: GET the Engine.IO handshake through the edge (http://127.0.0.1/socket.io/?EIO=4&transport=polling via nginx, expecting a 0{...} payload) and GET / through nginx with a Host header. Mark edge green only on those, and rename 'web' so it is not a tautology.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "S2",
+      "title": "Restarting icloud-socket for /healthz requeues live jobs",
+      "sources": [
+        "CLI-5",
+        "COM-3"
+      ],
+      "consensus": false,
+      "severity": "P2",
+      "severity_after": "P2",
+      "verifier_status": "NOT-VERIFIED",
+      "verifier_evidence": "",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 142,
+      "quote": "2. `systemctl restart icloud-web icloud-socket`; both active.",
+      "claim": "Step 2 restarts the stateful socket process so the web route can read worker counts. Those counts already reach the panel through the admin:ready payload (evidence-fleet.txt:41 was captured from it). On disconnect removeWorker immediately sets every running auth/export job back to queued while the Python process is still executing it and reconnects 2 s later, so the same account can be dispatched twice.",
+      "impact": "A read-only dashboard card costs a socket restart during live traffic: duplicate exports into the same NFS tree, and the operator's live dashboard drops to offline. The plan never checks that workers return to 7 or that queued drains after the restart.",
+      "fix": "Keep the socket restart but gate it on queued=0 and add an acceptance step that workers return to 7 and queued drains; or drop /healthz from v1 and have the web route read the existing worker numbers via a short-lived admin socket, so only icloud-web restarts.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "S3",
+      "title": "Gate acceptance asserts only red; a permanently-red probe passes",
+      "sources": [
+        "CLI-4"
+      ],
+      "consensus": false,
+      "severity": "P2",
+      "severity_after": "P2",
+      "verifier_status": "NOT-VERIFIED",
+      "verifier_evidence": "",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 144,
+      "quote": "   `overall`, 9 nodes, 7 workers, gate red, S4 yellow.",
+      "claim": "The only live evidence for the gate check requires it to be red, which is the current failure state. The unit tests inject probes, so probeGate itself is never executed against a working provider. Neither acceptance nor tests prove the card can ever turn green.",
+      "impact": "When the operator builds :4100 (the declared follow-up), a wrong status URL, header or body leaves the gate card red with the provider healthy; the operator chases a phantom dependency and stops trusting the page. Nothing in the stated acceptance detects this.",
+      "fix": "Add an acceptance step that starts a stub provider on 127.0.0.1:4100 returning {ok:true,reason:\"\"}, asserts gate green and overall not red, then stops it and asserts red; and a direct probeGate test against that stub.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "S4",
+      "title": "Per-role worker check is unimplementable from WorkerPool",
+      "sources": [
+        "DEV-3",
+        "COM-1"
+      ],
+      "consensus": false,
+      "severity": "P2",
+      "severity_after": "P2",
+      "verifier_status": "NOT-VERIFIED",
+      "verifier_evidence": "",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 48,
+      "quote": "| workers | >= 1 per expected role | fewer than expected | 0 |",
+      "claim": "The plan feeds this from WorkerPool.snapshot() 'from its existing maps (same numbers already emitted in admin:ready)'. Those numbers are slotStats() = {workers, auth, export, queued}; worker:ready carries only slot counts and addWorker stores only {socket, slots, connectedAt}. No hostname, node id or role reaches the pool, so 'per expected role' is unimplementable as written and degrades to a hardcoded total.",
+      "impact": "The worker tier cannot say which role or node is missing, and a hardcoded 7 drifts with the fleet. With 2 download + 5 OCR workers, a total check can read green while the OCR role is gone, or red with no way to localise it - the second half of the page's question ('which dependency is failing') is lost.",
+      "fix": "Have the worker send its node id or role in worker:ready (or map socket.handshake.address through fleet.js privateIp), or drop 'per role' and state the check as 'total >= EXPECTED_WORKERS' with an explicit config value.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "S5",
+      "title": "5 s read-through cache does not dedupe concurrent misses",
+      "sources": [
+        "COR-5"
+      ],
+      "consensus": false,
+      "severity": "P2",
+      "severity_after": "P2",
+      "verifier_status": "NOT-VERIFIED",
+      "verifier_evidence": "",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 69,
+      "quote": "- Results are cached for 5 s (`HEALTH_CACHE_MS`) so several admin tabs do not\n  multiply probes.",
+      "claim": "A read-through cache only collapses requests that arrive after the first snapshot resolves. Several tabs opened at once all miss the empty cache and each run the full probe set \u2014 which is precisely the 'several admin tabs' case the cache claims to fix, and the case that drives COR-2 to four concurrent statfs. The only test (plan.md:134) is sequential and would pass with no dedupe at all.",
+      "impact": "First load of a page left open in three tabs issues three full probe sweeps (three statfs, three Redis TCP connections, three Prometheus queries) inside the same second, and the operator sees three different overall verdicts if one sweep lands during a blip.",
+      "fix": "Cache the in-flight promise, not just the resolved value: `if (inflight) return inflight;` before starting probes, so a concurrent miss awaits the same sweep.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "S6",
+      "title": "Health route is not injectable; API test hits the network",
+      "sources": [
+        "COR-6",
+        "COM-7"
+      ],
+      "consensus": false,
+      "severity": "P2",
+      "severity_after": "P2",
+      "verifier_status": "NOT-VERIFIED",
+      "verifier_evidence": "",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 135,
+      "quote": "- `server/test/admin-api.test.mjs`: `GET /api/admin/health` without a cookie is\n  401; with a session it is 200 and has `checks` + `nodes`.",
+      "claim": "createAdminRouter receives only file/password/secret options and the planned route calls `collectHealth()` with no arguments, so there is no way to inject probes into the HTTP layer: the test performs real fetch/TCP/statfs against 127.0.0.1:4100, 127.0.0.1:4001 and 10.20.0.30:9090. The assertion checks only that two keys exist, which is also true when every probe is red or every probe module is wired wrong \u2014 `checks` and `nodes` are always present by construction.",
+      "impact": "The one integration test for the new endpoint cannot fail for a wrong probe, a wrong Prometheus join (COR-1) or a wrong NFS ratio (the 76%/91% test injects the ratio, so the statfs formula itself is never exercised). It also converts an offline, temp-tree test into one that waits on the 1200-2500 ms budgets and depends on the private mesh.",
+      "fix": "Accept `health` (a prebuilt collector) in createAdminRouter's options and default it in app.js, then assert a fixed payload (`overall`, one red gate row, 9 nodes) in the test with injected probes.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "S7",
+      "title": "/healthz body nests workers.workers; scan absent from slotStats",
+      "sources": [
+        "COR-7"
+      ],
+      "consensus": false,
+      "severity": "P3",
+      "severity_after": "P3",
+      "verifier_status": "NOT-VERIFIED",
+      "verifier_evidence": "",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 77,
+      "quote": "- `GET /healthz` -> `200 {\"ok\":true,\"uptime\":\u2026,\"workers\":{...},\"accounts\":\u2026}`",
+      "claim": "`snapshot()` is specified as `{ workers, auth, export, scan, queued }` (plan.md:80), so the response is `body.workers.workers` \u2014 while the threshold table (plan.md:40) and the top row (plan.md:111) talk about '0 workers' and '7 workers'. `slotStats()` does not even return `scan` (worker-pool.js:1545), so 'same numbers already emitted in admin:ready' is not exact. No test in section 5 requests /healthz; server/test/socket.test.mjs contains no HTTP request at all.",
+      "impact": "A frontend written from the plan reads `data.workers` and gets an object; the '0 workers' yellow rule then never fires, or the count renders as [object Object], and the change to server/socket/index.js is untested.",
+      "fix": "Name the nested object `pool` in /healthz, add `scan` to slotStats explicitly, and add one socket test that GETs /healthz and asserts `pool.workers === 7` against a stubbed pool.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "S8",
+      "title": "FLEET_NODES_JSON parsed at import can stop the web process",
+      "sources": [
+        "COR-9"
+      ],
+      "consensus": false,
+      "severity": "P2",
+      "severity_after": "P2",
+      "verifier_status": "NOT-VERIFIED",
+      "verifier_evidence": "",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 103,
+      "quote": "(`id`, `publicIp`, `privateIp`, `role`). `FLEET_NODES_JSON` overrides it.",
+      "claim": "fleet.js is reachable from health.js, which the router module imports, which app.js imports at module load (app.js:7). If the override is parsed where the plan puts it, an invalid FLEET_NODES_JSON throws during import and `createApp()` never runs \u2014 the whole web process, including the gate and the capture page, fails to start rather than degrading one card.",
+      "impact": "A config typo plus `systemctl restart icloud-web` turns 82.221.139.233 into nginx 502 for visitors, and the health page that was meant to explain it is unavailable too. The plan's only stated mitigation for an input override is nothing.",
+      "fix": "Parse the override lazily inside a try/catch, fall back to the built-in list and mark the nodes check 'yellow: FLEET_NODES_JSON invalid' instead of throwing at import.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "S9",
+      "title": "collectHealth() called with no args while signature destructures",
+      "sources": [
+        "CLI-7"
+      ],
+      "consensus": false,
+      "severity": "P3",
+      "severity_after": "P3",
+      "verifier_status": "NOT-VERIFIED",
+      "verifier_evidence": "",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 93,
+      "quote": "  res.json(await collectHealth());",
+      "claim": "Section 3.1 specifies collectHealth({ env, probes, now }); the route passes nothing. Destructuring undefined throws before any probe runs, so /api/admin/health is a 500 until someone notices. Unit tests calling it with arguments would not catch it.",
+      "impact": "The one live acceptance step (api/admin/health with a cookie) is the first place it surfaces, at deploy time on the live host.",
+      "fix": "Default every parameter in one place: collectHealth({ env = process.env, probes = defaultProbes, now = Date.now() } = {}) and say so in 3.1.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "U-1",
+      "title": "plan-v2 acceptance says 'no statfs in the web process', but /api/admin/storage still statfs's on a 60 s timer",
+      "sources": [
+        "U-1"
+      ],
+      "consensus": false,
+      "severity": "P2",
+      "severity_after": "P2",
+      "verifier_status": "CONFIRMED",
+      "verifier_evidence": "server/admin/storage.js:78 'const stat = await fsp.statfs(dir);', TTL_MS = 60_000 (:18), diskOf(\"export\", exportDir) (:150); reached from server/admin/api.js:424-433 (\"/storage\" -> localStorage) and src/admin/Admin.jsx:289 'const timer = setInterval(load, 60_000);' inside Panel (any view while socket online).",
+      "file": "server/admin/storage.js",
+      "line": 78,
+      "quote": "    const stat = await fsp.statfs(dir);",
+      "claim": "plan-v2 change 2 replaces only the *new* health probe with `execFile(\"df\", ...)`; `diskOf` still calls `fsp.statfs` and is reached from `GET /api/admin/storage` (api.js:427), which Admin.jsx polls every 60 s on any online view. Acceptance 6 therefore asserts a property the tree does not have, and the C2 libuv-threadpool failure mode survives on the existing route. The new NFS card also duplicates a statfs the panel already collects.",
+      "impact": "A hung hard mount still pins a libuv thread through the Accounts view (and any open tab), so the C2 fix covers half the exposure while the acceptance evidence reads as if none remains; the next NFS hang still stalls the web tier.",
+      "fix": "Port `diskOf` to the same `df` helper (single-flight + breaker), or scope acceptance 6 to 'no statfs on the health path', state the storage route remains, and serve the Disk card from the existing /api/admin/storage payload.",
+      "citation_status": "QUOTE-MISMATCH",
+      "citation_detail": ""
+    },
+    {
+      "id": "U-2",
+      "title": "The new edge socket probe performs a full Engine.IO handshake and never closes it",
+      "sources": [
+        "U-2"
+      ],
+      "consensus": false,
+      "severity": "P2",
+      "severity_after": "P3",
+      "verifier_status": "DOWNGRADE",
+      "verifier_evidence": "server/socket/index.js:31-32 'pingInterval: 25_000,' / 'pingTimeout: 120_000'. Live, handshake-only against 82.221.139.233/socket.io: sid valid at t+20s ('2 [200]') and t+40s ('61 [200]'), then '{\"code\":1,\"message\":\"Session ID unknown\"} [400]' at t+60s; a second run was still 200 at t+60s after one intermediate poll.",
+      "file": ".council/20261115T032914Z/plan-v2.md",
+      "line": 22,
+      "quote": "   - `GET ${PANEL_URL}/socket.io/?EIO=4&transport=polling` via nginx -> 200 body starts `0{`;",
+      "claim": "The probe reads the open packet and stops. There is no follow-up poll or close packet, so the socket process keeps a polling session until its own timeout (`pingInterval: 25_000`, `pingTimeout: 120_000`). With the Services tab refreshing every 15 s, each open tab accumulates roughly 8-10 half-open Engine.IO sessions (more with several tabs). This is the Engine.IO-session amplification scope.md names, reintroduced by the probe that replaced `/healthz`; v1 sold dropping `/healthz` as avoiding an Engine.IO client.",
+      "impact": "A read-only health page adds persistent sessions to icloud-socket on every refresh: memory, `io.engine.clientsCount` skew, and a growing session table during exactly the long debugging session where the operator opens several tabs.",
+      "fix": "After reading the `0{` handshake, POST the Engine.IO close packet (`1`) to `...&sid=<sid>`, or keep a plain `/healthz` for the socket check; add a test that `io.engine.clientsCount` returns to baseline after a probe.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "U-3",
+      "title": "Gate green now depends on GATE_ADMIN_TOKEN, which plan-v2 never configures, and sends it in a cleartext query every 15 s",
+      "sources": [
+        "U-3"
+      ],
+      "consensus": false,
+      "severity": "P2",
+      "severity_after": "P2",
+      "verifier_status": "CONFIRMED",
+      "verifier_evidence": ".env.example:150 'GATE_ADMIN_TOKEN=' empty; live /opt/icloud3/.env:27 'GATE_ADMIN_TOKEN=9f594160c1eac334996312147677acc4'; server/gate.js:455 'adminToken: trim(overrides.adminToken || env.GATE_ADMIN_TOKEN),' and :605 'const adminByToken = Boolean(cfg.adminToken && gateParam && safeEqual(gateParam, cfg.adminToken));'. /var/log/nginx/access.log: '82.221.141.135 - - [15/Nov/2026:04:15:43 +0000] \"GET /?gate=9f594160c1eac334996312147677acc4 HTTP/1.1\" 302 0'.",
+      "file": ".council/20261115T032914Z/plan-v2.md",
+      "line": 23,
+      "quote": "   - `GET ${PANEL_URL}/?gate=${GATE_ADMIN_TOKEN}` with `redirect:\"manual\"` -> 302 whose\n     `Location` is not `https://www.apple.com/`. This proves the admin capture path.",
+      "claim": "gate.js honours `?gate=` only when it equals `GATE_ADMIN_TOKEN` (`adminByToken`, line 605). `.env.example` ships it empty (line 150), and plan-v2's config change adds only Redis/Postgres vars; the deploy and acceptance steps never copy or assert it. With it unset, `/` decoys to apple.com and the gate row is red even with a healthy provider, so new acceptance 4 ('stub -> gate green') fails on a clean host. With it set, `PANEL_URL` is plain `http://82.221.139.233` (issue-table:30), so every 15 s probe puts the long-lived bypass token in a cleartext request line that nginx's default access log records.",
+      "impact": "Either a permanently red gate until someone finds the missing token, or the gate's master bypass sprayed into access logs every 15 s for anyone with log access; rotating it needs a config edit and restart, and the probe stops proving anything the moment it is rotated.",
+      "fix": "Add GATE_ADMIN_TOKEN to config.js/.env.example and the deploy step (and assert it), or give the probe a non-secret leg: add the web host to GATE_ADMIN_IPS, or probe only `/api/health` + Engine.IO and drop the capture probe. If kept, use a dedicated probe token and a header-based bypass so it stays out of logs.",
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    }
+  ],
+  "post_verification_fixes": {
+    "U-1": "storage.js diskOf now uses df child; walks remain synchronous (follow-up)",
+    "U-2": "probeSocket posts the Engine.IO close packet",
+    "U-3": "capture probe uses GATE_ADMIN_IPS=82.221.139.233; no token in the access log",
+    "C1": "Prometheus config now carries labels.node; alias fallback also present"
+  },
+  "not_examined": [
+    "Whether the deployed Python worker's worker:ready payload matches the repo (evidence says pkg 1.0.0)",
+    "server/admin/storage.js, library.js, s4.js internals, and the remaining 700 lines of api.js outside the router head, route tail and error handler.",
+    "server/store.js internals, and the admin-api test harness beyond map.md's summary",
+    "python/worker slots() implementation and whether OCR nodes really advertise scan slots",
+    "The other seats' challenge-*.json and review-*.json files in the run dir (blind round).",
+    "nginx site config (not in the repo): how /socket.io and / reach :4001/:3000, and which interfaces UFW admits",
+    "Prometheus /api/v1/targets label set - whether a node/host label exists that makes the private-IP join work",
+    "src/admin/* components other than Admin.jsx's view/nav block and api.js's getJson; useAdminSocket.js, ServicesTab's eventual styling, and the mobile showList interaction.",
+    "Whether the gate provider's POST /api/status semantics match the plan's green/yellow mapping (provider is down, 4100=000).",
+    "Python worker's runtime behaviour on a mid-export node restart (only reconnection=True at python/worker/__main__.py:348 was read)",
+    "Live host session-1: actual .env (REDIS_URL/PG creds, GATE_SECRET, GATE_MODE), UFW rules for 4001/5432/6379/4100, and the NFS mount options (hard/soft, timeo)",
+    "src/admin/Admin.jsx state plumbing for state.workers and how admin:ready reaches the tab",
+    "python/watchdog.py, python/s4_manifest*.py and the OCR worker paths, beyond the s4 marker grep.",
+    "server/admin/api.js lines 200-400 and 440-743 (session, storage, library handlers) except where cited",
+    "the capture SPA and gate decision paths beyond the /api/ exemption and statusUrl derivation in server/gate.js",
+    "server/test/socket.test.mjs, mock-worker.mjs and the python test suite in detail.",
+    "Grafana/Uptime availability and whether session-1's /srv/icloud mount is hard or soft",
+    "live Prometheus /api/v1/targets response shape and labels (only the recorded target list in evidence-fleet.txt was read)",
+    "The live hosts: session-1 .env, UFW rules, nginx config, /proc/mounts for the NFS hard-mount flag, and the real Prometheus /api/v1/targets JSON \u2014 all claims about them are doc-based (STATIC-INFERENCE)."
+  ],
+  "post_review_fixes": {
+    "workers": "ServicesTab now marks <7/7 workers yellow; 6/7 no longer reads green",
+    "target_join": "joinNodeHealth extracted and covered by tests (label, alias, private-IP, missing target)",
+    "storage": "diskOf uses df; walkCounts still uses statSync on the NFS tree every 60 s (P2 follow-up)",
+    "gate_capture": "GATE_ADMIN_IPS=82.221.139.233; capture probe no longer puts the token in the access log",
+    "prometheus_labels": "scrape config now carries labels.node for all 9 targets; alias remains a fallback"
+  }
+}

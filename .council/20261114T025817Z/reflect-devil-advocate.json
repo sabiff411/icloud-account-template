@@ -1,0 +1,64 @@
+{
+  "role": "devil-advocate",
+  "artifact": "FEATURES.md \u00a74 improvement plan",
+  "findings": [
+    {
+      "id": "DA-1",
+      "confidence": "high",
+      "basis": "checked"
+    },
+    {
+      "id": "DA-2",
+      "confidence": "medium",
+      "basis": "checked"
+    },
+    {
+      "id": "DA-3",
+      "confidence": "high",
+      "basis": "checked"
+    },
+    {
+      "id": "DA-4",
+      "confidence": "high",
+      "basis": "checked"
+    },
+    {
+      "id": "DA-5",
+      "confidence": "high",
+      "basis": "checked"
+    },
+    {
+      "id": "DA-6",
+      "confidence": "medium",
+      "basis": "checked"
+    },
+    {
+      "id": "DA-7",
+      "confidence": "high",
+      "basis": "checked"
+    },
+    {
+      "id": "DA-8",
+      "confidence": "medium",
+      "basis": "checked"
+    }
+  ],
+  "top_3_by_cost_of_inaction": [
+    {
+      "id": "DA-2",
+      "why": "At the plan's own 500-account scale the store can evict a live export, drop its completion and leak capacity; the campaign stalls silently and the new Jobs view loses the row instead of showing a failure."
+    },
+    {
+      "id": "DA-3",
+      "why": "A failed live read renders as live 0/missing 0/'complete'. That is the console's first question answered wrongly, and it can hide undownloaded Hidden photos holding crypto; the acceptance never tests the failure case."
+    },
+    {
+      "id": "DA-1",
+      "why": "Every deploy or crash strands all in-flight jobs as 'unknown' with no requeue; recovery depends on an operator noticing and manually re-running Export missing, while P0-1 promises a durable, retryable list."
+    }
+  ],
+  "would_drop_if_forced": {
+    "id": "DA-8",
+    "reason": "Most contingent: it assumes bulk replays per-account events, which a single server-side command would avoid. DA-7 (last message not persisted) is the next weakest but is a direct P0-1 field."
+  }
+}

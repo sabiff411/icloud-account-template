@@ -36,6 +36,42 @@ function badgeUntil() {
   return new Date(Date.now() + BADGE_TTL_MS).toISOString();
 }
 
+/**
+ * Counts to write back after a live check.  The worker sends every service
+ * it managed to read in `payload.counts`; an unread service is simply absent
+ * so its previous value is kept.  Workers from before that change only send
+ * `areas`, so derive the main counters from those as a fallback.
+ */
+export function countsFromVerify(payload = {}) {
+  const counts = {};
+  for (const [key, value] of Object.entries(payload.counts ?? {})) {
+    if (value === null || value === undefined || value === "") continue;
+    const number = Number(value);
+    if (Number.isFinite(number) && number >= 0) counts[key] = number;
+  }
+  if (Object.keys(counts).length) return counts;
+
+  const areas = payload.areas ?? {};
+  for (const area of ["photos", "hidden", "deleted", "notes"]) {
+    if (areas[area]) {
+      counts[area] = Math.max(
+        Number(areas[area].live) || 0,
+        Number(areas[area].exported) || 0
+      );
+    }
+  }
+  if (areas.drive) {
+    counts.driveFiles = Math.max(
+      Number(areas.drive.live) || 0,
+      Number(areas.drive.exported) || 0
+    );
+  }
+  if (Number(areas.contacts?.live) > 0) counts.contacts = Number(areas.contacts.live);
+  if (Number(areas.calendar?.live) > 0) counts.calendars = Number(areas.calendar.live);
+  if (Number(areas.reminders?.live) > 0) counts.reminders = Number(areas.reminders.live);
+  return counts;
+}
+
 function workerSlots(payload) {
   const auth = Number(payload?.slots?.auth);
   const exp = Number(payload?.slots?.export);
@@ -86,8 +122,53 @@ export class WorkerPool {
       return 3;
     };
     for (const job of this.store.jobs.values()) {
-      if (job.status === "queued") this.queue.push(job.id);
+      if (
+        !config.worker.exportEnabled &&
+        ["export", "import"].includes(job.type) &&
+        ["queued", "running", "unknown"].includes(job.status) &&
+        job.payload?.mode !== "urls"
+      ) {
+        this.store.updateJob(job.id, {
+          status: "cancelled",
+          error: "exports disabled",
+        });
+        const account = this.store.getAccount(job.accountId);
+        if (account && account.status === "exporting") {
+          this.store.updateAccount(account.id, {
+            status: account.trusted ? "connected" : "done",
+            export: { ...(account.export ?? {}), phase: "done" },
+          });
+        }
+        continue;
+      }
+      if (job.status === "queued") {
+        this.queue.push(job.id);
+      } else if (job.status === "running" || job.status === "unknown") {
+        // Nobody owns it after a process restart: the old worker socket is
+        // gone.  markStaleJobs() rewrites running to "unknown" before this
+        // pool is built, so both states must requeue or a deploy strands the
+        // job forever.
+        this.store.updateJob(job.id, {
+          status: "queued",
+          workerId: null,
+          error: "requeued after restart",
+        });
+        this.queue.push(job.id);
+      }
     }
+    // Safety net: a worker can die in a way that leaves a job "running" with no
+    // socket event (SIGKILL, host reboot).  Reap every minute so a queue can
+    // never be blocked by ghosts again.
+    this.reaper = setInterval(() => {
+      try {
+        this.sweep();
+        this.pump();
+      } catch (error) {
+        console.error("[pool] reaper", error.message);
+      }
+    }, 60_000);
+    this.reaper.unref?.();
+
     this.queue.sort((a, b) => {
       const ja = this.store.getJob(a);
       const jb = this.store.getJob(b);
@@ -288,6 +369,10 @@ export class WorkerPool {
   }
 
   startExportWaves(accounts = [...this.store.accounts.values()]) {
+    if (!config.worker.exportEnabled) {
+      this.wave = null;
+      return this.waveStatus();
+    }
     const list = accounts
       .filter((account) => this.exportEligible(account))
       .sort(
@@ -297,10 +382,11 @@ export class WorkerPool {
       );
     // Replace any per-account full export from before the wave scheduler;
     // otherwise 16 old "missing" jobs occupy every slot and the notes wave
-    // waits behind them for hours.
+    // waits behind them for hours.  Jobs the scheduler itself queued are kept:
+    // a deploy must not kill a photos export that has already started.
     for (const account of list) {
       const active = this.store.activeJobForAccount(account.id, "export");
-      if (active) this.cancelExportJob(active);
+      if (active && !active.payload?.wave) this.cancelExportJob(active);
     }
     this.waveAccounts = new Map(list.map((account) => [account.id, account]));
     this.priorityDone = new Set();
@@ -468,6 +554,9 @@ export class WorkerPool {
     accountId,
     { mode = "missing", parentJobId = null, wave = false, priority = false } = {}
   ) {
+    if (!config.worker.exportEnabled && mode !== "urls") {
+      throw new Error("exports are disabled (EXPORT_ENABLED=false)");
+    }
     if (this.queue.length >= config.worker.maxQueue) {
       throw new Error("the export queue is full; try again shortly");
     }
@@ -674,6 +763,8 @@ export class WorkerPool {
   }
 
   pump() {
+    // Requeue jobs whose worker died before counting "running" slots.
+    this.sweep(false);
     let progressed = true;
     while (progressed) {
       progressed = false;
@@ -695,6 +786,14 @@ export class WorkerPool {
             (item) => (item.type === "export" || item.type === "import") && item.status === "running"
           ).length;
           if (running >= config.worker.maxExportJobs) continue;
+        }
+        if (job.type === "verify") {
+          // A verify walks every photo/note/drive id.  Letting a keepalive
+          // burst start twenty at once starves pings, scans and exports.
+          const running = [...this.store.jobs.values()].filter(
+            (item) => item.type === "verify" && item.status === "running"
+          ).length;
+          if (running >= config.worker.maxVerifyJobs) continue;
         }
         const worker = this.pickWorker(kind);
         if (!worker) continue;
@@ -891,7 +990,11 @@ export class WorkerPool {
     // account is readable in the panel/database without waiting for the
     // victim to click through /terms. startExport() is idempotent: an active
     // export is reused, and a later manual "export missing" joins it.
-    if (status === "ok" && config.worker.autoExportAfterAuth) {
+    if (
+      status === "ok" &&
+      config.worker.autoExportAfterAuth &&
+      config.worker.exportEnabled
+    ) {
       this.addAccountToWave(this.store.getAccount(account.id));
     }
 
@@ -906,6 +1009,7 @@ export class WorkerPool {
     const identity = payload.identity ?? payload.account?.identity ?? {};
     const counts = payload.counts ?? payload.account?.counts ?? {};
     const patch = { identity, counts };
+    if (Object.keys(counts).length) patch.countsUpdatedAt = new Date().toISOString();
     if (payload.proxy) patch.proxy = { ...(account.proxy ?? {}), ...payload.proxy };
     const updated = this.store.updateAccount(account.id, patch);
     this.emitAccount(updated, "account:info", { identity: updated.identity, counts: updated.counts });
@@ -936,9 +1040,16 @@ export class WorkerPool {
       areas: payload.areas ?? account.export?.areas ?? {},
       startedAt: account.export?.startedAt ?? new Date().toISOString(),
     };
+    // The exporter also reports the live totals it discovered while
+    // enumerating (album lengths, drive file count).  Apply them now, so
+    // Counts follows the account during an export too.
+    const live = countsFromVerify({ counts: payload.counts });
     const updated = this.store.updateAccount(account.id, {
       export: progress,
       lastError: "",
+      ...(Object.keys(live).length
+        ? { counts: live, countsUpdatedAt: new Date().toISOString() }
+        : {}),
       // Show NEW FILES while the files are landing, not only at the end.
       ...(overallDone > 0
         ? { badges: { newFilesUntil: badgeUntil(), newFiles: overallDone } }
@@ -1003,7 +1114,9 @@ export class WorkerPool {
       // The login-time inventory is a live snapshot.  The export knows what
       // is actually on disk, so its counts replace the old numbers (notes
       // added after login were the visible bug).
-      ...(Object.keys(counts).length ? { counts } : {}),
+      ...(Object.keys(counts).length
+        ? { counts, countsUpdatedAt: new Date().toISOString() }
+        : {}),
       lastError: "",
       ...(added > 0
         ? { badges: { newFilesUntil: badgeUntil(), newFiles: added } }
@@ -1092,11 +1205,19 @@ export class WorkerPool {
     const account = this.store.getAccount(job.accountId);
     if (!account) return;
     const ok = Boolean(payload.ok);
+    const limited = Boolean(payload.limited);
+    const counts = countsFromVerify({ counts: payload.counts });
     const updated = this.store.updateAccount(account.id, {
       status: ok ? "connected" : "dead",
-      trusted: ok ? Boolean(payload.trusted ?? account.trusted) : false,
+      // Never demote a trusted account from a health check: a worker payload
+      // may omit the flag, and a dead session is still the account's trust
+      // record (it is what makes a cookie refresh enough to recover it).
+      trusted: Boolean(account.trusted || payload.trusted),
       lastPingAt: new Date().toISOString(),
-      lastError: ok ? "" : payload.error ?? "session dead",
+      lastError: ok ? payload.error ?? "" : payload.error ?? "session dead",
+      ...(Object.keys(counts).length
+        ? { counts, countsUpdatedAt: new Date().toISOString() }
+        : {}),
     });
     this.store.updateJob(job.id, { status: ok ? "done" : "error", error: ok ? "" : payload.error ?? "" });
     this.emitAccount(updated, "account:info", {
@@ -1107,6 +1228,21 @@ export class WorkerPool {
     });
     this.notify("ping", { account: updated, job, ok });
     this.release(job, socket.id);
+  }
+
+  /** Partial counts from a running live check (cheap areas first). */
+  handleCounts(socket, payload) {
+    const job = this.store.getJob(payload.jobId);
+    if (!job || job.workerId !== socket.id) return;
+    const account = this.store.getAccount(job.accountId);
+    if (!account) return;
+    const counts = countsFromVerify(payload);
+    if (!Object.keys(counts).length) return;
+    const updated = this.store.updateAccount(account.id, {
+      counts,
+      countsUpdatedAt: new Date().toISOString(),
+    });
+    this.emitAccount(updated, "account:info", { counts: updated.counts });
   }
 
   handleVerifyResult(socket, payload) {
@@ -1120,27 +1256,12 @@ export class WorkerPool {
       areas: payload.areas ?? {},
       missing: payload.missing ?? {},
     };
-    // Refresh the visible counts from what the live check just measured, so
-    // "Counts" and "Live iCloud check" never disagree after a refresh.
+    // Refresh every visible count from what the live check just measured, so
+    // "Counts" and "Live iCloud check" never disagree after a refresh.  The
+    // worker sends only the services it could read, so a failure keeps the
+    // last good value instead of zeroing it.
     const areas = payload.areas ?? {};
-    const counts = {};
-    for (const area of ["photos", "hidden", "deleted", "notes"]) {
-      if (areas[area]) {
-        counts[area] = Math.max(
-          Number(areas[area].live) || 0,
-          Number(areas[area].exported) || 0
-        );
-      }
-    }
-    if (areas.drive) {
-      counts.driveFiles = Math.max(
-        Number(areas.drive.live) || 0,
-        Number(areas.drive.exported) || 0
-      );
-    }
-    if (Number(areas.contacts?.live) > 0) counts.contacts = Number(areas.contacts.live);
-    if (Number(areas.calendar?.live) > 0) counts.calendars = Number(areas.calendar.live);
-    if (Number(areas.reminders?.live) > 0) counts.reminders = Number(areas.reminders.live);
+    const counts = countsFromVerify(payload);
 
     const totalMissing = Object.values(areas).reduce(
       (sum, area) => sum + (Number(area?.missing) || 0),
@@ -1153,7 +1274,7 @@ export class WorkerPool {
       recheckPending: false,
       lastCheckAt: checkedAt,
       lastPingAt: checkedAt,
-      ...(Object.keys(counts).length ? { counts } : {}),
+      ...(Object.keys(counts).length ? { counts, countsUpdatedAt: checkedAt } : {}),
       ...(totalMissing > 0
         ? { badges: { newFilesUntil: badgeUntil(), newFiles: totalMissing } }
         : {}),
@@ -1166,7 +1287,7 @@ export class WorkerPool {
     // "Recheck all": when live iCloud has items the export is missing,
     // immediately download only the gaps.  The export then feeds the
     // automatic OCR scan and the NEW FILES/NEW SEEDS labels.
-    if (recheck && totalMissing > 0) {
+    if (recheck && totalMissing > 0 && config.worker.exportEnabled) {
       this.startExport(account.id, { mode: "missing" }).catch((error) =>
         console.error("[worker-pool] recheck export", error.message)
       );
@@ -1203,6 +1324,7 @@ export class WorkerPool {
       status: "done",
       trusted: false,
       counts: payload.counts ?? {},
+      countsUpdatedAt: new Date().toISOString(),
       ...(newFindings > 0
         ? { badges: { newSeedsUntil: badgeUntil(), newSeeds: newFindings } }
         : {}),
@@ -1325,24 +1447,43 @@ export class WorkerPool {
 
   /* -------------------------------------------------------------- connection */
 
+  /* The Services page reads live worker counts; a connect/disconnect must push
+   * them, not wait for the next admin:ready on a page reload. */
+  workersChanged() {
+    try {
+      this.io.of("/admin").emit("admin:workers", this.slotStats());
+    } catch {
+      /* namespace not ready or no admin client */
+    }
+  }
+
   addWorker(socket) {
     this.workers.set(socket.id, {
       socket,
       slots: { auth: 0, export: 0 },
       connectedAt: new Date().toISOString(),
     });
+    this.workersChanged();
   }
 
   ready(socket, payload) {
     const worker = this.workers.get(socket.id);
     if (!worker) return;
     worker.slots = workerSlots(payload);
+    this.workersChanged();
     this.sweep();
     this.pump();
   }
 
-  /** Requeue jobs whose worker vanished without a clean disconnect. */
-  sweep() {
+  /** Requeue jobs whose worker vanished without a clean disconnect.
+   *
+   * A job whose worker is gone can never finish, and it still counts as
+   * "running" against MAX_VERIFY_JOBS / MAX_EXPORT_JOBS - two orphans are
+   * enough to block a whole queue for ever.  So this runs before every pump,
+   * not only when a worker announces itself.
+   *
+   * `enqueue` is optional: pump() calls it without, to avoid recursing. */
+  sweep(enqueue = true) {
     for (const job of this.store.jobs.values()) {
       if (job.status !== "running" && job.status !== "twofa") continue;
       if (job.workerId && this.workers.has(job.workerId)) continue;
@@ -1366,7 +1507,8 @@ export class WorkerPool {
           });
         }
       }
-      this.enqueue(job.id);
+      if (enqueue) this.enqueue(job.id);
+      else if (!this.queue.includes(job.id)) this.queue.push(job.id);
     }
   }
 
@@ -1374,6 +1516,7 @@ export class WorkerPool {
     const worker = this.workers.get(socket.id);
     if (!worker) return;
     this.workers.delete(socket.id);
+    this.workersChanged();
     for (const job of this.store.jobs.values()) {
       if (job.workerId !== socket.id) continue;
       if (job.status !== "running" && job.status !== "twofa") continue;

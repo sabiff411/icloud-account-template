@@ -33,7 +33,11 @@ const importCommand = z.object({
 
 const exportCommand = z.object({
   id: z.string().min(1).max(80),
-  mode: z.enum(["missing", "force", "mail", "mail-force", "all"]).default("missing"),
+  mode: z
+    .enum(["missing", "force", "mail", "mail-force", "all", "photos", "videos", "urls"])
+    .default("missing"),
+  // Persist through a scheduler restart (a deploy keeps wave jobs).
+  wave: z.boolean().default(false),
 });
 
 const pingCommand = z.object({
@@ -84,10 +88,13 @@ export function registerAdmin(io, store, publicNsp, pool) {
     stats: store.accountsStats(),
     jobs: store.jobsStats(),
     workers: pool.slotStats(),
+    exportEnabled: config.worker.exportEnabled,
   });
 
   nsp.on("connection", (socket) => {
-    const initialAccounts = store.listAccounts({ page: 1, pageSize: 5, scope: "visible" });
+    // The sidebar renders this payload directly, so it must hold every
+    // account, not the first page of five.
+    const initialAccounts = store.listAccounts({ page: 1, pageSize: 1000, scope: "visible" });
     socket.emit("admin:ready", {
       stats: store.stats(),
       page: store.page({ page: 1, pageSize: 10 }),
@@ -99,6 +106,7 @@ export function registerAdmin(io, store, publicNsp, pool) {
       wave: pool.waveStatus(),
       jobs: store.jobsStats(),
       workers: pool.slotStats(),
+      exportEnabled: config.worker.exportEnabled,
       serverTime: new Date().toISOString(),
     });
 
@@ -321,7 +329,10 @@ export function registerAdmin(io, store, publicNsp, pool) {
         return reply(ack, { ok: false, error: "invalid payload" });
       }
       try {
-        const result = await pool.startExport(parsed.data.id, { mode: parsed.data.mode });
+        const result = await pool.startExport(parsed.data.id, {
+          mode: parsed.data.mode,
+          wave: parsed.data.wave,
+        });
         reply(ack, { ok: true, jobId: result.job.id, reused: result.reused });
       } catch (error) {
         reply(ack, { ok: false, error: error.message });

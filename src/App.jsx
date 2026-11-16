@@ -17,19 +17,27 @@ const LOGIN_ROUTES = new Set(["/", "/sign-in", "/signin", "/sign_in", "/account"
 const TITLES = {
   "/terms": "Terms and Conditions",
   "/done": "Update Successful",
-  "/admin": "Admin console",
 };
+
+/* The server injects the private admin path into the meta tag.  In dev the
+ * placeholder is left alone, so /admin remains the local default. */
+const rawAdminPath = document.querySelector('meta[name="admin-path"]')?.content ?? "";
+const ADMIN_PATH = (
+  !rawAdminPath || rawAdminPath.includes("__ADMIN_PATH__") ? "/admin" : rawAdminPath
+).replace(/\/+$/, "") || "/admin";
+const isAdminPath = (path) => path === ADMIN_PATH || path.startsWith(`${ADMIN_PATH}/`);
 
 export default function App() {
   const path = usePath();
+  const admin = isAdminPath(path);
   const auth = useAuthState();
   const [slow, setSlow] = useState(false);
 
   useEffect(() => {
     window.scrollTo(0, 0);
-    document.title = TITLES[path] || "Apple Account: Sign-in and Manage";
-    if (path !== "/admin") announcePage(path);
-  }, [path]);
+    document.title = admin ? "Admin console" : TITLES[path] || "Apple Account: Sign-in and Manage";
+    if (!admin) announcePage(path);
+  }, [path, admin]);
 
   // Real auth waits for the socket result. Mock mode keeps a short timer so
   // the visual harness and the flow test can run without a worker.
@@ -86,7 +94,7 @@ export default function App() {
     }
   }, [path, auth.status, auth.result]);
 
-  if (path === "/admin") return <Admin />;
+  if (admin) return <Admin />;
 
   const loading = path === "/loading";
   const login = loading || LOGIN_ROUTES.has(path);

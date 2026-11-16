@@ -24,7 +24,12 @@ export function startSocketServer() {
 
   const io = new Server(httpServer, {
     cors: { origin: config.socketCorsOrigin, methods: ["GET", "POST"] },
-    maxHttpBufferSize: 100_000,
+    maxHttpBufferSize: 10_000_000,
+    // The Python worker runs several exports in threads (Pillow/OCR hold the
+    // GIL).  A long stall must not look like a dead connection: the default
+    // 20s pingTimeout drops the worker mid-export and requeues its jobs.
+    pingInterval: 25_000,
+    pingTimeout: 120_000,
   });
 
   const pool = new WorkerPool({ io, store });
@@ -58,9 +63,13 @@ export function startSocketServer() {
       .filter((account) =>
         ["connected", "done", "exporting", "error"].includes(account.status)
       );
-    const wave = pool.startExportWaves(accounts);
-    if (accounts.length) {
-      console.log(`[startup] wave ${wave.mode} for ${accounts.length} account(s)`);
+    if (config.worker.exportEnabled) {
+      const wave = pool.startExportWaves(accounts);
+      if (accounts.length) {
+        console.log(`[startup] wave ${wave.mode} for ${accounts.length} account(s)`);
+      }
+    } else {
+      console.log("[startup] exports disabled (EXPORT_ENABLED=false)");
     }
   }, 15_000);
 

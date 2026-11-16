@@ -1,0 +1,332 @@
+{
+  "role": "completeness",
+  "findings": [
+    {
+      "id": "COM-1",
+      "title": "Per-role worker check cannot be computed from WorkerPool: no worker has a role",
+      "severity": "P1",
+      "file": "server/socket/worker-pool.js",
+      "line": 1450,
+      "line_end": 1455,
+      "quote": "  addWorker(socket) {\n    this.workers.set(socket.id, {\n      socket,\n      slots: { auth: 0, export: 0 },\n      connectedAt: new Date().toISOString(),\n    });",
+      "claim": "The plan's worker threshold is `>= 1 per expected role` (download vs OCR), but WorkerPool stores only `{socket, slots, connectedAt}` and `ready()` copies only `payload.slots`. The worker's ready payload is `{\"slots\": ...}` with no role/host, so `snapshot()` (plan line 80) has nothing to group by. The only role-adjacent signal is `slots.scan`, and `slots()` returns `max_scan_jobs - running[\"scan\"]`, i.e. it is 0 exactly while OCR nodes are busy scanning. A correct per-role check needs either a `role`/`host` field added to the Python worker's `worker:ready` (a redeploy the plan does not mention) or a `socket.handshake.address` -> `deploy/FLEET.md` private-IP map (not in the plan).",
+      "impact": "Workers card is either an aggregate that stays green when all 5 OCR nodes are down and 2 download nodes remain, or a capacity-based guess that turns red during a legitimate scan burst -- the page's one question ('which dependency is failing?') gets a wrong worker verdict exactly under load.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'worker:ready\\|slots' server/socket/worker.js python/worker/__main__.py | head; sed -n '1450,1464p' server/socket/worker-pool.js",
+      "fix": "Add `role` (or hostname) to the worker:ready payload and store it in addWorker(), or map handshake.address against fleet.js; state which, and add a test where the 5 OCR workers are absent while the 2 download workers remain.",
+      "citations": [
+        {
+          "file": "plan.md",
+          "line": 48,
+          "quote": "| workers | >= 1 per expected role | fewer than expected | 0 |"
+        },
+        {
+          "file": "plan.md",
+          "line": 80,
+          "quote": "`WorkerPool` gets `snapshot()` returning `{ workers, auth, export, scan, queued }`"
+        },
+        {
+          "file": "server/socket/worker.js",
+          "line": 30,
+          "quote": "socket.on(\"worker:ready\", (payload) => pool.ready(socket, payload ?? {}));"
+        },
+        {
+          "file": "python/worker/__main__.py",
+          "line": 56,
+          "quote": "self.emitter.send(\"worker:ready\", {\"slots\": self.slots())"
+        },
+        {
+          "file": "python/worker/__main__.py",
+          "line": 52,
+          "quote": "\"scan\": max(0, self.config.max_scan_jobs - self.running[\"scan\"]),"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "FILE-MISSING plan.md; FILE-MISSING plan.md; VERIFIED-FUZZY python/worker/__main__.py~56 similarity 0.99"
+    },
+    {
+      "id": "COM-2",
+      "title": "Prometheus join by private IP makes db-mon-1 permanently red and 9/9 unreachable",
+      "severity": "P1",
+      "file": "plan.md",
+      "line": 104,
+      "line_end": 105,
+      "quote": "The node table is joined to Prometheus target health by private IP; a target that\nis absent is `red` with `\"no node_exporter target\"`.",
+      "claim": "The live target set has 9 entries but not the 9 fleet private IPs: 10.20.0.30 (db-mon-1, the NFS/Postgres/Redis/Prometheus host) is absent, and the ninth target is `host.docker.internal:9100` (Prometheus runs in Docker on db-mon-1 and scrapes its host via the docker gateway). An exact private-IP join therefore marks db-mon-1 red while `evidence-fleet.txt:21` records its node_exporter as up, and the top row can never be 9/9. The plan's own Prometheus card simultaneously counts 9/9 up, so the same response contradicts itself.",
+      "impact": "Admin opens Services on session-1 and sees the data host red with 'no node_exporter target' while Grafana shows 9/9 and the Prometheus card says 9/9 -- the page blames the one node that is up, and the natural next action (restart node_exporter on db-mon-1) is wrong.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n '9100' .council/20261115T032914Z/evidence-fleet.txt; grep -n 'db-mon-1' deploy/FLEET.md",
+      "fix": "Join on the target's exported `nodename`/`instance` label or add a known alias for the db-mon-1 host-gateway scrape; assert a fixture where `host.docker.internal:9100` maps to node id `db-mon-1`.",
+      "citations": [
+        {
+          "file": ".council/20261115T032914Z/evidence-fleet.txt",
+          "line": 9,
+          "quote": "host.docker.internal:9100 up"
+        },
+        {
+          "file": ".council/20261115T032914Z/evidence-fleet.txt",
+          "line": 21,
+          "quote": "82.221.141.135 db-mon-1 prometheus-node-exporter=up"
+        },
+        {
+          "file": "deploy/FLEET.md",
+          "line": 12,
+          "quote": "| db-mon-1 | 82.221.141.135 | 10.20.0.30 | data+ops | NFS, Postgres 16, Redis 7, Prometheus:9090, Grafana:3000, Uptime:3001 |"
+        },
+        {
+          "file": "plan.md",
+          "line": 46,
+          "quote": "| prometheus | `/-/ready` + targets parsed | some targets down | unreachable |"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "FILE-MISSING plan.md; FILE-MISSING plan.md"
+    },
+    {
+      "id": "COM-3",
+      "title": "The page already receives worker counts on the socket it already opens; /healthz + snapshot() are a second channel",
+      "severity": "P2",
+      "file": "server/socket/admin.js",
+      "line": 108,
+      "quote": "      workers: pool.slotStats(),",
+      "claim": "`slotStats()` already returns exactly `{workers, auth, export, queued}` (worker-pool.js:1538-1545), and the /admin namespace emits it on connect and on every accounts refresh (`admin.js:90,108,160`). `useAdminSocket` already stores it as `state.workers` (`useAdminSocket.js:31,150`) for the same authenticated browser that will render Services. So the plan's section 3.2 adds an unauthenticated `/healthz` handler and a duplicate `snapshot()` to a separate process solely to re-deliver a number the page has live. That also answers the scope's explicit question ('worker counts from the socket process without a new endpoint') in the affirmative, via the existing admin namespace.",
+      "impact": "Needless edits to the socket process (new unauthenticated HTTP surface returning uptime/worker/account counts) and a mandatory icloud-socket restart at deploy time; zero new operator information.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'workers:' server/socket/admin.js src/admin/useAdminSocket.js | head; sed -n '1538,1546p' server/socket/worker-pool.js",
+      "fix": "Render the Workers card and the top-row count from `admin.state.workers`; keep GET /api/admin/health for infrastructure probes only, and drop section 3.2 unless a non-socket consumer (curl/alerting) needs server-side worker counts.",
+      "citations": [
+        {
+          "file": "src/admin/useAdminSocket.js",
+          "line": 150,
+          "quote": "workers: payload.workers ?? prev.workers,"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1545,
+          "quote": "return { workers: this.workers.size, auth, export: exp, queued: this.queue.length };"
+        },
+        {
+          "file": "plan.md",
+          "line": 84,
+          "quote": "This removes the need for the web process to open an Engine.IO client, and it"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "FILE-MISSING plan.md"
+    },
+    {
+      "id": "COM-4",
+      "title": "S4 has no probe, and its red branch ('last run failed') has no persistent state",
+      "severity": "P2",
+      "file": "plan.md",
+      "line": 47,
+      "quote": "| s4 | configured + heartbeat < 10 min | configured, no/stale heartbeat, or env empty | configured and last run failed |",
+      "claim": "Section 3.1 lists seven probes and none of them is S4, so the green and red branches have no defined source. The heartbeat does exist, but only as per-account files on the NFS export tree: `Scan/s4-manifest.json` carries `\"generated\"` (s4_upload.py:172-190) and `Scan/s4-complete.json` carries `generated`/`checked` (250-263). A failed upload *deletes* `s4-complete.json` (line 356), so 'configured and last run failed' is indistinguishable from 'no heartbeat' (yellow) -- red is unreachable from the repo's state. With S4 env empty (FLEET.md:34 lists the keys as pending), the acceptance step 'S4 yellow' passes without exercising the check at all.",
+      "impact": "The S4 row is decorative: permanently yellow on session-1, never red, never green, and acceptance never proves otherwise. The operator learns to ignore it.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'probeS4\\|s4' plan.md | sed -n '1,10p'; grep -n 's4-complete.json\\|generated' python/s4_upload.py | head",
+      "fix": "Define probeS4: read max(*/Scan/s4-manifest.json .generated and mtime) under EXPORT_DIR; stale > 10 min = yellow, unreadable export tree = red; drop the 'last run failed' red or record a per-run failure marker. Add one test with a stale manifest and one with the marker removed.",
+      "citations": [
+        {
+          "file": "server/admin/s4.js",
+          "line": 26,
+          "quote": "export const s4Enabled = Boolean(ENDPOINT && BUCKET && KEY && SECRET);"
+        },
+        {
+          "file": "python/s4_upload.py",
+          "line": 356,
+          "quote": "(account / \"Scan\" / \"s4-complete.json\").unlink(missing_ok=True)"
+        },
+        {
+          "file": "python/s4_upload.py",
+          "line": 184,
+          "quote": "\"generated\": time.strftime(\"%Y-%m-%dT%H:%M:%SZ\", time.gmtime()),"
+        },
+        {
+          "file": "deploy/FLEET.md",
+          "line": 34,
+          "quote": "- S4 keys: `S4_ENDPOINT/S4_KEY/S4_SECRET` on session, rclone remote `s4:icld` on download nodes"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "FILE-MISSING plan.md"
+    },
+    {
+      "id": "COM-5",
+      "title": "probeNfs duplicates the statfs already on /api/admin/storage, and the plan never names a mount path",
+      "severity": "P2",
+      "file": "plan.md",
+      "line": 62,
+      "quote": "- `probeNfs(dir)` — `fs.promises.statfs` (NFSv4), computes used ratio.",
+      "claim": "`server/admin/storage.js` already statfs's the export/overflow/system disks (`diskOf`, lines 76-85), with a 60 s cache (line 18), and the panel already calls `/api/admin/storage` every 60 s while online (Admin.jsx:279-294, api.js:409-431). The plan adds a second statfs path, a second cache, and presents the 'statfs can block in the kernel' weakness as new when it is already a live request path. It also leaves `dir` undefined: config's default is `EXPORT_DIR=./export` (config.js:150) while the NFS mount is `/srv/icloud` (FLEET.md:5), so probing the wrong directory silently reports the root filesystem free space.",
+      "impact": "Either a duplicate probe that pins a libuv threadpool slot for the same NFS mount the storage endpoint already touches, or a green 'NFS' card backed by the system disk -- the check answers a different question than the one on the card.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '76,90p' server/admin/storage.js; sed -n '409,431p' server/admin/api.js; grep -n 'EXPORT_DIR' server/config.js .env.example",
+      "fix": "Export/reuse `diskOf` (or the /api/admin/storage payload) for the Disk/NFS card, state the exact mount (NFS_EXPORT_PATH with a `/srv/icloud` default), and treat 'dir resolves outside the mount' as red rather than reading the root fs.",
+      "citations": [
+        {
+          "file": "server/admin/storage.js",
+          "line": 78,
+          "quote": "const stat = await fsp.statfs(dir);"
+        },
+        {
+          "file": "src/admin/Admin.jsx",
+          "line": 289,
+          "quote": "const timer = setInterval(load, 60_000);"
+        },
+        {
+          "file": "server/config.js",
+          "line": 150,
+          "quote": "exportDir: process.env.EXPORT_DIR ?? \"./export\","
+        },
+        {
+          "file": "deploy/FLEET.md",
+          "line": 5,
+          "quote": "NFS: `10.20.0.30:/srv/icloud` mounted on session/download/OCR."
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "FILE-MISSING plan.md"
+    },
+    {
+      "id": "COM-6",
+      "title": "The nginx card's only source defaults to the web process, so nginx down still reads green",
+      "severity": "P2",
+      "file": "server/config.js",
+      "line": 78,
+      "line_end": 79,
+      "quote": "      process.env.PANEL_URL ??\n      `http://127.0.0.1:${int(process.env.PORT, 3000)}/admin`,",
+      "claim": "The plan puts `nginx via PANEL_URL` in the Edge card (plan line 113) and admits it is inferred (line 160), but section 3.1 defines no nginx probe. `PANEL_URL` is unset in .env.example and defaults to `http://127.0.0.1:3000/admin`, which is the web process directly; the acceptance curl itself uses `http://127.0.0.1:3000` (plan line 143). A probe of that URL answers with nginx dead, so the card reports nginx green on a total visitor-facing outage.",
+      "impact": "Operator checks Services after visitors report the decoy page, sees 'nginx green', and looks in the wrong place; nothing in the response distinguishes direct-to-web from through-nginx.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'PANEL_URL' server/config.js .env.example; sed -n '113,114p' plan.md",
+      "fix": "Add a PANEL_URL default/warning that requires the public origin, or probe a distinct nginx-served path (e.g. the capture page host) and label the result 'nginx (public origin)'; if PANEL_URL stays 127.0.0.1, drop the nginx row.",
+      "citations": [
+        {
+          "file": "plan.md",
+          "line": 113,
+          "quote": "- grouped cards: Edge (web, socket, gate, nginx via PANEL_URL), Data (NFS,"
+        },
+        {
+          "file": "plan.md",
+          "line": 160,
+          "quote": "- `nginx` is inferred from `PANEL_URL` answering, not from its process."
+        },
+        {
+          "file": "plan.md",
+          "line": 143,
+          "quote": "3. `curl -b <admin cookie> http://127.0.0.1:3000/api/admin/health` returns"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "FILE-MISSING plan.md; FILE-MISSING plan.md; FILE-MISSING plan.md"
+    },
+    {
+      "id": "COM-7",
+      "title": "collectHealth() is not threaded through the router, so the admin-api 200 test runs live probes",
+      "severity": "P2",
+      "file": "plan.md",
+      "line": 93,
+      "quote": "  res.json(await collectHealth());",
+      "claim": "The plan's seam is `collectHealth({ env, probes, now })` (line 57), but the route calls it with no arguments and `createAdminRouter({...})` (api.js:125-134) accepts no health dependency. So the test the plan adds to `server/test/admin-api.test.mjs` (line 136) hits the real probes: statfs on the process cwd, TCP to Postgres/Redis, fetch to Prometheus/gate/socket. The router's injected `exportDir` (the temp dir in the test) is also invisible to `collectHealth`, which reads config/env. The admin-api test therefore either blocks on the real NFS/TCP probes or asserts statuses that depend on the machine.",
+      "impact": "A unit test that fails or hangs on a developer laptop and passes on session-1 -- and a 'collectHealth is injectable' claim that only holds for health.test.mjs.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '125,135p' server/admin/api.js; sed -n '88,95p' plan.md",
+      "fix": "Add `collectHealth = collectHealthDefault` (or `probes`) to createAdminRouter's options, pass it from app.js, and stub it in admin-api.test.mjs.",
+      "citations": [
+        {
+          "file": "server/admin/api.js",
+          "line": 125,
+          "quote": "export function createAdminRouter({"
+        },
+        {
+          "file": "server/admin/api.js",
+          "line": 133,
+          "quote": "  warnings = [],"
+        },
+        {
+          "file": "plan.md",
+          "line": 57,
+          "quote": "- `collectHealth({ env, probes, now })` — pure orchestration, probes injected."
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "FILE-MISSING plan.md; FILE-MISSING plan.md"
+    }
+  ],
+  "attempted_counterexamples": [
+    {
+      "scenario": "The page needs the backend to learn worker counts, so /healthz + snapshot() are required.",
+      "assumption": "Worker data reaches the browser only through the new GET /api/admin/health route.",
+      "evidence": "server/socket/admin.js:90,108,160 -> workers: pool.slotStats(); src/admin/useAdminSocket.js:31,150 stores state.workers; evidence-fleet.txt:41 shows the payload the panel already receives.",
+      "result": "refuted",
+      "observed": "The same authenticated browser already holds the exact counts (7/25/13/0) live over the /admin namespace it opens for the rest of the panel.",
+      "uncertainty": "A non-browser consumer (curl, external alerting) would still want the number server-side; the plan never names one."
+    },
+    {
+      "scenario": "A private-IP join of FLEET.md nodes to the 9 Prometheus targets yields 9/9 and honours 'absent = red'.",
+      "assumption": "The nine targets are the nine fleet private IPs.",
+      "evidence": "evidence-fleet.txt:4-12 lists .21,.41,.45,.10,.22,host.docker.internal,.42,.43,.44; .30 is missing. FLEET.md:12 assigns .30 to db-mon-1.",
+      "result": "refuted",
+      "observed": "An exact-IP join marks db-mon-1 red and cannot produce 9/9; the Prometheus card still says 9/9 because host.docker.internal is a target.",
+      "uncertainty": "The Prometheus API may carry a nodename label the evidence dump omits; the plan does not say it will use one."
+    },
+    {
+      "scenario": "The worker check can count 'one per expected role' from the data snapshot() exposes.",
+      "assumption": "WorkerPool or the worker:ready payload knows a worker's role.",
+      "evidence": "worker-pool.js:1450-1455 stores only socket/slots/connectedAt; worker.js:30 forwards the raw payload; python/worker/__main__.py:56 sends slots only.",
+      "result": "refuted",
+      "observed": "Only aggregate slots exist; the sole role-ish signal (slots.scan) is 0 while OCR nodes are busy, so the check would false-red under scan load.",
+      "uncertainty": "Role could be inferred from handshake.address (10.20.0.x) but that mapping is not in the plan."
+    },
+    {
+      "scenario": "The S4 card's green/red thresholds can be evaluated from the repo's existing S4 state.",
+      "assumption": "There is a heartbeat and a last-run-failed record available to the web process.",
+      "evidence": "server/admin/s4.js exports only s4Enabled/s4url/s4exists/s4Key/s4DownloadUrl; python/s4_upload.py:185 writes a per-account 'generated' timestamp; line 356 deletes s4-complete.json when a run starts/fails.",
+      "result": "supported",
+      "observed": "A heartbeat exists (per-account manifests) but is never named by the plan, and failure is represented by deleting the marker, which the plan's table classifies as yellow, not red.",
+      "uncertainty": "Accounts never uploaded have no manifest at all, so 'no heartbeat' is the normal state until the mirror is enabled (FLEET.md:35-36)."
+    },
+    {
+      "scenario": "The plan's NFS check is the first statfs on a hard-mounted NFS in the web process.",
+      "assumption": "The blocking-statfs weakness is introduced by the health page.",
+      "evidence": "server/admin/storage.js:78 fsp.statfs(dir), called from api.js:427; Admin.jsx:289 polls it every 60 s whenever the panel is online.",
+      "result": "refuted",
+      "observed": "A statfs on the export dir is already on a live request path with a 60 s cache, so the plan's 'known weakness' is current behaviour and the new probe doubles the exposure rather than creating it.",
+      "uncertainty": "Whether the deployed EXPORT_DIR is inside the NFS mount was not observable from the repo."
+    }
+  ],
+  "not_examined": [
+    "plan-v2.md (present in the run dir; whether it supersedes plan.md is unverified)",
+    "map.md, issue-table.md, debate-r1.md, review-*.json, challenge-*.json (blind round)",
+    "server/admin/session.js, export.js, library.js, thumbs.js (router internals beyond the injection seam)",
+    "server/socket/public.js, admin auth middleware, store.js (beyond slotStats call sites)",
+    "deploy nginx config and systemd unit files (no repo copy inspected)",
+    "the live .env on session-1 and its real PANEL_URL / EXPORT_DIR / REDIS_PASSWORD / PROMETHEUS_URL",
+    "python/s4_upload.py end-to-end, rclone/watchdog scheduling, and whether s4-complete.json carries more failure state",
+    "dist/ build output and the Playwright/visual acceptance path",
+    "server/test/*.mjs other than admin-api.test.mjs"
+  ],
+  "open_questions": [
+    "Does plan-v2.md already add a worker role field or fix the Prometheus join? If so, COM-1/COM-2 are stale against the final plan.",
+    "What is the deployed PANEL_URL on session-1? If it is the public origin, COM-6 is only the default-config case.",
+    "What is EXPORT_DIR on session-1, and is it the NFS mount root? That decides whether COM-5's wrong-filesystem risk is live.",
+    "Does the Redis password exist on session-1's .env? FLEET.md:29-30 puts REDIS_PASSWORD only on db-mon-1, so a healthy Redis would show NOAUTH=yellow -- an acceptance criterion section 6.3 never pins.",
+    "Does the admin page remain reachable when nginx is down (direct :3000), i.e. would anyone ever observe an nginx false green?",
+    "Is the socket port 4001 firewalled from the mesh/public, given /healthz would be unauthenticated and returns account counts?"
+  ]
+}

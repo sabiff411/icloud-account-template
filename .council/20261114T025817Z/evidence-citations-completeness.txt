@@ -1,0 +1,9 @@
+ok  P1  VERIFIED           CB-1     P0-2's coverage matrix has no reachable manifest/last-expo  []
+ok  P1  VERIFIED           CB-2     The mock worker cannot produce the P0-1/P0-3 job states it  []
+ok  P2  VERIFIED           CB-3     The admin API test suite is red and asserts the pre-fix se  []
+ok  P2  VERIFIED           CB-4     The cross-account Library's kind filter drops its payload   []
+ok  P2  VERIFIED           CB-6     The dashboard's CONNECTED and LOCKED headline counters mea  []
+ok  P2  VERIFIED           CB-7     "Hide all" confirmation counts the filtered list, but the   []
+
+VERIFIED=6
+blocking: 0 P0/P1 finding(s) without a verified citation

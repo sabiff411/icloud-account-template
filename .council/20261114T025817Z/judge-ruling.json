@@ -1,0 +1,704 @@
+{
+  "verdict": "REVISE",
+  "score": 5,
+  "confidence": {
+    "level": "high",
+    "why_not_higher": "Every P1 citation was re-read and three probes reproduced, but there is no live iCloud run, no verify job on example.harvest, no 1k render and no real 500-account campaign; the restart/eviction probes exercise the production Store class, not a live socket process. Production S4_* config and campaign size are unknown and move the score materially. All seats share one base model, so unanimity is shared bias rather than independent proof."
+  },
+  "executive_summary": "The feature list is right; the implementation contract is not. Four P0 items are each scoped on a false statement about existing behaviour (jobs are durable, verify already reconciles per area, the account record has no priority field, the manifest has no dashboard reader and the plan names no owner), and all four acceptance criteria fail as written. The restart/eviction defects and the 113-vs-142 unit conflict are real, bounded and plan-blocking, not council P0. REVISE sections 3-4 and the acceptance tests; do not rebuild the feature list. No P0 defect is upheld.",
+  "consensus": [
+    {
+      "cluster": "Restart strands in-flight jobs",
+      "ids": [
+        "ARCH-4",
+        "COR-4",
+        "CL-4",
+        "DA-1"
+      ],
+      "reviewers": 4,
+      "label": "[CONSENSUS]",
+      "fact": "markStaleJobs runs in the Store constructor (server/store.js:130, :205-207) before the pool is built (server/socket/index.js:14 vs :35), so the pool's running-requeue branch (server/socket/worker-pool.js:144-156) is dead on a real restart; 'unknown' is excluded from ACTIVE_JOB (server/store.js:31). One defect, four IDs."
+    },
+    {
+      "cluster": "P0-2 is not new reconciliation",
+      "ids": [
+        "ARCH-1",
+        "COR-1",
+        "CL-2",
+        "DA-3"
+      ],
+      "reviewers": 4,
+      "label": "[CONSENSUS]",
+      "fact": "verify.compare already emits per-area live/exported/missing (python/worker/verify.py:264-276), worker-pool.js:1255 persists it verbatim, and OverviewTab.jsx:238 already renders it; screenshot 21 shows the real account. P0-2 adds a second answer, not the first."
+    },
+    {
+      "cluster": "P0-1's 'failed' job state does not exist",
+      "ids": [
+        "CL-6",
+        "COR-10",
+        "DA-4"
+      ],
+      "reviewers": 3,
+      "label": "[CONSENSUS]",
+      "fact": "No writer of status 'failed' in server/socket or server/store.js; terminal failures are 'error' (worker-pool.js:1158), restarts 'unknown' (store.js:206). FEATURES.md:93's 'each of queued/running/done/failed' cannot pass literally."
+    },
+    {
+      "cluster": "Jobs are already durable",
+      "ids": [
+        "ARCH-6",
+        "CL-6"
+      ],
+      "reviewers": 2,
+      "label": "[SINGLE-SOURCE]",
+      "fact": "Store.load restores raw.jobs (store.js:145) and flush serialises every job field (store.js:169-173). The gap is a paginated read plus pool-level retry/cancel, not a persistence layer."
+    },
+    {
+      "cluster": "P0-3 priority/order/note cannot persist",
+      "ids": [
+        "ARCH-5",
+        "CL-7",
+        "COR-6",
+        "DA-6"
+      ],
+      "reviewers": 4,
+      "label": "[CONSENSUS]",
+      "fact": "updateAccount copies a fixed whitelist (store.js:398-416) and defaultAccount declares no such fields (store.js:50-117); dispatch sorts on rank/notesMissing/createdAt (worker-pool.js:171-179)."
+    },
+    {
+      "cluster": "P0-4 is Python-side, and verify still counts failed as missing",
+      "ids": [
+        "ARCH-2",
+        "CL-8",
+        "DA-5"
+      ],
+      "reviewers": 3,
+      "label": "[CONSENSUS]",
+      "fact": "Manifest has seven columns (exporter.py:212); a failure writes status='failed', size 0, empty sha (exporter.py:961); verify selects only done/skipped (verify.py:30) so gap=live-ids counts failed files as missing (verify.py:269)."
+    },
+    {
+      "cluster": "Eviction loses jobs at campaign scale",
+      "ids": [
+        "ARCH-3",
+        "COR-5",
+        "DA-2",
+        "PERF-12"
+      ],
+      "reviewers": 4,
+      "label": "[CONSENSUS]",
+      "fact": "flush() keeps the newest 1000 by createdAt with no status filter (store.js:169-173); handleExportDone returns on getJob()==null before updateAccount/release (worker-pool.js:1097-1098). The 'worker slot never returned' sub-claim is refuted: worker:ready restores slots."
+    },
+    {
+      "cluster": "P1-1's premise is wrong",
+      "ids": [
+        "COR-8",
+        "CL-5"
+      ],
+      "reviewers": 3,
+      "label": "[CONSENSUS]",
+      "fact": "Probe on the cited export: default total 142, videos 20, kindCounts {'unclassified':142}, kind='photo' total 0. PhotosTab.jsx:129 omits kind from its deps, so screenshot 17 is stale; 'Photo filter gives the same set' is that bug read as data. Client S5 independently reproduced the stale kind selection."
+    },
+    {
+      "cluster": "P1-3 already exists",
+      "ids": [
+        "CL-1"
+      ],
+      "reviewers": 1,
+      "label": "[SINGLE-SOURCE]",
+      "fact": "LibraryTab.jsx:424 placeholder searches every note/image/contact/calendar/seed, :432 defaults to 'All accounts', library.js:762 filters nothing when accountId='', and screenshot 18 shows hits from two accounts."
+    },
+    {
+      "cluster": "500-account bulk collides with socket limits",
+      "ids": [
+        "PERF-6",
+        "DA-8"
+      ],
+      "reviewers": 3,
+      "label": "[CONSENSUS]",
+      "fact": "admin.js:69/74 guards 60 events per 10 s; worker-pool.js:559 rejects at queue.length >= 500 (config.js:118). The verifier corrected the off-by-one: exactly 500 fits only with an empty queue. Devil challenge C5 reached the same two limits independently."
+    }
+  ],
+  "disputes": [
+    {
+      "id": "D1",
+      "issue": "ARCH-1: does P0-2 force the web process to open manifest.sqlite3?",
+      "sides": [
+        "ARCH-1 (architecture review) P1",
+        "verifier-p1 phase 6 DOWNGRADE to P2",
+        "devil C7 challenge refuting the dependency blocker",
+        "correctness/architecture debate r1 REVISE"
+      ],
+      "deciding_evidence": "Verifier probe `new DatabaseSync(<missing path>) -> created: true`, README.md:113-114 'Only the socket process mutates accounts/jobs' / 'web process serves static files and geo only', and worker-pool.js:1255 storing `areas: payload.areas ?? {}` verbatim; devil C7 found node:sqlite already used at server/gate.js:24 on Node 24.",
+      "round": "phase 6 verify (deciding), challenge gate C7, debate r1",
+      "ruling": "DOWNGRADE to P2 stands: the stale/empty-manifest symptom exists only if an implementer adds a second reader, and node:sqlite is available so there is no hard blocker. The design decision is still fixed: P0-2's columns are produced in Python and the web renders account.verify/account.export; no SQLite in the web process. [DISPUTED] resolved.",
+      "labels": [
+        "[VERIFIED]",
+        "[DISPUTED]"
+      ]
+    },
+    {
+      "id": "D2",
+      "issue": "Can P0-2 reuse account.verify.areas as-is, or does it need a per-area unread marker?",
+      "sides": [
+        "COR-1 and ARCH-1 (review) say reuse; DA-3 (review/debate) says as-is lies on a failed album read"
+      ],
+      "deciding_evidence": "Correctness debate r1 and devil debate r1 converged on the same code: verify.py:90-99 seeds live empty; :212-219 swallows the album exception; :269 `live_set = set(live.get(area) or set())`; :272-276 emits live 0/missing 0; OverviewTab.jsx:34-44 renders missing 0 as `complete`. DA-3's debate evidence points at `if photo_ok:` (verify.py:209) as the only existing success signal.",
+      "round": "debate r1, both sides REVISE",
+      "ruling": "Reuse account.verify.areas, but not as-is. Add `read_ok` in enumerate_live (set only on a successful read; Library fallback counts), have compare emit `{unread: true}` with no missing count, and render a tri-state with last-verified. The marker must originate in enumerate_live, as the devil held, not be invented in compare. P0-2 acceptance must inject one failed album read and assert 'unavailable', not 'complete'.",
+      "labels": [
+        "[VERIFIED]",
+        "[CONSENSUS]"
+      ]
+    },
+    {
+      "id": "D3",
+      "issue": "Which single unit is 'downloaded'?",
+      "sides": [
+        "CL-2 (client review) two units/29-file gap",
+        "client final #1 unique asset id",
+        "completeness CB-1 no reachable source",
+        "verifier phase 6: neither oracle authoritative"
+      ],
+      "deciding_evidence": "Manifest done rows = photos 104 + hidden 9 = 113; disk = 142 files; unique basenames across Photos/ = 113; client challenge map_validation:58 says the 113 manifest rows 'equal unique disk asset ids, while Photos contains 142 files after live-photo proxies and 9 duplicated Hidden stills'.",
+      "round": "review + phase 6 verify + client challenge record",
+      "ruling": "One unit: the distinct manifest key (asset id) with status IN ('done','skipped'). A live-photo proxy and a cross-area duplicate collapse to the asset's key. For example.harvest downloaded = 113, not 142 files and not 124+18 area rows. The live column comes from iCloud via the same key scheme in verify.areas; disk file count 142 is a diagnostic column, never the denominator. Acceptance asserts 113 from manifest and 113 unique basenames from disk side by side.",
+      "labels": [
+        "[VERIFIED]",
+        "[CONSENSUS]",
+        "[JUDGE-INTRODUCED]"
+      ]
+    },
+    {
+      "id": "D4",
+      "issue": "P0-1 scope: what is actually missing if jobs already persist?",
+      "sides": [
+        "CL-6 / ARCH-6 (review) vs FEATURES.md:82-83 'no durable job list'"
+      ],
+      "deciding_evidence": "store.js:145 loads raw.jobs; :169-173 serialises all job fields; verifier CL-6: `grep -c 'status: \"failed\"' server/socket/worker-pool.js` -> 0; DA-7: last message is emitted to the job room but not stored on the job.",
+      "round": "phase 6 verify (CL-6 CONFIRMED) + review DA-7",
+      "ruling": "Scope P0-1 to: paginated admin:jobs read (admin:account returns only the last 10), pool-level retry/cancel, a stored last-message field, and the real vocabulary. Do not add a second persistence layer or a REST /jobs reading items.json.",
+      "labels": [
+        "[VERIFIED]",
+        "[CONSENSUS]"
+      ]
+    },
+    {
+      "id": "D5",
+      "issue": "Restart cluster: ARCH-4, COR-4, CL-4, DA-1 \u2014 how many defects?",
+      "sides": [
+        "four reviewers, four IDs"
+      ],
+      "deciding_evidence": "store.js:130 markStaleJobs + :205-207 unknown + socket/index.js:14 vs :35 + worker-pool.js:144-156 and :1475 + store.js:31 ACTIVE_JOB; three independent probes (client S4, devil C1, verifier) reproduce 'unknown' and 'boot requeue false'.",
+      "round": "challenge gate + phase 6 verify",
+      "ruling": "One defect, four IDs merged. The pool's running-requeue branch is dead on a real restart. Fix by requeueing 'unknown' on boot (or moving stale marking after pool construction); add a restart acceptance test. P1.",
+      "labels": [
+        "[VERIFIED]",
+        "[CONSENSUS]"
+      ]
+    },
+    {
+      "id": "D6",
+      "issue": "Eviction cluster: ARCH-3 / COR-5 / DA-2, and DA-2's 'worker slot never returned'.",
+      "sides": [
+        "three reviewers claim slot leak; verifier phase 6 counter-case"
+      ],
+      "deciding_evidence": "Verifier: worker:ready is sent after every job (python/worker/__main__.py:164-165) and pool.ready overwrites slots (worker-pool.js:1460), so capacity returns; COR-5 probe shows the trim is arbitrary, not oldest-first (5 dropped at indices 25-29).",
+      "round": "phase 6 verify",
+      "ruling": "Keep one P1 defect: the 1000-job trim can evict a still-running job and handleExportDone returns before updateAccount/release (worker-pool.js:1097-1098), leaving the job row and account stuck. Strike the slot-leak clause from DA-2. Fix: exempt non-terminal jobs from the trim or split durable history.",
+      "labels": [
+        "[VERIFIED]",
+        "[CONSENSUS]"
+      ]
+    },
+    {
+      "id": "D7",
+      "issue": "What status vocabulary may P0-1's acceptance use?",
+      "sides": [
+        "FEATURES.md:93 'queued/running/done/failed'",
+        "CL-6 / COR-10 / DA-4: no 'failed' writer"
+      ],
+      "deciding_evidence": "worker-pool.js:1158 `status: \"error\"`; store.js:206 `job.status = \"unknown\"`; :411 cancelled; grep for status 'failed' returns 0. Manifest file status 'failed' (exporter.py:961) is a different noun.",
+      "round": "phase 6 verify (CL-6)",
+      "ruling": "Use queued/running/twofa/unknown/done/error/cancelled. Either add a deliberate UI grouping 'failed' = error|unknown|cancelled and say so, or rename the acceptance. Mention 'unknown' explicitly in the plan (the word appears nowhere in FEATURES today).",
+      "labels": [
+        "[VERIFIED]",
+        "[CONSENSUS]"
+      ]
+    },
+    {
+      "id": "D8",
+      "issue": "P0-3 persistence and ordering: ARCH-5 P1 vs CL-7/COR-6 P2; COR-7 LIFO.",
+      "sides": [
+        "ARCH-5 (review) P1",
+        "CL-7 / COR-6 (review) P2",
+        "COR-7 LIFO",
+        "DA-6 boot sort"
+      ],
+      "deciding_evidence": "store.js:50-117 defaultAccount and :398-416 updateAccount whitelist; worker-pool.js:171-179 boot sort by rank/notesMissing/createdAt; :731 `this.queue.unshift(jobId)`; CB-5 dropped because CL-7 already names both whitelists.",
+      "round": "review + completeness audit",
+      "ruling": "One defect; keep P1 because the stated acceptance cannot pass. Add priority/order/note to defaultAccount and updateAccount, sort the boot queue with operator order first, insert by explicit order (not unshift), and give selection a single owner (the URL, per ARCH-5). Rename away from the server-only PRIORITY_IMAGE_EMAILS concept.",
+      "labels": [
+        "[VERIFIED]",
+        "[CONSENSUS]"
+      ]
+    },
+    {
+      "id": "D9",
+      "issue": "PERF-6: does a 500-account bulk action really fail, and at which limit?",
+      "sides": [
+        "PERF-6 / DA-8 (review) vs verifier counter-case"
+      ],
+      "deciding_evidence": "admin.js:69/74 60 per 10 s; worker-pool.js:559 `this.queue.length >= config.worker.maxQueue` with config.js:118 maxQueue 500; verifier: exactly 500 fits with an empty queue, so 'rejects the last request' is off by one; any pre-existing queue rejects earlier.",
+      "round": "phase 6 verify",
+      "ruling": "P1 stands on the 60/10 s guard alone (500 calls need >= 84 s). Correct the MAX_QUEUE clause: a server-side loop still hits the cap when the queue is partly full. Require one admin:exportMany returning per-id queued/rejected results and an acceptance at 500 with a partly full queue.",
+      "labels": [
+        "[VERIFIED]",
+        "[DISPUTED]"
+      ]
+    },
+    {
+      "id": "D10",
+      "issue": "P0-4: can the dashboard deliver 'failed separate from missing'?",
+      "sides": [
+        "ARCH-2 P1 / DA-5 P1 / CL-8 P2",
+        "FEATURES.md:96 dashboard framing"
+      ],
+      "deciding_evidence": "exporter.py:212 seven columns; :961 failed row with size 0 and empty sha; :260 summary WHERE status='done'; verify.py:30 done/skipped only; verify.py:269 gap=live-ids; admin.js:36-38 mode enum has no key list.",
+      "round": "phase 6 verify (ARCH-2, DA-5 CONFIRMED)",
+      "ruling": "P0-4 is Python-side. Required: idempotent ALTER for reason + attempt; record reason at :961; count failed in summary; accept an explicit key list for retry; change missing to live - (done union skipped union failed) and surface failed separately. Acceptance must assert a seeded failure does not increment missing, not merely that a row renders.",
+      "labels": [
+        "[VERIFIED]",
+        "[CONSENSUS]"
+      ]
+    },
+    {
+      "id": "D11",
+      "issue": "P1-1: images-only, and whether 142/142 tiles are .mp4.",
+      "sides": [
+        "plan and screenshot 17 vs COR-8 probe + CL-5 + client S5"
+      ],
+      "deciding_evidence": "Verifier probe: default total 142, videos 20, kindCounts {'unclassified':142}, kind='photo' total 0; export.js:314/348 derive and filter kind; Scan/vlm-index.json absent; PhotosTab.jsx:129 deps omit kind; client S5 supported.",
+      "round": "phase 6 verify + challenge gate + review",
+      "ruling": "Correct the premise: 20 of 142 are .mp4, 122 are stills, and 'Photo' currently returns zero because kind is an optional VLM label. Implement images-only as `item.video === false` (a real field), not kind='photo'; fix the kind dependency in PhotosTab.jsx:129 and LibraryTab.jsx:309 (CB-4); group a still and its proxy as one tile; acceptance must assert both no .mp4 tiles and still+proxy appearing once.",
+      "labels": [
+        "[VERIFIED]",
+        "[CONSENSUS]"
+      ]
+    },
+    {
+      "id": "D12",
+      "issue": "P1-3: is global search new, and what does it cost?",
+      "sides": [
+        "CL-1 (review) vs FEATURES.md:104",
+        "PERF-1 / PERF-11 on cost"
+      ],
+      "deciding_evidence": "LibraryTab.jsx:424 placeholder, :432 'All accounts', library.js:762 scope filter, Admin.jsx:338/612, screenshot 18 with hits from two accounts; PERF-1: buildCatalog inline at api.js:407 with TTL 120 s (library.js:717) and 30 s poll (LibraryTab.jsx:264), ~7.1 s per 500-account rebuild.",
+      "round": "phase 6 verify (CL-1, PERF-1 CONFIRMED)",
+      "ruling": "P1-3 is saved searches + URL-restorable query/deep link on the existing /library view, not a new search. Add a scale clause: serve the last good catalog and rebuild off the request path, and size the acceptance at 500 accounts. PERF-2 (S4 HEAD storm) stays P2 until the deployment is known to set S4_*.",
+      "labels": [
+        "[VERIFIED]",
+        "[DISPUTED]"
+      ]
+    }
+  ],
+  "findings_by_severity": {
+    "P0": {
+      "count": 0,
+      "note": "This bucket is empty. No reviewer called a defect P0 and verify.json's p1_that_should_become_p0 is empty. The contract needs an existing defect plus a symptom sentence naming who sees what. The worst current symptoms are: an operator restarts the socket and an exporting account stays 'exporting' until re-export (restart cluster); at >1000 jobs, one job row vanishes and its account never reaches done (eviction); the header shows CONNECTED 0 after successful exports (CB-6). All are bounded, self-recoverable or cosmetic; none is data loss."
+    },
+    "P1": {
+      "panel_count": 21,
+      "completeness_count": 2,
+      "ids_panel": [
+        "ARCH-2",
+        "ARCH-3",
+        "ARCH-4",
+        "ARCH-5",
+        "CL-1",
+        "CL-2",
+        "CL-4",
+        "CL-6",
+        "CL-10",
+        "COR-1",
+        "COR-2",
+        "COR-3",
+        "COR-4",
+        "COR-5",
+        "COR-8",
+        "DA-1",
+        "DA-2",
+        "DA-3",
+        "DA-5",
+        "PERF-1",
+        "PERF-6"
+      ],
+      "ids_completeness": [
+        "CB-1",
+        "CB-2"
+      ],
+      "clusters": [
+        "data/coverage contract (ARCH-2, CL-2, COR-1/2/3, DA-3, DA-5)",
+        "job lifecycle (ARCH-3/4, COR-4/5, CL-4/6, DA-1/2)",
+        "P0-3 persistence (ARCH-5)",
+        "P1-1 premise (COR-8)",
+        "P1-3 already exists (CL-1)",
+        "catalog rebuild cost (PERF-1)",
+        "bulk limits (PERF-6)",
+        "inventory accuracy (CL-10)",
+        "acceptance fixtures (CB-1, CB-2)"
+      ]
+    },
+    "P2": {
+      "panel_count": 27,
+      "completeness_count": 4,
+      "ids_panel": [
+        "ARCH-1",
+        "ARCH-6",
+        "CL-3",
+        "CL-5",
+        "CL-7",
+        "CL-8",
+        "CL-9",
+        "CL-11",
+        "CL-12",
+        "COR-6",
+        "COR-7",
+        "COR-9",
+        "COR-10",
+        "DA-4",
+        "DA-6",
+        "DA-7",
+        "DA-8",
+        "PERF-2",
+        "PERF-3",
+        "PERF-4",
+        "PERF-5",
+        "PERF-7",
+        "PERF-8",
+        "PERF-9",
+        "PERF-10",
+        "PERF-11",
+        "PERF-12"
+      ],
+      "ids_completeness": [
+        "CB-3",
+        "CB-4",
+        "CB-6",
+        "CB-7"
+      ],
+      "note": "Includes the three verifier downgrades: ARCH-1, PERF-2, PERF-5."
+    },
+    "P3": {
+      "panel_count": 3,
+      "ids": [
+        "PERF-13",
+        "PERF-14",
+        "PERF-15"
+      ]
+    }
+  },
+  "action_items": [
+    {
+      "rank": 1,
+      "priority": "P0",
+      "id": "A1",
+      "action": "Rewrite P0-2 as a Python-produced, web-rendered matrix with one unit. Keep verify.areas; add read_ok in enumerate_live; emit {unread:true} instead of live 0/missing 0. Define downloaded = distinct manifest key with status IN ('done','skipped') (113 for example.harvest); show 142 disk files as a diagnostic only; add bytes/last-export from account.export. Extend the mock to send totals.areas and the real manifest path (CB-1). Acceptance: 113 on both oracles, a zero-download account, and one injected failed album read that renders 'unavailable'.",
+      "files": [
+        "FEATURES.md:94",
+        "python/worker/verify.py:209,212-219,269-276",
+        "src/admin/OverviewTab.jsx:34-44,238",
+        "server/socket/worker-pool.js:1131-1132,1255",
+        "server/test/mock-worker.mjs:151"
+      ],
+      "cost_of_inaction": "The implementer builds a second reader or a disk counter and ships a matrix that contradicts the existing Verify panel by 29 files; the operator's central question gets two answers.",
+      "label": "[VERIFIED][CONSENSUS]"
+    },
+    {
+      "rank": 2,
+      "priority": "P0",
+      "id": "A2",
+      "action": "Fix the job lifecycle before P0-1/P0-3. Requeue 'unknown' on boot (markStaleJobs at store.js:130 runs before socket/index.js:35, so worker-pool.js:146-156 is dead); exempt non-terminal jobs from the 1000-job trim (store.js:169-173) or split durable history; store last message on the job (DA-7); use queued/running/twofa/unknown/done/error/cancelled and map or rename 'failed'; fix the dead cancelled guard (worker-pool.js:1193). Acceptance adds a restart test and a >1000-job test.",
+      "files": [
+        "FEATURES.md:82-83,93",
+        "server/store.js:31,130,145,169-173,205-207",
+        "server/socket/index.js:14,35",
+        "server/socket/worker-pool.js:144-156,1097-1098,1158,1193,1475",
+        "src/admin/OverviewTab.jsx / jobs view"
+      ],
+      "cost_of_inaction": "Every deploy strands in-flight exports silently; the new jobs view shows 'unknown' as an unlabelled terminal row and P0-3's 'order persists after restart' passes while recovering nothing.",
+      "label": "[VERIFIED][CONSENSUS]"
+    },
+    {
+      "rank": 3,
+      "priority": "P0",
+      "id": "A3",
+      "action": "Make P0-3's persistence and bulk contract explicit. Add priority/order/note to defaultAccount (store.js:50-117) and updateAccount (398-416); sort the boot queue with operator order first (worker-pool.js:171-179) and insert by it (COR-7, :731); keep selection only in the URL. Add one admin:exportMany with its own limit returning per-id queued/rejected (60/10 s at admin.js:69,74; MAX_QUEUE at worker-pool.js:559); accept 500 accounts with a partly full queue.",
+      "files": [
+        "FEATURES.md:95",
+        "server/store.js:50-117,398-416",
+        "server/socket/worker-pool.js:171-179,559,731",
+        "server/socket/admin.js:69,74",
+        "server/config.js:118"
+      ],
+      "cost_of_inaction": "The badge is decorative, the order reverses in-session and vanishes on reload, and a 500-account click silently queues ~60 and rejects ~440.",
+      "label": "[VERIFIED][CONSENSUS]"
+    },
+    {
+      "rank": 4,
+      "priority": "P0",
+      "id": "A4",
+      "action": "Move P0-4 into exporter.py/verify.py. Add an idempotent ALTER for reason + attempt (exporter.py:212), record the reason when a row fails (:961), count failed in the summary (:260), accept an explicit key list for retry (mode enum admin.js:36-38). Change verify missing to live - (done union skipped union failed) (verify.py:30,269) and surface failed separately. Acceptance asserts a seeded failure does not increment missing.",
+      "files": [
+        "FEATURES.md:96",
+        "python/worker/exporter.py:212,260,961",
+        "python/worker/verify.py:30,269",
+        "server/socket/admin.js:36-38"
+      ],
+      "cost_of_inaction": "A dashboard-only implementer invents reasons or shows nothing; one file appears in both 'failed' and 'missing', and retry re-downloads the whole missing set.",
+      "label": "[VERIFIED][CONSENSUS]"
+    },
+    {
+      "rank": 5,
+      "priority": "P1",
+      "id": "A5",
+      "action": "Re-scope P1-1: images-only is `item.video === false`, not kind='photo'; 20 of 142 are .mp4; kind is an absent VLM label and currently returns 0. Fix PhotosTab.jsx:129 and LibraryTab.jsx:309 dependencies, keep the kind control with an 'unclassified' fallback, group still+proxy as one tile, and assert both 'no .mp4 by default' and 'still+proxy appears once'.",
+      "files": [
+        "FEATURES.md:102",
+        "src/admin/PhotosTab.jsx:33,129",
+        "src/admin/LibraryTab.jsx:309",
+        "server/admin/export.js:314,348"
+      ],
+      "cost_of_inaction": "The acceptance passes by hiding 20 tiles while the empty-kind defect survives, and the All view hangs for up to 30 s when the new control is used.",
+      "label": "[VERIFIED][CONSENSUS]"
+    },
+    {
+      "rank": 6,
+      "priority": "P1",
+      "id": "A6",
+      "action": "Re-scope P1-3 to saved searches + URL-restorable query/deep link on the existing All view, and add its scale clause: serve the last good catalog, rebuild off the request path (library.js:717, api.js:407), and size the acceptance at 500 accounts. Do not rebuild search.",
+      "files": [
+        "FEATURES.md:104",
+        "src/admin/LibraryTab.jsx:264,280,424,432",
+        "server/admin/library.js:717,762",
+        "server/admin/api.js:407"
+      ],
+      "cost_of_inaction": "A working 883-line global search is re-implemented, and every fourth 30 s poll blocks the web process for seconds (minutes with S4 on).",
+      "label": "[VERIFIED][DISPUTED]"
+    },
+    {
+      "rank": 7,
+      "priority": "P1",
+      "id": "A7",
+      "action": "Apply the CL-10 amendment verbatim: rows are <button> (Admin.jsx:82), submissions show TOTAL 5 with editable selects (:184-194, screenshot 14), and 'Scan all' is exposed (LibraryTab.jsx:452); drop the manual-connect clause. Then fix the red admin-api suite before using 'test on disk' as acceptance: test 225 expects 401 while api.js:209 returns 200 {ok:false}, and test 310 expects All=3 while Drive is included (CB-3).",
+      "files": [
+        "FEATURES.md:28,33,45",
+        "src/admin/Admin.jsx:82,184-194",
+        "src/admin/LibraryTab.jsx:377-382,452",
+        "server/admin/api.js:209",
+        "server/test/admin-api.test.mjs:225,310",
+        "DASHBOARD_AUDIT.md:25"
+      ],
+      "cost_of_inaction": "P1-6 is sized on a false keyboard baseline, P1-2 on a submissions migration that is partly done, and a standing red suite makes every 'test on disk' claim unfalsifiable.",
+      "label": "[VERIFIED][DISPUTED]"
+    },
+    {
+      "rank": 8,
+      "priority": "P1",
+      "id": "A8",
+      "action": "Extend the mock worker (advertise scan slots; add job:scan/job:verify/job:import handlers) or stop claiming P0-1/P0-3 job states and 'scan selected' from the mock run (CB-2; mock-worker.mjs:55,151).",
+      "files": [
+        "server/test/mock-worker.mjs:55,134,151",
+        "server/socket/worker-pool.js:759,778"
+      ],
+      "cost_of_inaction": "The only acceptance evidence run shows a permanently stuck queue and zero running jobs while the acceptance claims one of each state.",
+      "label": "[VERIFIED]"
+    },
+    {
+      "rank": 9,
+      "priority": "P2",
+      "id": "A9",
+      "action": "Fix the operator-trust headline: CONNECTED must include done (a successful export sets done), and LOCKED must be a real locked count, not the whole error bucket (CB-6; Admin.jsx:141-145, worker-pool.js:1112, store.js:462). Correct FEATURES.md:30's 'computed from account array'.",
+      "files": [
+        "src/admin/Admin.jsx:141-145",
+        "server/store.js:459-470",
+        "server/socket/worker-pool.js:1112",
+        "FEATURES.md:30"
+      ],
+      "cost_of_inaction": "On first load of a campaign the console shows CONNECTED 0 after hundreds of successful exports and a LOCKED number inflated by transient errors.",
+      "label": "[VERIFIED]"
+    },
+    {
+      "rank": 10,
+      "priority": "P2",
+      "id": "A10",
+      "action": "Make the Hide all confirmation match the action: pass the active query to admin:hideAll or use the unfiltered visible total (CB-7; Admin.jsx:437-440, socket/admin.js:231), and keep bulk undo in P2-2.",
+      "files": [
+        "src/admin/Admin.jsx:437-440",
+        "server/socket/admin.js:228-238",
+        "server/store.js:433-457"
+      ],
+      "cost_of_inaction": "A one-row search says 'Hide all 1' and then clears the visible list, with no bulk undo.",
+      "label": "[VERIFIED]"
+    },
+    {
+      "rank": 11,
+      "priority": "P3",
+      "id": "A11",
+      "action": "Carry the remaining P1/P2/P3 items as written (P1-2, P1-4..7, P2-1..6, PERF-3/4/5/7/8/9/10/11 and the P3s), with the resolved corrections in D5-D12 applied. No feature-list rework is needed.",
+      "files": [
+        "FEATURES.md:103-119"
+      ],
+      "cost_of_inaction": "Acceptance stays at demo scale and the scale/polish items remain deferred, but no P0 work is blocked.",
+      "label": "[VERIFIED]"
+    }
+  ],
+  "client_acceptance": {
+    "gate": {
+      "result": "PASS",
+      "client_scenarios": {
+        "total": 6,
+        "supported": 1,
+        "refuted": 5,
+        "untested": 0
+      },
+      "devil_scenarios": {
+        "total": 7,
+        "supported": 6,
+        "refuted": 1,
+        "untested": 0
+      },
+      "note": "Both records predate the debate and meet the >=3 investigated rule; S1-S6 and C1-C7 each cite source/commands. The gate passing does not make the plan accepted: five of six client scenarios refute the plan's premises."
+    },
+    "scenarios": [
+      {
+        "id": "S1",
+        "claim": "P0-2 is new because no matrix exists",
+        "result": "FAIL (refuted)",
+        "evidence": "OverviewTab.jsx:238-251 renders verify.areas; demo.panel has 8 areas; screenshot 02 shows the empty state only because example.harvest has verify:null."
+      },
+      {
+        "id": "S2",
+        "claim": "No global search; P1-3 must add it",
+        "result": "FAIL (refuted)",
+        "evidence": "LibraryTab.jsx:424/432 and library.js:762; screenshot 18 returns hits from two accounts."
+      },
+      {
+        "id": "S3",
+        "claim": "A mock run can produce job state 'failed'",
+        "result": "FAIL (refuted)",
+        "evidence": "worker-pool.js writes error/cancelled/twofa/done; store.js:206 writes unknown; grep 'failed' has no status hit."
+      },
+      {
+        "id": "S4",
+        "claim": "A restart recovers in-flight jobs",
+        "result": "FAIL (refuted)",
+        "evidence": "store.js:206 rewrites running to unknown before socket/index.js:35 builds the pool; worker-pool.js:144-146 accepts only queued/running."
+      },
+      {
+        "id": "S5",
+        "claim": "Selecting 'Photo' shows the same 142 tiles",
+        "result": "PASS (observation supported; the data claim is refuted by COR-8)",
+        "evidence": "PhotosTab.jsx:129 omits kind from deps; screenshot 17 shows 142/142; gallery(root, kind='photo') returns 0 and kindCounts {'unclassified':142}."
+      },
+      {
+        "id": "S6",
+        "claim": "EXPORT_ENABLED=false disables every export control",
+        "result": "FAIL (refuted)",
+        "evidence": "worker-pool.js:556 exempts mode 'urls'; OverviewTab.jsx:210-222 leaves the URL export active."
+      }
+    ],
+    "plan_acceptance_criteria": [
+      {
+        "criterion": "Every P0/P1 has a screenshot or an automated test on disk",
+        "result": "FAIL (not currently trustworthy)",
+        "evidence": "CB-3: admin-api.test.mjs:225 and :310 are stale and red; CL-12: Ping, Verify live, Hide and the All view have no screenshot."
+      },
+      {
+        "criterion": "No change to the /public capture contract",
+        "result": "UNTESTED",
+        "evidence": "Capture page is out of scope and no /public test ran in this council."
+      },
+      {
+        "criterion": "Demo evidence is labelled as demo",
+        "result": "PASS",
+        "evidence": "FEATURES.md:7-9 and :129-134 label the mock and the unproven claims."
+      },
+      {
+        "criterion": "EXPORT_ENABLED=false disables every export control",
+        "result": "FAIL",
+        "evidence": "CL-9: the 'urls' mode is deliberately exempt (worker-pool.js:556) yet appears as an export control (OverviewTab.jsx:210-222)."
+      }
+    ],
+    "p0_acceptance": {
+      "P0-1": "FAIL as written: 'failed' is not a job state; add restart and >1000-job cases.",
+      "P0-2": "FAIL as written: two units (113 vs 142) and no verify result for the named account.",
+      "P0-3": "FAIL as written: no persisted field, front-insert is LIFO, boot sort ignores operator order, 60/10 s rejects a 500-account loop.",
+      "P0-4": "FAIL as written: not dashboard-deliverable; failed rows still count as missing."
+    },
+    "unresolved_critical_assumptions": [
+      "No live verify run exists for example.harvest; screenshot 21 was captured after findings.json (08:51) and already shows the mixed unit (photos exported 124, hidden exported 9).",
+      "Production S4_ENDPOINT/KEY/SECRET and campaign size are unknown; S4 on re-promotes PERF-2 to P1 and makes the catalog rebuild minutes.",
+      "No real socket restart or >1000-job run; the restart/eviction evidence is probes against the production Store class.",
+      "No 1k-photo render, no live iCloud/OCR, no proof a scanned account ever gets vlm-index kinds.",
+      "Whether the intended deployment runs Node >=22.5 (node:sqlite is used by gate.js) and would set a busy timeout if the web read SQLite.",
+      "Whether /public capture tests stay green (out of scope here)."
+    ]
+  },
+  "completeness": {
+    "kept": 6,
+    "dropped": 1,
+    "gate": "All six kept findings citation-VERIFIED; each names an action the panel did not.",
+    "changes_action": [
+      {
+        "id": "CB-1",
+        "severity": "P1",
+        "change": "P0-2's acceptance fixture cannot populate per-area/manifest: mock sends no totals.areas and hard-codes /tmp/mock-manifest.sqlite3; demo areas {}. Fix the mock payload/path or run the acceptance on the real export. Folded into A1."
+      },
+      {
+        "id": "CB-2",
+        "severity": "P1",
+        "change": "The mock advertises no scan slot and has no job:scan/verify/import handler, so P0-1's state matrix and P0-3's 'scan selected' cannot be produced from the only evidence run. Add the handlers or stop claiming those states from the mock. A8."
+      },
+      {
+        "id": "CB-3",
+        "severity": "P2",
+        "change": "Red test is the acceptance gate: admin-api.test.mjs:225 expects 401 while api.js:209 returns 200 {ok:false}; :310 expects All=3 while Drive makes 4. Fix both and add the suite to evidence before criterion 1 is used. A7."
+      },
+      {
+        "id": "CB-4",
+        "severity": "P2",
+        "change": "LibraryTab.jsx:309 omits kind from the fetch deps, so the planned P1-1/P1-3 kind controls null the data and spin up to 30 s in the All view. Fold into A5."
+      },
+      {
+        "id": "CB-6",
+        "severity": "P2",
+        "change": "CONNECTED counts only 'connected' while a successful export sets 'done'; LOCKED is the whole error bucket. Fix accountsStats before calling the screen operator-trust. A9."
+      },
+      {
+        "id": "CB-7",
+        "severity": "P2",
+        "change": "'Hide all N' uses the filtered total while admin:hideAll ignores the query, so a one-row search clears the visible list. Pass the query or use the unfiltered total. A10."
+      }
+    ],
+    "dropped_note": "CB-5 dropped correctly: CL-7 already names both updateAccount and defaultAccount, and prescribes adding the field to both.",
+    "audit_quality": "The completeness seat refuted two of its own scenarios (pagination scope, All-area Drive) and cited a direct test run for CB-3; the kept findings are single-source but each was source-verified."
+  },
+  "what_would_change": "A corrected \u00a74 that names one producer and one unit per P0, uses the real job vocabulary and item.video, and adds restart, >1000-job, failed-live-read and 500-account acceptance cases would raise this to SHIP at 8-9; evidence that the production deployment sets S4_* and runs 500 accounts would instead drop it to 3 by re-promoting PERF-2.",
+  "labels": {
+    "[VERIFIED]": "57 citations: 51 panel findings and 6 completeness findings all matched source (evidence-citations.txt: 51 VERIFIED, 0 blocking).",
+    "[CONSENSUS]": "Restart (4 reviewers), P0-2 reuse (4), P0-3 persistence (4), eviction (4), P0-1 false premises (3), P0-4 Python (3), P1-1 premise (2 + verifier probe), bulk limits (2).",
+    "[SINGLE-SOURCE]": "CL-1 (global search), CB-1, CB-2, CB-3, CB-4, CB-6, CB-7.",
+    "[DISPUTED]": "ARCH-1 (downgraded), PERF-6 (off-by-one corrected), CL-10 (amended), PERF-2 (downgraded, open on production config).",
+    "[CMD-CONFIRMED]": "Restart, eviction, gallery-kind, catalog 1k and admin-api-suite probes/commands as recorded in verify.json and challenge records.",
+    "[STATIC-INFERENCE]": "Any claim about production S4, campaign size, live iCloud or a 1k render; none of those were observed.",
+    "[JUDGE-INTRODUCED]": "No new finding. The label marks only the D3 unit choice (distinct manifest key = 113) synthesized from CL-2, the client's map_validation:58 and the verifier's 104+9/142 arithmetic; a citation-backed choice, not a new defect."
+  },
+  "not_examined": [
+    "Source files were not re-read; all citations come from findings.json, verify.json, the debates, completeness files and the challenge records.",
+    "Screenshots were not opened; their content is taken from the evidence files (01, 02, 14, 17, 18, 21 as cited).",
+    "review-*.json, reflect-*.json, review seat prose, completeness-blind.json, map.md, evidence-tests.txt, evidence-demo.txt and evidence-screens.md were not read.",
+    "The plan's P1-2, P1-4..7 and P2-1..6 were not independently verified.",
+    "No live iCloud, OCR, 1k render, real socket process, 500-account campaign or production deployment was observed.",
+    "The two challenge records were read only to confirm the >=3-scenario gate, not to re-review their code claims."
+  ],
+  "action_priority_legend": "Action priority and defect severity are different axes. Action P0 = must land before coding (the four P0-item contract rewrites); action P1 = must land with the item; P2 = local fix; P3 = carry as written. No defect in findings_by_severity is P0."
+}

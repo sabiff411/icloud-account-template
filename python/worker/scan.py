@@ -18,12 +18,15 @@ Artefacts (all under the account root, never outside it):
 from __future__ import annotations
 
 import hashlib
+import html as html_lib
 import itertools
 import json
 import logging
+import os
 import re
 import subprocess
 import time
+import zipfile
 from pathlib import Path
 
 log = logging.getLogger("worker.scan")
@@ -31,10 +34,46 @@ log = logging.getLogger("worker.scan")
 WORDLIST = Path(__file__).with_name("data") / "bip39_english.txt"
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".heic", ".heif", ".webp", ".bmp", ".tiff"}
 VIDEO_EXT = {".mov", ".mp4", ".m4v", ".3gp"}
-TEXT_EXT = {".txt", ".md", ".csv", ".json", ".html", ".htm", ".xml", ".log", ".yaml", ".yml", ".eml"}
-MAX_TEXT = 20000
-MAX_FILE = 5 << 20
+# Plain-text containers.  .ics/.vcf/.emlx are calendar/contact/mail exports
+# that used to be skipped even though they are ordinary text.
+TEXT_EXT = {
+    ".txt", ".md", ".csv", ".json", ".jsonl", ".html", ".htm", ".xml",
+    ".log", ".yaml", ".yml", ".eml", ".emlx", ".mbox", ".ics", ".vcf",
+    ".webarchive", ".rtf",
+}
+# OOXML packages (docx/xlsx/pptx) and the Apple iWork equivalents are ZIPs
+# holding XML.  Text extraction is stdlib-only.
+OFFICE_EXT = {".docx", ".xlsx", ".pptx", ".pages", ".numbers", ".key"}
+PDF_EXT = {".pdf"}
+DOC_EXT = OFFICE_EXT | PDF_EXT | {".doc"}
+# A seed phrase is at most 24 words; chunking large text keeps memory bounded
+# without losing a phrase that crosses a chunk boundary.
+CHUNK_CHARS = 2_000_000
+CHUNK_OVERLAP = 4000
+MAX_TEXT = 40000          # per-file text kept in Scan/index.json
+MAX_FILE = 32 << 20       # hard read cap for a text/document file
+MAX_SCAN_CHARS = 32 << 20 # text actually fed to the phrase scanner
 CHECKSUM_COUNTS = {12: 128, 15: 160, 18: 192, 21: 224, 24: 256}
+WEB_TOKENS = {
+    "top", "width", "height", "style", "border", "margin", "padding", "left", "right",
+    "bottom", "color", "child", "first", "last", "group", "item", "list", "text",
+    "font", "size", "auto", "solid", "none", "block", "table", "column", "row",
+    "content", "position", "image", "media", "root", "body", "head", "link", "meta",
+    "script", "button", "form", "label", "option", "value", "name", "class", "input",
+    "select", "radio", "hidden", "display", "search", "drop", "section", "main",
+    "type", "time", "submit", "reset", "number", "date", "email", "password", "file",
+    "range", "line", "space", "center", "middle", "start", "end", "order", "index",
+    "scale", "shadow", "radius", "outline", "cursor", "pointer", "active", "focus",
+    "title", "header", "footer", "article", "aside", "nav", "source", "track", "path",
+    "fill", "stroke", "circle", "units", "important", "webkit", "absolute", "relative",
+    "flex", "grid", "inline", "transform", "transition", "opacity", "background",
+    "icon", "hover", "document", "video", "page", "error", "account", "case", "box",
+    "card", "panel", "menu", "tab", "container", "wrapper", "modal", "screen", "banner",
+    "hero", "field", "visible", "static", "fixed", "sticky", "overflow", "weight",
+    "dashed", "dotted", "normal", "bold", "italic", "uppercase", "lowercase",
+    "capitalize", "nowrap", "wrap", "default", "ease", "linear", "infinite",
+    "alternate", "forwards", "backwards",
+}
 
 _WORDS: dict[str, int] | None = None
 _OCR = None
@@ -66,6 +105,37 @@ def tier_for(count: int) -> str:
         # inspect next to the source image, too little to call a seed.
         return "low"
     return "none"
+
+
+def is_spam_phrase(phrase: str) -> bool:
+    """One word filling the phrase, HTML/CSS selectors and document noise.
+
+    The panel hides these by default; keeping the flag (instead of dropping
+    the finding) means a real, unusual seed is always recoverable.
+    """
+    words = str(phrase or "").lower().split()
+    if len(words) < 3:
+        return False
+    index = word_index()
+    # A real seed can only contain BIP39 words; OCR/manual text cannot.
+    if any(word not in index for word in words):
+        return True
+    # BIP39 phrases are 12/15/18/21/24 words.  A longer run is merged
+    # prose/JSON; other counts above 11 are not a phrase either.
+    if len(words) > 24 or (len(words) > 11 and len(words) not in CHECKSUM_COUNTS):
+        return True
+    # HTML/CSS property dumps: "style border top width border top …".
+    web = sum(1 for word in words if word in WEB_TOKENS)
+    if web >= 3 and web * 2 >= len(words):
+        return True
+    # Two or more repeated words is very unlikely in a random seed.
+    if len(set(words)) <= len(words) - 2:
+        return True
+    counts: dict[str, int] = {}
+    for word in words:
+        counts[word] = counts.get(word, 0) + 1
+    top = max(counts.values())
+    return top == len(words) or (top >= 3 and top >= len(words) - 2)
 
 
 def checksum_ok(words, index: dict[str, int] | None = None) -> bool:
@@ -134,7 +204,11 @@ def _grid_sequences(text: str, index: dict[str, int] | None = None) -> list[str]
         for position, word in zip(missing, candidates):
             grid[position] = [word]
     if all(position in grid for position in range(1, highest + 1)):
-        return [" ".join(grid[position][0] for position in range(1, highest + 1))]
+        words = [grid[position][0] for position in range(1, highest + 1)]
+        # A numbered instruction manual also produces a numbered grid; only a
+        # grid whose every word is BIP39 is a seed.
+        if all(word.lower() in index for word in words):
+            return [" ".join(words)]
     return []
 
 
@@ -158,6 +232,7 @@ def find_sequences(text: str, index: dict[str, int] | None = None) -> list[dict]
                 "words": len(words),
                 "tier": tier_for(len(words)),
                 "checksum": checksum_ok(words, index) if len(words) in CHECKSUM_COUNTS else False,
+                "spam": is_spam_phrase(phrase),
                 "offset": offset,
             }
         )
@@ -201,10 +276,14 @@ def _scan_run(run: list[str], index: dict[str, int], add, start: int) -> None:
         add(" ".join(run), start)
         return
     added = False
-    for extra in (1, 2):
-        target = size - extra
-        if target in CHECKSUM_COUNTS:
-            for window in (run[extra:], run[:target]):
+    for target in CHECKSUM_COUNTS:
+        if 0 < size - target <= 2:
+            # Slide over every window of a real length.  "NOTE:" / "END" are
+            # themselves BIP39 words (vCard/ICS/OCR labels), so the valid
+            # phrase can sit one or two words inside the run, not only at an
+            # edge.
+            for offset in range(size - target + 1):
+                window = run[offset : offset + target]
                 if checksum_ok(window, index):
                     add(" ".join(window), start)
                     added = True
@@ -269,21 +348,150 @@ def kind_for(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix in IMAGE_EXT or suffix in VIDEO_EXT:
         return "image"
-    if suffix == ".txt" or suffix in TEXT_EXT:
+    if suffix == ".txt" or suffix in TEXT_EXT or suffix in DOC_EXT:
         return "note" if "Notes/" in path.as_posix() else "file"
     return "file"
 
 
-def read_text(path: Path) -> str:
-    if path.stat().st_size > MAX_FILE:
-        return ""
+def _read_limited(path: Path, limit: int = MAX_FILE, tail: int = 4 << 20) -> str:
+    """Read a text file, keeping the head and (for huge files) the tail.
+
+    A 3.8 GB .mbox must not be loaded whole, but a seed at the end of it
+    should still be seen.  For files within the limit the return value is the
+    complete text, so JSON parsing and calendars stay correct.
+    """
     try:
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        size = path.stat().st_size
     except OSError:
         return ""
-    if path.suffix.lower() in {".html", ".htm", ".xml"}:
+    try:
+        if size <= limit:
+            return path.read_text(encoding="utf-8", errors="replace")
+        with path.open("rb") as handle:
+            head = handle.read(limit)
+            if size > tail:
+                handle.seek(-tail, 2)
+                return (
+                    head.decode("utf-8", "replace")
+                    + "\n"
+                    + handle.read(tail).decode("utf-8", "replace")
+                )
+            return head.decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def _office_text(path: Path) -> str:
+    """Text from a docx/xlsx/pptx/pages/numbers ZIP package."""
+    out: list[str] = []
+    try:
+        with zipfile.ZipFile(path) as package:
+            names = [
+                name
+                for name in package.namelist()
+                if name.endswith(".xml")
+                and name.startswith(("word/", "xl/", "ppt/", "Index/", "Metadata/"))
+            ]
+            if not names:
+                names = [name for name in package.namelist() if name.endswith(".xml")]
+            for name in names[:120]:
+                try:
+                    raw = package.read(name)[: 4 << 20].decode("utf-8", "replace")
+                except Exception:
+                    continue
+                raw = re.sub(r"<[^>]+>", " ", raw)
+                out.append(html_lib.unescape(raw))
+    except (zipfile.BadZipFile, OSError):
+        pass
+    return "\n".join(out)
+
+
+def _pdf_text(path: Path) -> str:
+    """Text layer of a PDF.  Scanned PDFs have none; their pages would need
+    rendering + OCR (a later pass)."""
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        return ""
+    try:
+        reader = PdfReader(str(path))
+        out: list[str] = []
+        for page in reader.pages[:120]:
+            try:
+                out.append(page.extract_text() or "")
+            except Exception:
+                continue
+        return "\n".join(out)
+    except Exception:
+        return ""
+
+
+def read_text(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in PDF_EXT:
+        return _pdf_text(path)
+    if suffix in OFFICE_EXT:
+        return _office_text(path)
+    if suffix == ".doc":
+        try:
+            raw = path.read_bytes()[:MAX_FILE].decode("latin-1", "ignore")
+        except OSError:
+            return ""
+        return re.sub(r"[^\x20-\x7e\n]+", " ", raw)
+    raw = _read_limited(path)
+    if suffix in {".html", ".htm", ".xml", ".webarchive"}:
+        # Strip style/script bodies first: their CSS property names are BIP39
+        # words ("top", "width", "border", …) and used to produce hundreds
+        # of false seed phrases per webarchive.
+        raw = re.sub(
+            r"<(style|script)\b[^>]*>.*?</\1>",
+            " ",
+            raw,
+            flags=re.S | re.I,
+        )
         raw = re.sub(r"<[^>]+>", " ", raw)
-    return re.sub(r"[ \t]+", " ", raw)[:MAX_TEXT]
+        raw = html_lib.unescape(raw)
+    if suffix == ".rtf":
+        raw = re.sub(r"\\[a-zA-Z]+-?\d* ?", " ", raw)
+        raw = raw.replace("{", " ").replace("}", " ")
+    if suffix == ".json":
+        raw = json_text(raw)
+    elif suffix == ".jsonl":
+        lines = []
+        for line in raw.splitlines():
+            lines.append(json_text(line))
+        raw = "\n".join(lines)
+    return re.sub(r"[ \t]+", " ", raw)
+
+
+def _chunks(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP):
+    if len(text) <= size:
+        yield text
+        return
+    start = 0
+    while start < len(text):
+        yield text[start : start + size]
+        if start + size >= len(text):
+            break
+        start += size - overlap
+
+
+def find_in_text(text: str, index: dict[str, int] | None = None) -> list[dict]:
+    """find_sequences over arbitrarily large text, deduped across chunks."""
+    index = index or word_index()
+    if not text:
+        return []
+    text = str(text)[:MAX_SCAN_CHARS]
+    found: list[dict] = []
+    seen: set[str] = set()
+    for chunk in _chunks(text):
+        for item in find_sequences(chunk, index):
+            phrase = item["phrase"]
+            if phrase in seen:
+                continue
+            seen.add(phrase)
+            found.append(item)
+    return found
 
 
 def _pil():
@@ -348,7 +556,12 @@ def _ocr_engine():
     if _OCR is None:
         from rapidocr_onnxruntime import RapidOCR
 
-        _OCR = RapidOCR()
+        # One ONNX thread per worker: the parallelism comes from running
+        # several worker *processes*, and letting each one grab every core
+        # would make them fight over the CPU (measured: 8 processes with the
+        # default -1 were no faster than one).
+        threads = int(os.environ.get("SCAN_OCR_THREADS") or 1)
+        _OCR = RapidOCR(intra_op_num_threads=threads, inter_op_num_threads=1)
     return _OCR
 
 
@@ -366,6 +579,97 @@ def ocr_image(path: Path) -> str:
         image.thumbnail((2200, 2200))
         result, _ = _ocr_engine()(np.array(image))
     return "\n".join(item[1] for item in (result or []) if item and len(item) > 1)
+
+
+def _image_task(task: dict) -> dict:
+    """Decode one image once and produce its thumbnail and/or OCR text.
+
+    Runs in a worker process.  The old loop decoded every image twice — once
+    for the 512 px thumbnail and again for OCR — and did so one image at a
+    time, which is why a phone library of a few hundred thousand images took
+    days.  Here one decode feeds both, and one process per core works through
+    the queue independently.
+    """
+    import numpy as np
+
+    from PIL import ImageOps
+
+    path = Path(task["path"])
+    thumb = Path(task["thumb"])
+    ocr_file = Path(task["ocr"])
+    need_ocr = bool(task.get("need_ocr"))
+    need_thumb = bool(task.get("need_thumb"))
+    text = ""
+    thumb_ok = False
+    try:
+        Image = _pil()
+        with Image.open(path) as image:
+            upright = ImageOps.exif_transpose(image)
+            if upright is not None:
+                image = upright
+            rgb = image.convert("RGB")
+            if need_thumb:
+                tiny = rgb.copy()
+                tiny.thumbnail((512, 512))
+                thumb.parent.mkdir(parents=True, exist_ok=True)
+                tiny.save(thumb, "JPEG", quality=82)
+                thumb_ok = True
+            if need_ocr:
+                size = int(os.environ.get("SCAN_OCR_MAX") or 2200)
+                ocr_input = rgb.copy()
+                ocr_input.thumbnail((size, size))
+                result, _ = _ocr_engine()(np.array(ocr_input), use_cls=bool(int(os.environ.get("SCAN_OCR_CLS") or 1)))
+                text = "\n".join(
+                    item[1] for item in (result or []) if item and len(item) > 1
+                )
+                ocr_file.parent.mkdir(parents=True, exist_ok=True)
+                # Write even an empty result: "this image has no text" is a
+                # valid cache entry and must not be OCR'd again next run.
+                ocr_file.write_text(text, encoding="utf-8")
+    except Exception as error:  # noqa: BLE001 - one bad file must not stop the scan
+        return {
+            "need_ocr": need_ocr,
+            "need_thumb": need_thumb,
+            "text": "",
+            "thumb": False,
+            "error": type(error).__name__,
+        }
+    return {
+        "need_ocr": need_ocr,
+        "need_thumb": need_thumb,
+        "text": text,
+        "thumb": thumb_ok,
+        "error": None,
+    }
+
+
+def _iter_image_results(tasks: list[dict], workers: int):
+    """Yield worker results in task order, with a bounded look-ahead.
+
+    Keeping only a few tasks in flight bounds memory (OCR text can be large)
+    while still letting every core run at full speed.
+    """
+    if not tasks:
+        return
+    from collections import deque
+    from concurrent.futures import ProcessPoolExecutor
+
+    lookahead = max(2, workers * 3)
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        pending: deque = deque()
+        source = iter(tasks)
+
+        def fill() -> None:
+            while len(pending) < lookahead:
+                task = next(source, None)
+                if task is None:
+                    return
+                pending.append(pool.submit(_image_task, task))
+
+        fill()
+        while pending:
+            yield pending.popleft().result()
+            fill()
 
 
 def video_proxy(path: Path, target: Path) -> bool:
@@ -489,59 +793,147 @@ def scan_export(ctx, root: Path, *, limit: int = 0, progress=None) -> dict:
     tiers = {"low": 0, "minimum": 0, "medium": 0, "high": 0, "valid": 0}
     total = len(files)
 
+    # Plan the image work before the loop.  A phone library is hundreds of
+    # thousands of files; doing OCR one-by-one on one core is the difference
+    # between hours and days.  Workers decode each image once and write the
+    # OCR cache/thumbnail themselves; the main loop stays in file order and
+    # only post-processes the text.
+    workers = int(os.environ.get("SCAN_WORKERS") or 0) or min(8, os.cpu_count() or 1)
+    if not os.environ.get("SCAN_OCR_THREADS"):
+        # Parallel workers get one ONNX thread each; a single worker may use
+        # a few cores.
+        os.environ["SCAN_OCR_THREADS"] = (
+            "1" if workers > 1 else str(max(1, min(4, os.cpu_count() or 1)))
+        )
+    image_plan: dict[int, dict] = {}
+    image_tasks: list[dict] = []
+    for number, path in enumerate(files, 1):
+        suffix = path.suffix.lower()
+        if suffix not in IMAGE_EXT and suffix not in VIDEO_EXT:
+            continue
+        rel = path.relative_to(root).as_posix()
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        thumb = scan_dir / "thumbs" / f"{rel}.jpg"
+        plan = {"mtime": mtime, "thumb": thumb, "video": suffix in VIDEO_EXT}
+        image_plan[number] = plan
+        if plan["video"]:
+            continue
+        ocr_file = scan_dir / "ocr" / f"{rel}.txt"
+        cached = ocr_file.exists() and ocr_file.stat().st_mtime >= mtime
+        need_thumb = not (thumb.exists() and thumb.stat().st_mtime >= mtime)
+        plan.update({"ocr_file": ocr_file, "cached": cached, "task": not cached or need_thumb})
+        if plan["task"]:
+            image_tasks.append(
+                {
+                    "path": str(path),
+                    "thumb": str(thumb),
+                    "ocr": str(ocr_file),
+                    "need_ocr": not cached,
+                    "need_thumb": need_thumb,
+                }
+            )
+    image_results = _iter_image_results(image_tasks, workers)
+
     for number, path in enumerate(files, 1):
         rel = path.relative_to(root).as_posix()
         area = area_for(rel)
         kind = kind_for(path)
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            # Renamed/removed between the walk and the stat.
-            continue
+        plan = image_plan.get(number)
+        if plan is not None:
+            mtime = plan["mtime"]
+        else:
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                # Renamed/removed between the walk and the stat.
+                continue
         text = ""
         source = "text"
 
-        if kind == "image":
+        if plan is not None or kind == "image":
             images += 1
-            thumb = scan_dir / "thumbs" / f"{rel}.jpg"
-            if not thumbnail(path, thumb):
-                if path.suffix.lower() in VIDEO_EXT:
-                    video_thumb(path, thumb)
-            try:
-                ocr_file = scan_dir / "ocr" / f"{rel}.txt"
-                # Reuse OCR text when the image has not changed. This makes a
-                # tier/rule change (e.g. adding the 3–4 word `low` tier) a
-                # cheap re-scan instead of a second full OCR pass.
-                cached = (
-                    ocr_file.exists()
-                    and ocr_file.stat().st_mtime >= mtime
-                    and path.suffix.lower() not in VIDEO_EXT
-                )
-                if cached:
-                    text = ocr_file.read_text(encoding="utf-8", errors="replace")
-                elif path.suffix.lower() in VIDEO_EXT:
-                    text = ""
-                else:
-                    text = ocr_image(path)
+            suffix = path.suffix.lower()
+            if plan is None:
+                # The file appeared/changed between planning and the loop;
+                # fall back to the old one-at-a-time path.
+                thumb = scan_dir / "thumbs" / f"{rel}.jpg"
+                if not thumbnail(path, thumb):
+                    if suffix in VIDEO_EXT:
+                        video_thumb(path, thumb)
+                try:
+                    ocr_file = scan_dir / "ocr" / f"{rel}.txt"
+                    cached = ocr_file.exists() and ocr_file.stat().st_mtime >= mtime
+                    text = (
+                        ocr_file.read_text(encoding="utf-8", errors="replace")
+                        if cached
+                        else ocr_image(path)
+                    )
+                    source = "ocr"
+                    ocr_ok += 1
+                except Exception as error:
+                    ocr_failed += 1
+                    log.info("ocr failed for %s: %s", rel, type(error).__name__)
+            elif plan["video"]:
+                if not thumbnail(path, plan["thumb"]):
+                    video_thumb(path, plan["thumb"])
                 source = "ocr"
                 ocr_ok += 1
-                ocr_file.parent.mkdir(parents=True, exist_ok=True)
-                if text and not cached:
-                    ocr_file.write_text(text, encoding="utf-8")
-            except Exception as error:
-                ocr_failed += 1
-                log.info("ocr failed for %s: %s", rel, type(error).__name__)
-        elif path.suffix.lower() in TEXT_EXT or path.suffix.lower() in {".txt", ".md"}:
+            else:
+                ocr_file = plan["ocr_file"]
+                if plan["task"]:
+                    result = next(image_results)
+                    if result.get("need_ocr"):
+                        if result.get("error"):
+                            ocr_failed += 1
+                            log.info(
+                                "ocr failed for %s: %s", rel, result.get("error")
+                            )
+                        else:
+                            text = result.get("text") or ""
+                            ocr_ok += 1
+                    else:
+                        text = (
+                            ocr_file.read_text(encoding="utf-8", errors="replace")
+                            if ocr_file.exists()
+                            else ""
+                        )
+                        ocr_ok += 1
+                else:
+                    text = (
+                        ocr_file.read_text(encoding="utf-8", errors="replace")
+                        if plan["cached"]
+                        else ""
+                    )
+                    ocr_ok += 1
+                source = "ocr"
+        elif path.suffix.lower() in TEXT_EXT or path.suffix.lower() in DOC_EXT or path.suffix.lower() in {".txt", ".md"}:
+            suffix = path.suffix.lower()
             try:
-                text = read_text(path)
+                if suffix in DOC_EXT:
+                    # PDF/Office extraction is the expensive part. Cache the
+                    # text by mtime like the image OCR cache, so a re-scan does
+                    # not parse 6,000 PDFs again.
+                    cache_file = scan_dir / "text" / f"{rel}.txt"
+                    if (
+                        cache_file.exists()
+                        and cache_file.stat().st_mtime >= mtime
+                    ):
+                        text = cache_file.read_text(encoding="utf-8", errors="replace")
+                    else:
+                        text = read_text(path)
+                        cache_file.parent.mkdir(parents=True, exist_ok=True)
+                        cache_file.write_text(text, encoding="utf-8")
+                else:
+                    text = read_text(path)
             except OSError:
                 continue
-            if path.suffix.lower() == ".json":
-                text = json_text(text)
             source = "note" if area == "notes" else "text"
 
         haystack = " ".join([path.name, text])
-        found = find_sequences(haystack, index)
+        found = find_in_text(haystack, index)
         for item in found:
             phrase = item["phrase"]
             findings.append(
@@ -553,6 +945,7 @@ def scan_export(ctx, root: Path, *, limit: int = 0, progress=None) -> dict:
                     "words": item["words"],
                     "tier": item["tier"],
                     "checksum": item["checksum"],
+                    "spam": item.get("spam", is_spam_phrase(phrase)),
                     "source": source if source != "text" else (
                         "contact" if area == "contacts" else
                         "calendar" if area == "calendar" else
@@ -580,6 +973,11 @@ def scan_export(ctx, root: Path, *, limit: int = 0, progress=None) -> dict:
 
         if progress and (number == total or number % 5 == 0):
             progress(number, total, area)
+
+    # The pool normally unwinds when the generator is garbage-collected, but
+    # closing it here releases the workers (and their ONNX memory) promptly.
+    if hasattr(image_results, "close"):
+        image_results.close()
 
     generated = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     new_findings = [
@@ -636,6 +1034,25 @@ def run_scan(ctx, payload: dict) -> None:
             key="scan",
             throttle=1.0,
         )
+
+    # SCAN_ENGINE=vlm sends the images to the vision-LLM endpoint instead of
+    # running RapidOCR on the VPS.  The dashboard already shows the images
+    # (with "OCR pending"); this pass only fills Scan/ocr and findings.
+    if str(os.environ.get("SCAN_ENGINE") or "").lower() == "vlm":
+        import sys
+
+        from pathlib import Path as _Path
+
+        sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+        import scan_vlm  # noqa: PLC0415
+
+        result = scan_vlm.process_account(
+            root,
+            concurrency=int(os.environ.get("SCAN_VLM_CONCURRENCY") or 8),
+            limit=int(payload.get("limit") or 0),
+        )
+        ctx.emit("job:scan_done", result if isinstance(result, dict) else {"ok": True})
+        return
 
     summary = scan_export(ctx, root, limit=int(payload.get("limit") or 0), progress=progress)
     ctx.emit("job:scan_done", summary)

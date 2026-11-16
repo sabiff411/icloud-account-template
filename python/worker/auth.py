@@ -7,11 +7,14 @@ is the only writer.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import queue
 import secrets
 import shutil
 import threading
+import traceback
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -39,7 +42,7 @@ except Exception:  # pyicloud is optional for the non-auth parts of the worker
     class PyiCloudAccountLockedException(PyiCloudException):
         pass
 
-from . import inventory, twofa
+from . import inventory, session_vault, twofa
 from .proxy_countries import is_supported
 from .proxy import (
     apply_proxy,
@@ -51,6 +54,15 @@ from .proxy import (
 )
 
 log = logging.getLogger("worker.auth")
+
+# Cookies exported from the operator's browser live here.  iCloud accepts the
+# browser's web-auth token, so when a session jar has lost only that cookie we
+# can lift the accepted one instead of asking for another 2FA code.
+BROWSER_EXPORT_ROOT = Path(
+    os.environ.get("BROWSER_EXPORT_DIR") or "/opt/icloud3/session-export/browser"
+)
+COOKIE_SITES = ("apple.com", "icloud.com")
+WEB_TOKEN = "X-APPLE-WEBAUTH-TOKEN"
 
 
 class JobContext:
@@ -89,6 +101,12 @@ def _service(ctx: JobContext, password: str):
         session_dir.chmod(0o700)
     except OSError:
         pass
+    # If the working cookie jar is gone (new node, wiped disk), restore the
+    # newest verified snapshot before Apple sees a fresh browser.
+    try:
+        session_vault.restore_if_empty(session_dir, email)
+    except Exception as error:
+        log.info("session restore skipped: %s", error)
     api = PyiCloudService(
         email,
         password,
@@ -97,6 +115,7 @@ def _service(ctx: JobContext, password: str):
         accept_terms=True,
     )
     _apply_identity(api, ctx)
+    _apply_browser_cookies(api, ctx)
     return api, session_dir
 
 
@@ -107,8 +126,179 @@ def _apply_identity(api, ctx: JobContext) -> None:
         headers["User-Agent"] = fingerprint["userAgent"]
     if fingerprint.get("language"):
         headers["Accept-Language"] = fingerprint["language"]
+    # iCloud's browser sessions answer service requests only when the caller
+    # looks like the iCloud web app.  Without this header a perfectly valid
+    # browser-exported web token gets 421 "Missing validate token" from Drive
+    # and Photos (the "session lost" false negative).
+    headers["Origin"] = "https://www.icloud.com"
     try:
         api.session.headers.update(headers)
+    except Exception:
+        pass
+
+
+def _browser_cookies(email: str) -> list[dict]:
+    """Read the Cookie-Editor export for this account, if one exists."""
+    if not email:
+        return []
+    path = BROWSER_EXPORT_ROOT / email / "cookies.json"
+    try:
+        rows = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+    if isinstance(rows, dict):
+        rows = rows.get("cookies") or []
+    return rows if isinstance(rows, list) else []
+
+
+def _apply_browser_cookies(api, ctx: JobContext) -> bool:
+    """Lift the browser's accepted cookies when the jar lost its web token.
+
+    A trusted account that signed in through a browser keeps a long-lived
+    X-APPLE-WEBAUTH-TOKEN in the export.  pyicloud's jar often has only the DS
+    and HSA cookies, so its own status probe reports "dead" even though the
+    account is fine.  Importing the export restores Drive/Photos without 2FA.
+    """
+    try:
+        if api.session.cookies.get(WEB_TOKEN):
+            return False
+    except Exception:
+        return False
+    rows = _browser_cookies(ctx.account.get("email", ""))
+    if not rows:
+        return False
+    imported = 0
+    for row in rows:
+        name = str(row.get("name") or "")
+        if not name:
+            continue
+        domain = str(row.get("domain") or ".icloud.com")
+        if not any(domain.endswith(site) for site in COOKIE_SITES):
+            continue
+        value = str(row.get("value") or "")
+        try:
+            api.session.cookies.set(
+                name, value, domain=domain, path=str(row.get("path") or "/")
+            )
+        except Exception:
+            continue
+        if name in ("X-APPLE-DS-WEB-SESSION-TOKEN", "X-APPLE-WEBAUTH-HSA-TRUST"):
+            key = "session_token" if "DS-WEB" in name else "trust_token"
+            try:
+                # Keep the DS/trust pair that the session file already holds: it
+                # is the one /accountLogin accepts.  The browser's copies are
+                # for its own login and only needed when the jar has none.
+                if not api.session.data.get(key):
+                    api.session.data[key] = value.strip('"')
+            except Exception:
+                pass
+        imported += 1
+    if imported:
+        log.info("imported %s browser cookies for %s", imported, ctx.account.get("email"))
+    return bool(imported)
+
+
+def ensure_services(api, ctx: JobContext) -> dict:
+    """Load the account's webservice URLs when pyicloud has none.
+
+    A password-less (browser cookie) session has no ``api.data``; Drive and
+    Photos need the per-account service hosts from it.  /accountLogin with the
+    stored DS token returns them even when Apple reports the HSA challenge.
+    """
+    data = getattr(api, "data", None) or {}
+    if data.get("webservices"):
+        return data
+    session_data = getattr(api.session, "data", {}) or {}
+    token = session_data.get("session_token")
+    if not token:
+        return {}
+    login = {
+        "accountCountryCode": session_data.get("account_country"),
+        "dsWebAuthToken": token,
+        "extended_login": True,
+        "trustToken": session_data.get("trust_token", ""),
+    }
+    try:
+        response = api.session.post(f"{api._setup_endpoint}/accountLogin", json=login)
+        body = response.json()
+    except Exception as error:
+        log.info("accountLogin failed: %s", type(error).__name__)
+        return {}
+    if not body.get("webservices"):
+        return {}
+    api.data = body
+    try:
+        api._update_state()
+    except Exception:
+        pass
+    return body
+
+
+def check_alive(api, ctx: JobContext) -> tuple[bool, bool, bool]:
+    """Return (alive, trusted, limited) without demanding a /validate success.
+
+    ``get_auth_status`` requires X-APPLE-WEBAUTH-TOKEN and a 200 from
+    /validate.  A browser-minted token often validates for Drive/Photos but
+    answers /validate with the HSA challenge, and a DS-only token reaches Find
+    My but not Drive.  Probe the real service before calling an account dead.
+    """
+    trusted_hint = bool(ctx.account.get("trusted"))
+    try:
+        has_web = bool(api.session.cookies.get(WEB_TOKEN))
+    except Exception:
+        has_web = False
+
+    if has_web:
+        # Check the service first: a failed /validate clears the session's
+        # webservice state and can invalidate the very token we are testing.
+        ensure_services(api, ctx)
+        try:
+            api.drive.dir()
+            # A browser web token that opens Drive proves the account itself is
+            # trusted; the session's own flag stays false for cookie logins.
+            return True, True, False
+        except Exception:
+            pass
+
+    try:
+        status = api.get_auth_status() or {}
+    except Exception:
+        status = {}
+    if status.get("authenticated"):
+        return True, bool(status.get("trusted_session")) or trusted_hint, False
+
+    try:
+        api._authenticate_with_token(require_trust=False)
+        if api.data:
+            return True, trusted_hint, True
+    except Exception:
+        pass
+    return False, False, False
+
+
+def _set_default_timeout(api, connect: float = 20, read: float = 60) -> None:
+    """Give every service call a timeout.
+
+    A residential proxy occasionally stalls a TLS read forever.  requests has
+    no default timeout, so one stalled ping would hold an auth slot for the
+    life of the process and starve the whole queue.  Wrap the session's active
+    adapter instead of replacing it: the proxy's retry/rotation logic stays.
+    """
+    try:
+        adapters = getattr(api.session, "adapters", {})
+        for prefix in ("https://", "http://"):
+            adapter = adapters.get(prefix)
+            if adapter is None or getattr(adapter, "_opencode_timeout", False):
+                continue
+            original = adapter.send
+
+            def send(request, _original=original, **kwargs):
+                if kwargs.get("timeout") is None:
+                    kwargs["timeout"] = (connect, read)
+                return _original(request, **kwargs)
+
+            adapter.send = send
+            adapter._opencode_timeout = True
     except Exception:
         pass
 
@@ -218,6 +408,7 @@ def _apply_proxy(api, ctx: JobContext) -> None:
         ctx.exit_country or "unknown",
         ctx.exit_matched,
     )
+    _set_default_timeout(api)
 
 
 def _proxy_info(ctx: JobContext) -> dict:
@@ -294,6 +485,18 @@ def _locked_payload(account: dict, error: Exception) -> dict:
 def _authenticate(api, ctx: JobContext):
     """Full password login with one retry for a network/5xx answer."""
     try:
+        api.authenticate()
+        return api
+    except TypeError:
+        # The anyIP tunnel raises TypeError when its CONNECT fails
+        # ("expected string or bytes-like object" in urllib3 _tunnel).  The
+        # password is fine and the cookie is valid from any IP, so drop the
+        # proxy and log in directly instead of failing the whole submission.
+        ctx.state("auth", "Proxy tunnel failed, logging in directly")
+        try:
+            api.session.proxies = {}
+        except Exception:  # noqa: BLE001
+            pass
         api.authenticate()
         return api
     except PyiCloudConnectionException:
@@ -595,7 +798,11 @@ def run_auth(ctx: JobContext) -> None:
         ctx.emit("job:result", _result_with_proxy(ctx, _locked_payload(ctx.account, error)))
         _restore(saved)
     except Exception as error:
-        log.warning("auth failed: %s", type(error).__name__)
+        # The panel shows this name to the client, so keep it to the exception
+        # class, but log the whole traceback: a bare "TypeError" is impossible
+        # to act on.
+        log.warning("auth failed: %s: %s\n%s", type(error).__name__, str(error)[:300],
+                    traceback.format_exc())
         ctx.emit("job:result", _result_with_proxy(ctx, {"status": "error", "message": type(error).__name__}))
         _restore(saved)
 
@@ -614,6 +821,14 @@ def _finish(ctx: JobContext, api, *, reused: bool, trusted: bool | None = None) 
             "account": account,
         },
     )
+    try:
+        from .proxy import stable_ssid
+        session_dir = Path(ctx.account.get("sessionDir") or "")
+        if not session_dir or session_dir == Path("."):
+            session_dir = Path("sessions") / stable_ssid(ctx.account.get("email", ""))
+        session_vault.snapshot(session_dir, ctx.account.get("email", ""))
+    except Exception as error:
+        log.info("session snapshot skipped: %s", error)
     try:
         info = inventory.collect(api)
         ctx.emit("job:account_info", info)

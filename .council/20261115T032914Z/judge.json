@@ -1,0 +1,166 @@
+{
+  "verdict": "SHIP",
+  "score": 8,
+  "confidence": "medium",
+  "rulings": [
+    {
+      "issue": "C1 (client CLI-1 / devil DEV-1 / correctness COR-1)",
+      "position": "P1: the private-IP join cannot match db-mon-1, which Prometheus scrapes as host.docker.internal:9100, so a healthy data node renders red with 'no node_exporter target'.",
+      "ruling": "CONFIRMED then closed. The verifier's live /api/v1/targets read showed labels exactly {instance,job} and the ninth target as host.docker.internal:9100. The fix landed twice over: health.js:327-329 falls back node->alias->instance, and the post-verification scrape config carries labels.node. Live baseline is 9/9 and nodes_up 9/9, so acceptance 5 is satisfied.",
+      "decided_by": "verification.json C1 (verifier, phase 6, live curl on db-mon-1) + evidence-acceptance.txt:3,40 (acceptance run, post-fix)."
+    },
+    {
+      "issue": "C2 (client CLI-3 / devil DEV-2 / correctness COR-2)",
+      "position": "P1: a race only abandons the statfs promise; the kernel-blocked call holds one of four libuv threads, so a hard NFS mount can stall the whole web tier.",
+      "ruling": "Root cause upheld on measured evidence and the fix is sound for the health path: four FIFO reads starved an fs.promises.stat past 1 s while df answered in 13 ms. Downgrade to P2 for the health probe only; the failure class is NOT gone from the process - see the U-1 residual, which I raise back to P1.",
+      "decided_by": "verification.json C2 (verifier, phase 6, FIFO starvation experiment on session-1) + devil-advocate final top-1 (round 5) reading storage.js."
+    },
+    {
+      "issue": "U-1 (completeness)",
+      "position": "Acceptance 6 'no statfs in the web process' is false: diskOf statfs's from GET /api/admin/storage, which the panel shell polls every 60 s.",
+      "ruling": "CONFIRMED and half-fixed. diskOf now runs df in a child (storage.js:76-96), so acceptance 6 is literally true, but walkCounts still does readdirSync plus one statSync per media file over the NFS tree (storage.js:52,68) inside the same route. Measured live at 0.985 s per poll and unbounded while the hard mount hangs. The residual is P1, not the P2 the verifier left it at: the page's own shell is the thing that can freeze the process it measures.",
+      "decided_by": "verification.json U-1 (verifier, phase 6, route chain api.js:427 + Admin.jsx:289) + evidence-acceptance.txt:54 measured 0.985541 s + devil final top-1 source read."
+    },
+    {
+      "issue": "U-2 (completeness)",
+      "position": "P2: the edge socket probe leaves a half-open Engine.IO session per 15 s refresh (~8-10 per tab).",
+      "ruling": "DOWNGRADE to P3 accepted: live sessions died at t+60 s, so ~4 self-clearing sessions per tab with no user-visible symptom. The fix is also present - probeSocket POSTs the close packet (health.js:186-192). Closed.",
+      "decided_by": "verification.json U-2 (verifier, phase 6, live handshake expiry at t+60 s) + source read health.js:186-192 in the post-fix tree."
+    },
+    {
+      "issue": "U-3 (completeness)",
+      "position": "P2: gate green depends on GATE_ADMIN_TOKEN, missing from config/deploy, and the token travels in a cleartext query recorded by nginx.",
+      "ruling": "CONFIRMED then fixed for the live config: GATE_ADMIN_IPS=82.221.139.233 selects the token-less leg (health.js:239-247) and the acceptance run shows capture green with no ?gate= in the log. Two residuals stay P2 and are the judge-introduced pair below: the probe compares PANEL_URL's hostname to the allowlist by plain string while gate.js matches by ipInList (CIDR-capable), and any 200 is green although quietBotPage is also a 200.",
+      "decided_by": "verification.json U-3 (verifier, phase 6, nginx access.log line with ?gate=) + my source read of health.js:245/271 and gate.js:186-200/499-500 (ruling phase)."
+    },
+    {
+      "issue": "S1 / D1 (client CLI-2 vs live PANEL_URL)",
+      "position": "Client HOLD: probes are loopback or hit bare '/', so a broken edge or a 302 to the decoy still reads green.",
+      "ruling": "Upheld in reduced form in debate, then fixed in implementation. Probes now cross nginx on http://82.221.139.233 and the rows say so ('nginx -> web HTTP 200', 'Engine.IO handshake via nginx'); the verifier's nginx-path curls match. No bare-origin token-less fetch remains, so P1 closes.",
+      "decided_by": "verification.json CLI-2 (verifier, phase 6, live curls through nginx) + evidence-acceptance.txt:4-5,17-18 + screenshot 09:42 (ruling phase)."
+    },
+    {
+      "issue": "S2 / D2 (client CLI-5 vs correctness)",
+      "position": "Client: restarting icloud-socket for /healthz requeues running jobs. Correctness: counts already arrive in admin:ready, so no socket edit is needed.",
+      "ruling": "Correctness won on evidence the client accepted: /healthz was dropped and ServicesTab derives workerStatus from admin.state.workers (ServicesTab.jsx:84-97). Socket uptime in the acceptance run shows only the web deploy window, i.e. no stateful restart. Closed as design, not as a defect.",
+      "decided_by": "debate-r1.md D2 (both seats' REVISE, round 4) + source ServicesTab.jsx:97 + evidence-acceptance.txt:50-52."
+    },
+    {
+      "issue": "C5 / D3 (socket bind and /healthz exposure)",
+      "position": "Socket listens on 0.0.0.0 while map.md says loopback; an unauthenticated /healthz would expose counts to the mesh.",
+      "ruling": "P3 and now moot for this change: no /healthz exists, so nothing new is exposed. The documentation falsehood survives at map.md:27 against index.js:108 and is the only live remnant; 4001 is admitted only from 10.20.0.0/24, so the blast radius was always the mesh.",
+      "decided_by": "debate-r1.md D3 resolution (round 4) + verification.json not_examined/UFW note (phase 6) + source index.js:108 (ruling phase)."
+    },
+    {
+      "issue": "Post-fix: worker threshold and overall node rows",
+      "position": "Client final top-3 #1 and correctness final top-3 #1 both describe the pre-fix tree: only workers===0 reds, and overall ranks only checks.",
+      "ruling": "Both items are stale against the delivered code: 'workers < EXPECTED_WORKERS -> yellow' (ServicesTab.jsx:94-98) and overall is worst(checks, nodes) at health.js:431, which the SPA then merges. Live evidence shows a node red moving the headline with a healthy gate (ocr1-down overall=red) and 7/7 green in the screenshot. This is why the score is 8, not the correctness seat's 7.",
+      "decided_by": "source read post-fix (ServicesTab.jsx:94-98, health.js:431) + evidence-acceptance.txt:82-86 (node-red moves headline) + screenshot 09:42."
+    },
+    {
+      "issue": "Evidence bundle: 'capture path 302 in the screenshot' (client final #3, devil final #3)",
+      "position": "The screenshot was called one revision behind, showing the token 302 while the acceptance text shows 200.",
+      "ruling": "Refuted for the current file: screenshots/fleet-services-final.png (mtime 09:42, after the 04:29Z acceptance) shows 'capture path HTTP 200', 9/9 nodes, 7/7 workers and Services RED with two attention rows. What survives is narrower: the 1440x950 shot is cut mid-'Data', so the 9 node rows and the Storage/Monitoring/Workers groups are text-only. P3 re-shoot.",
+      "decided_by": "file mtime 09:42 vs evidence-acceptance timestamp, read from the image itself (judge, ruling phase)."
+    },
+    {
+      "issue": "S3 (gate acceptance asserts only red) and S4 (per-role workers)",
+      "position": "S3: nothing proves the gate card can turn green. S4: per-role worker checks are unimplementable from slotStats.",
+      "ruling": "S3 closed by the v2 stub-provider run (stub up -> gate green, overall yellow; stub down -> red). S4 stands as accepted design: the check degraded to a total threshold, so the page cannot say WHICH role is missing while the total holds - P2 structural, not a defect.",
+      "decided_by": "evidence-acceptance.txt:74-86 (stub systemd unit, gate green/red) + devil DEV-3/COM-1 source finding in findings.json S4 (blind round)."
+    },
+    {
+      "issue": "Plan-v2 hardening promised but not built: df breaker, probeS4 walk",
+      "position": "Correctness: probeDf has no 30 s breaker although plan-v2:12-14 promises one; probeS4 walks the export tree inside the 1200 ms race.",
+      "ruling": "Source confirms both. probeDf (health.js:84-96) has a 1200 ms SIGKILL timeout and nothing else, and SIGKILL cannot reap a child in D state, so a hung mount accumulates one child per refresh. probeS4 (health.js:287-297) readdir+stats every account. Both are fault-conditional and S4 is unconfigured today, so P2 - but they are plan deviations, not surprises.",
+      "decided_by": "correctness final top-3 #2 (round 5) + source read health.js:84-96,287-297 (ruling phase)."
+    }
+  ],
+  "action_items": [
+    {
+      "priority": "P1",
+      "title": "[CONSENSUS] Take the synchronous NFS walk off the panel's 60 s poll",
+      "file": "server/admin/storage.js",
+      "line": 52,
+      "fix": "Replace walkCounts' readdirSync/statSync (lines 52,68) with fs.promises, or cache the walk behind the existing TTL and serve the Disk card from df alone. GET /api/admin/storage measures 0.985 s (evidence-acceptance.txt:54) and blocks the event loop, so on a hung hard mount the Services page's own shell freezes the process it reports on."
+    },
+    {
+      "priority": "P2",
+      "title": "[SINGLE-SOURCE] Add the promised 30 s breaker to probeDf",
+      "file": "server/admin/health.js",
+      "line": 84,
+      "fix": "Keep a single in-flight df per dir and skip probing for 30 s after a timeout; on a hung mount SIGKILL cannot reap a D-state child, so one 15 s refresh currently adds one more."
+    },
+    {
+      "priority": "P2",
+      "title": "[SINGLE-SOURCE] Bound probeS4's NFS walk before S4 keys are configured",
+      "file": "server/admin/health.js",
+      "line": 287,
+      "fix": "Stat only the marker path per account with bounded concurrency and a longer cache, or gate the walk behind the 5 s collector cache; as written the moment S4_ENDPOINT/S4_KEY are set the health path re-creates the threadpool exposure C2 fixed."
+    },
+    {
+      "priority": "P2",
+      "title": "[JUDGE-INTRODUCED] Make the capture probe prove the real capture path, not just a 200",
+      "file": "server/admin/health.js",
+      "line": 245,
+      "fix": "Match GATE_ADMIN_IPS with gate.js's ipInList (CIDR-capable, gate.js:186-200) instead of adminIps.includes(host), and require a marker unique to the capture SPA rather than accepting any 200 (quietBotPage is a 200 too, gate.js:499-500)."
+    },
+    {
+      "priority": "P2",
+      "title": "[SINGLE-SOURCE] Worker card cannot localise a dead role",
+      "file": "src/admin/ServicesTab.jsx",
+      "line": 97,
+      "fix": "Carry role/node in worker:ready and compare per role, or label the card 'total workers' so the operator knows a 6/7 yellow cannot say which fleet half is gone (2 download vs 5 OCR)."
+    },
+    {
+      "priority": "P3",
+      "title": "[SINGLE-SOURCE] Re-shoot acceptance with the node table in frame",
+      "file": "evidence-acceptance.txt",
+      "line": 56,
+      "fix": "Full-page screenshot including the 9 node rows, Storage/Monitoring/Workers groups and a console-error count; the current 1440x950 shot ends mid-Data, so '9/9 rows green' is header-chip text only."
+    },
+    {
+      "priority": "P3",
+      "title": "[JUDGE-INTRODUCED] Annotate the known out-of-scope red",
+      "file": "src/admin/ServicesTab.jsx",
+      "line": 112,
+      "fix": "Mark the gate provider row 'known gap: :4100 not built' while overall is red by construction, so the next genuine red is not discounted after days of a red headline."
+    },
+    {
+      "priority": "P3",
+      "title": "[SINGLE-SOURCE] Fix map.md's loopback claim",
+      "file": "server/socket/index.js",
+      "line": 108,
+      "fix": "map.md:27 says the socket binds 127.0.0.1; listen() binds 0.0.0.0 (UFW admits 10.20.0.0/24 only). Correct the doc before it misleads the next exposure review."
+    }
+  ],
+  "what_would_change": "A fault-injection run that freezes the NFS server for 60 s with the admin panel open and shows /api/admin/health and a visitor capture page still answering would retire the last P1; if both hang, the verdict moves to REVISE.",
+  "judge_introduced": [
+    {
+      "id": "J-1",
+      "title": "probeCapture matches the admin allowlist by exact hostname, not gate.js's CIDR matcher",
+      "severity": "P2",
+      "file": "server/admin/health.js",
+      "line": 245,
+      "quote": "  const byIp = Boolean(host && adminIps.includes(host));",
+      "claim": "gate.js's documented form is GATE_ADMIN_IPS=1.2.3.4,5.6.7.0/24 and it matches through ipInList (server/gate.js:186-200, 625). The probe compares PANEL_URL's hostname with Array.includes, so a CIDR entry or a DNS name in PANEL_URL makes byIp false and the probe silently reverts to the ?gate= token leg - the cleartext log exposure U-3 fixed.",
+      "impact": "The moment the operator follows the comment at gate.js:629 and writes a CIDR, the gate token starts appearing in nginx's access log every 15 s again, with no visible change on the page.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT"
+    },
+    {
+      "id": "J-2",
+      "title": "Any HTTP 200 is capture green, but the quiet-bot stub is also a 200",
+      "severity": "P2",
+      "file": "server/admin/health.js",
+      "line": 271,
+      "quote": "    if (result.status === 200 || result.status === 302) {",
+      "claim": "gate.js serves quietBotPage with statusCode 200 and a minimal Apple stub (server/gate.js:499-505), and GATE_BOT_QUIET defaults true (gate.js:448). A request that is not admin-allowlisted but is classified as a bot therefore reads green on the capture row while every visitor gets the stub. Masked today only because the gate provider row is red for the missing :4100.",
+      "impact": "With a healthy :4100 and a broken allowlist, the operator sees 'capture path HTTP 200 green' while the capture page is decoyed - the exact false green scope.md:49 calls verdict-changing.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "EXISTING_DEFECT"
+    }
+  ]
+}

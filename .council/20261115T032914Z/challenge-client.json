@@ -1,0 +1,55 @@
+{
+  "role": "client",
+  "attempted_counterexamples": [
+    {
+      "scenario": "Operator opens the page after the gate provider is built and healthy. Does the gate card clear, or is it red by construction?",
+      "assumption": "A green gate is demonstrated somewhere in the plan's evidence.",
+      "evidence": "plan.md:63-64 defines the http probe; plan.md:128-136 ('all probes ok -> overall=green') injects fakes and never executes probeGate; plan.md:144 acceptance asserts only 'gate red'. gate.js:464-465 derives statusUrl from redeemUrl when GATE_STATUS_URL is unset, which a raw-env probe would not reproduce.",
+      "result": "untested",
+      "observed": "Every path that exercises probeGate for real requires the provider to be absent. A probe that is wrong (bad header/body, 404 treated as red) passes all stated acceptance.",
+      "uncertainty": "The real provider's /api/status contract (body {ip,dev}, x-gate-secret) is not in this repo; .env.example:126 only names the URL."
+    },
+    {
+      "scenario": "The page shows the node table; is every one of the 9 fleet nodes actually joined to a Prometheus target?",
+      "assumption": "Private-IP join of 9 nodes to 9 targets matches 9 rows.",
+      "evidence": "evidence-fleet.txt:9 is 'host.docker.internal:9100 up', not 10.20.0.30:9100; counting the file gives 9 target lines but only 8 distinct 10.20.0.x instances. deploy/FLEET.md:12 puts db-mon-1 at 10.20.0.30.",
+      "result": "refuted",
+      "observed": "db-mon-1 (NFS, Postgres, Redis, Prometheus, Grafana host) matches no 10.20.0.30 target and would render red 'no node_exporter target' while evidence-fleet.txt:21 records its prometheus-node-exporter=up. plan.md:111's '9/9 nodes' then contradicts the row below it.",
+      "uncertainty": "That host.docker.internal:9100 is db-mon-1's own exporter (true if Prometheus runs in Docker on that host) is inferred from FLEET.md placement, not read from a scrape config."
+    },
+    {
+      "scenario": "nginx misroutes /socket.io (or the web proxy to :4001 dies). Does the page go red while visitors' capture page cannot connect?",
+      "assumption": "The socket and web checks cover the path visitors actually take.",
+      "evidence": "plan.md:66 probes http://127.0.0.1:${SOCKET_PORT}/healthz, and plan.md:39 probes 'web: request answered'; server/config.js:77-79 defaults PANEL_URL to http://127.0.0.1:3000/admin. app.js:38-54 is the /socket.io proxy visitors depend on.",
+      "result": "refuted",
+      "observed": "Both edge checks are loopback and skip nginx and the /socket.io proxy entirely. The socket card can be green while the capture page cannot open its websocket; the web card cannot be red while the page renders at all.",
+      "uncertainty": "Whether production nginx reaches :4001 directly or through the web proxy (no nginx conf in the repo)."
+    },
+    {
+      "scenario": "NFS stalls; the operator leaves the Services tab open on 15 s auto-refresh. Does only the health call suffer, or the visitor site?",
+      "assumption": "The 1200 ms race bounds the damage to the health response.",
+      "evidence": "plan.md:156-157 admits the thread may stay; plan.md:62 uses fs.promises.statfs; server/admin/storage.js:78 already calls fsp.statfs unraced and Admin.jsx polls it every 60 s.",
+      "result": "supported",
+      "observed": "An abandoned promise does not free the libuv thread. libuv's default pool is 4; four pinned statfs calls block express.static file opens, so the 1,000/day visitors get hanging page loads. The plan's own mitigation does not address it and the new 15 s poll adds callers.",
+      "uncertainty": "The NFS mount options on session-1 (hard vs soft, intr) are not in the repo; a soft mount would fail fast instead."
+    },
+    {
+      "scenario": "Deploy step 2 restarts icloud-socket at 1,000 visitors/day. Is that restart necessary and free?",
+      "assumption": "The socket must restart to expose worker counts, and the restart is harmless.",
+      "evidence": "plan.md:142 restarts both units. Admin.jsx:618-624 already renders workers/auth/export/queued, fed by useAdminSocket.js:135,150 from the existing admin:ready payload (the same object captured at evidence-fleet.txt:41). worker-pool.js:1507-1514 requeues every running job on disconnect, and python/worker/__main__.py:348 reconnects 2 s later.",
+      "result": "supported",
+      "observed": "The socket restart exists only to add /healthz for numbers the panel already has. It sets running auth/export jobs back to queued while the Python process is still executing them, which can dispatch the same account to a second worker.",
+      "uncertainty": "Whether a duplicate dispatch happened in practice is not observable without the live job log."
+    },
+    {
+      "scenario": "The map says the new unauthenticated /healthz is loopback-only. Is it?",
+      "assumption": "map.md:27 'socket binds 127.0.0.1' is accurate.",
+      "evidence": "server/socket/index.js:108 is httpServer.listen(config.socketPort, () => { with no host argument, i.e. 0.0.0.0. A 4 s TCP probe from outside to 82.221.139.233:4001 returned closed/filtered.",
+      "result": "refuted",
+      "observed": "The socket listens on every interface; the new /healthz (worker counts, account count) is unauthenticated on the WireGuard mesh and behind UFW on the public IP. Public exposure was not demonstrated.",
+      "uncertainty": "UFW rules per interface, and whether any fleet node can reach 10.20.0.10:4001, were not readable from here."
+    }
+  ],
+  "verdict": "REVISE",
+  "reason": "Shape is right and cheap; two claims are false. The private-IP join reds db-mon-1 (scraped as host.docker.internal:9100) and the loopback edge probes cannot see a capture-path outage, so the page lies in both directions. Also gate acceptance only asserts red, s4 has no data source, and the socket restart is avoidable."
+}

@@ -1,0 +1,299 @@
+{
+  "role": "client",
+  "findings": [
+    {
+      "id": "CLI-1",
+      "title": "Node table joins Prometheus by private IP and reds db-mon-1, which is scraped as host.docker.internal",
+      "severity": "P1",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 105,
+      "line_end": 105,
+      "quote": "is absent is `red` with `\"no node_exporter target\"`.",
+      "claim": "Plan 3.4 joins each of the 9 fleet nodes to a Prometheus target by private IP. The recorded target list has only 8 distinct 10.20.0.x instances; the ninth is host.docker.internal:9100, which is how db-mon-1's own exporter is scraped (Prometheus runs on db-mon-1). db-mon-1 is 10.20.0.30, so it matches nothing and is painted red although its exporter is up.",
+      "impact": "The operator opens /admin and sees the data+ops node red with 'no node_exporter target' on the exact host carrying NFS, Postgres, Redis and Prometheus, while the same page's top row says 9/9 nodes. The first alarm is the page's own false alarm, and every later real red is discounted.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -cE ':9100' .council/20261115T032914Z/evidence-fleet.txt; grep -cE '^10\\.20\\.0\\.[0-9]+:9100' .council/20261115T032914Z/evidence-fleet.txt; grep -c '10\\.20\\.0\\.30' .council/20261115T032914Z/evidence-fleet.txt ; true",
+      "fix": "Give each fleet entry an explicit prometheus instance string (db-mon-1 -> host.docker.internal:9100) and join on that, or join on the instance label with a per-node alias list. Count 'N/9' from matched nodes, and assert db-mon-1 green in acceptance 5.",
+      "citations": [
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 104,
+          "quote": "The node table is joined to Prometheus target health by private IP; a target that"
+        },
+        {
+          "file": ".council/20261115T032914Z/evidence-fleet.txt",
+          "line": 9,
+          "quote": "host.docker.internal:9100 up"
+        },
+        {
+          "file": "deploy/FLEET.md",
+          "line": 12,
+          "quote": "| db-mon-1 | 82.221.141.135 | 10.20.0.30 | data+ops | NFS, Postgres 16, Redis 7, Prometheus:9090, Grafana:3000, Uptime:3001 |"
+        },
+        {
+          "file": ".council/20261115T032914Z/evidence-fleet.txt",
+          "line": 21,
+          "quote": "82.221.141.135 db-mon-1 prometheus-node-exporter=up"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CLI-2",
+      "title": "Edge probes are loopback-only, so a capture-path outage shows green",
+      "severity": "P1",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 39,
+      "line_end": 39,
+      "quote": "| web | request answered | — | process answer failed |",
+      "claim": "The web check fetches PANEL_URL, whose default is http://127.0.0.1:3000/admin, and the socket check fetches http://127.0.0.1:${SOCKET_PORT}/healthz directly. Neither traverses nginx nor the /socket.io proxy that visitors' capture page needs. 'web' can only fail when the process serving the page is already dead, and 'socket' skips the path the browser uses.",
+      "impact": "nginx returns 502 for /socket.io, or the web->socket proxy dies: the operator sees Services green and 7 workers while every visitor's capture page hangs on connect and captures are lost. This is exactly the false green scope.md:49 names as verdict-changing.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '39p;66p' .council/20261115T032914Z/plan.md; sed -n '52p' server/app.js; sed -n '77,79p' server/config.js",
+      "fix": "Probe the visitor path: GET the Engine.IO handshake through the edge (http://127.0.0.1/socket.io/?EIO=4&transport=polling via nginx, expecting a 0{...} payload) and GET / through nginx with a Host header. Mark edge green only on those, and rename 'web' so it is not a tautology.",
+      "citations": [
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 66,
+          "quote": "- `probeSocket(base)` — `GET http://127.0.0.1:${SOCKET_PORT}/healthz`."
+        },
+        {
+          "file": "server/app.js",
+          "line": 52,
+          "quote": "    if (req.url.startsWith(\"/socket.io\")) return socketProxy.web(req, res);"
+        },
+        {
+          "file": "server/config.js",
+          "line": 79,
+          "quote": "      `http://127.0.0.1:${int(process.env.PORT, 3000)}/admin`,"
+        },
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 160,
+          "quote": "- `nginx` is inferred from `PANEL_URL` answering, not from its process."
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CLI-3",
+      "title": "statfs race abandons the promise but not the libuv thread, so a wedged NFS hangs the whole web process",
+      "severity": "P2",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 156,
+      "line_end": 157,
+      "quote": "- `statfs` on a hard-mounted NFS can block in the kernel; the 1200 ms race\n  returns a red result but the request thread may stay until the mount recovers.",
+      "claim": "The plan admits the thread survives the race and ships it as a weakness. fs.promises.statfs runs on the libuv pool (default 4 threads); four stuck calls block every async fs operation in the web process, including express.static opening capture-page assets. The new 15 s auto-refresh adds callers; /api/admin/storage already calls fsp.statfs unraced every 60 s.",
+      "impact": "With NFS stalled the operator's own health page pins the web process and the 1,000/day visitors get hanging capture pages, not just a red NFS card. The page designed to diagnose the outage becomes part of it.",
+      "confidence": "medium",
+      "basis": "inferred",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '156,157p' .council/20261115T032914Z/plan.md; grep -rn 'statfs' server/",
+      "fix": "Run the disk probe in a killable child (execFile 'df -P' with timeout, or a short-lived worker) so a wedged mount cannot pin the web pool; serve the cached last-good value marked stale while it is unknown.",
+      "citations": [
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 62,
+          "quote": "- `probeNfs(dir)` — `fs.promises.statfs` (NFSv4), computes used ratio."
+        },
+        {
+          "file": "server/admin/storage.js",
+          "line": 78,
+          "quote": "    const stat = await fsp.statfs(dir);"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CLI-4",
+      "title": "Acceptance asserts only the broken gate, so a permanently-red probe passes",
+      "severity": "P2",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 144,
+      "line_end": 144,
+      "quote": "   `overall`, 9 nodes, 7 workers, gate red, S4 yellow.",
+      "claim": "The only live evidence for the gate check requires it to be red, which is the current failure state. The unit tests inject probes, so probeGate itself is never executed against a working provider. Neither acceptance nor tests prove the card can ever turn green.",
+      "impact": "When the operator builds :4100 (the declared follow-up), a wrong status URL, header or body leaves the gate card red with the provider healthy; the operator chases a phantom dependency and stops trusting the page. Nothing in the stated acceptance detects this.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'gate red\\|gate unreachable\\|all probes ok' .council/20261115T032914Z/plan.md",
+      "fix": "Add an acceptance step that starts a stub provider on 127.0.0.1:4100 returning {ok:true,reason:\"\"}, asserts gate green and overall not red, then stops it and asserts red; and a direct probeGate test against that stub.",
+      "citations": [
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 63,
+          "quote": "- `probeGate(env)` — if `GATE_MODE=db`, `fs.access(GATE_DB_PATH)`; else"
+        },
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 131,
+          "quote": "  - gate unreachable -> `red` and `dependency` contains `4100`;"
+        },
+        {
+          "file": "server/gate.js",
+          "line": 464,
+          "quote": "  if (cfg.mode === \"http\" && !cfg.statusUrl) {"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CLI-5",
+      "title": "Restarting icloud-socket to add /healthz requeues live jobs for data the panel already has",
+      "severity": "P2",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 142,
+      "line_end": 142,
+      "quote": "2. `systemctl restart icloud-web icloud-socket`; both active.",
+      "claim": "Step 2 restarts the stateful socket process so the web route can read worker counts. Those counts already reach the panel through the admin:ready payload (evidence-fleet.txt:41 was captured from it). On disconnect removeWorker immediately sets every running auth/export job back to queued while the Python process is still executing it and reconnects 2 s later, so the same account can be dispatched twice.",
+      "impact": "A read-only dashboard card costs a socket restart during live traffic: duplicate exports into the same NFS tree, and the operator's live dashboard drops to offline. The plan never checks that workers return to 7 or that queued drains after the restart.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '142p' .council/20261115T032914Z/plan.md; sed -n '1507,1514p' server/socket/worker-pool.js; sed -n '618,619p' src/admin/Admin.jsx",
+      "fix": "Keep the socket restart but gate it on queued=0 and add an acceptance step that workers return to 7 and queued drains; or drop /healthz from v1 and have the web route read the existing worker numbers via a short-lived admin socket, so only icloud-web restarts.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1510,
+          "quote": "      this.store.updateJob(job.id, {"
+        },
+        {
+          "file": "src/admin/Admin.jsx",
+          "line": 618,
+          "quote": "                  workers {state.workers?.workers ?? 0} · auth {state.workers?.auth ?? 0} · export{\" \"}"
+        },
+        {
+          "file": "src/admin/useAdminSocket.js",
+          "line": 150,
+          "quote": "          workers: payload.workers ?? prev.workers,"
+        },
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 83,
+          "quote": "This removes the need for the web process to open an Engine.IO client, and it"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CLI-6",
+      "title": "The s4 check has no probe and no heartbeat or failure marker anywhere in the repo",
+      "severity": "P2",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 47,
+      "line_end": 47,
+      "quote": "| s4 | configured + heartbeat < 10 min | configured, no/stale heartbeat, or env empty | configured and last run failed |",
+      "claim": "Section 3.1 defines seven probes and none for s4 (or for per-role workers). The only S4 artifacts are per-account Scan/s4-complete.json files holding generated/checked/scanAt; python/s4_upload.py writes them on success only and records no failure, and s4.js exposes only an env-derived s4Enabled.",
+      "impact": "The implementer must invent both the heartbeat source and the red condition, so the S4 card is either guess-yellow forever or red on a signal nobody defined. Because acceptance 3 expects 'S4 yellow', the guess is invisible.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'probe' .council/20261115T032914Z/plan.md; grep -n 'generated\\|checked\\|scanAt' python/s4_upload.py; grep -n 's4Enabled' server/admin/s4.js",
+      "fix": "Name the source in the plan: newest Scan/s4-complete.json mtime across accounts under exportDir = heartbeat; and until s4_upload records a failure field, make the third state 'configured, no upload ever seen' (yellow), not red. Add a fixture-based test for both.",
+      "citations": [
+        {
+          "file": "python/s4_upload.py",
+          "line": 257,
+          "quote": "        \"checked\": True,"
+        },
+        {
+          "file": "server/admin/s4.js",
+          "line": 26,
+          "quote": "export const s4Enabled = Boolean(ENDPOINT && BUCKET && KEY && SECRET);"
+        },
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 144,
+          "quote": "   `overall`, 9 nodes, 7 workers, gate red, S4 yellow."
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CLI-7",
+      "title": "Route calls collectHealth() with no argument but the documented signature destructures one",
+      "severity": "P3",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 93,
+      "line_end": 93,
+      "quote": "  res.json(await collectHealth());",
+      "claim": "Section 3.1 specifies collectHealth({ env, probes, now }); the route passes nothing. Destructuring undefined throws before any probe runs, so /api/admin/health is a 500 until someone notices. Unit tests calling it with arguments would not catch it.",
+      "impact": "The one live acceptance step (api/admin/health with a cookie) is the first place it surfaces, at deploy time on the live host.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'collectHealth' .council/20261115T032914Z/plan.md",
+      "fix": "Default every parameter in one place: collectHealth({ env = process.env, probes = defaultProbes, now = Date.now() } = {}) and say so in 3.1.",
+      "citations": [
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 57,
+          "quote": "- `collectHealth({ env, probes, now })` — pure orchestration, probes injected."
+        },
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 91,
+          "quote": "router.get(\"/health\", asyncRoute(async (_req, res) => {"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CLI-8",
+      "title": "Map says the socket binds loopback; it binds every interface, so the new /healthz is unauthenticated on the mesh",
+      "severity": "P3",
+      "file": "server/socket/index.js",
+      "line": 108,
+      "line_end": 108,
+      "quote": "  httpServer.listen(config.socketPort, () => {",
+      "claim": "map.md:27 states 'socket binds 127.0.0.1 (108)'. listen() is called with a port and no host, so Node binds 0.0.0.0. Plan 3.2 adds an unauthenticated GET /healthz returning worker counts and account count to that listener.",
+      "impact": "The reviewer who trusts the map assumes no auth is needed because the port is loopback. In fact any host on 10.20.0.0/24, and anything UFW admits to the public IP, can read fleet topology. External probe from here showed 4001 closed/filtered, so public exposure is unproven.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '108p' server/socket/index.js; sed -n '27p' .council/20261115T032914Z/map.md",
+      "fix": "Either bind the socket explicitly (httpServer.listen(config.socketPort, '127.0.0.1', ...)) or state in the plan that /healthz is mesh-reachable and keep its payload to counts; correct map.md:27.",
+      "citations": [
+        {
+          "file": ".council/20261115T032914Z/map.md",
+          "line": 27,
+          "quote": "- Web/socket split: web proxies `/socket.io` (`app.js:38-54`, 150-156); socket binds 127.0.0.1 (108)."
+        },
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 77,
+          "quote": "- `GET /healthz` -> `200 {\"ok\":true,\"uptime\":…,\"workers\":{...},\"accounts\":…}`"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    }
+  ],
+  "not_examined": [
+    "nginx site config (not in the repo): how /socket.io and / reach :4001/:3000, and which interfaces UFW admits",
+    "live Prometheus /api/v1/targets response shape and labels (only the recorded target list in evidence-fleet.txt was read)",
+    "Python worker's runtime behaviour on a mid-export node restart (only reconnection=True at python/worker/__main__.py:348 was read)",
+    "the capture SPA and gate decision paths beyond the /api/ exemption and statusUrl derivation in server/gate.js",
+    "server/admin/api.js lines 200-400 and 440-743 (session, storage, library handlers) except where cited",
+    "Grafana/Uptime availability and whether session-1's /srv/icloud mount is hard or soft"
+  ],
+  "open_questions": [
+    "Where are REDIS_URL/REDIS_PASSWORD and the Postgres host meant to come from? .env.example has no redis/postgres entry and config.js has no such section; the credentials live in /root/fleet-secrets.txt on db-mon-1.",
+    "What is an 'expected role' in the workers threshold (plan.md:48) and where does the expected count come from? .env.example has MAX_AUTH_JOBS/MAX_EXPORT_JOBS but no per-role worker expectation.",
+    "Does the :4100 provider implement /api/status with body {ip,dev} and x-gate-secret, or only /api/redeem?",
+    "Is Prometheus on db-mon-1 running in Docker (which would confirm host.docker.internal:9100 is that node)?"
+  ]
+}

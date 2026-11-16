@@ -1,0 +1,1799 @@
+{
+  "run": "20261114T025817Z",
+  "scope": "scope.md",
+  "count": 51,
+  "gate": "check_citations.py: VERIFIED=51, blocking=0",
+  "findings": [
+    {
+      "id": "ARCH-1",
+      "title": "P0-2 names manifest.sqlite3 as the reconciliation oracle but assigns no process to own the join",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 94,
+      "line_end": 94,
+      "quote": "| P0-2 | **Coverage matrix** per account: area × (live count, downloaded, missing, bytes, last export); totals reconcile with manifest and disk | Answers \"what is missing\" without guessing from a global count | Matrix equals `manifest.sqlite3` summary and file counts for `example.harvest`; screenshot; test for a zero-download account |",
+      "claim": "Only Python opens manifest.sqlite3 today, and the web process is documented as the store's read-only consumer; the plan requires a three-way join (live counts in the socket store, downloaded/bytes in Python's manifest, file counts on disk) without saying which process performs it. The two halves already exist in the store: verify.compare() produces per-area live/exported/missing and handleVerifyResult stores it, and export totals carry per-area bytes. The acceptance wording therefore invites a second SQLite reader in the web process rather than reusing what the worker already sends.",
+      "impact": "Operator opens the coverage matrix during an export and gets numbers from a second reader over a commit-per-file, non-WAL SQLite file: stale rows or lock errors, and for a zero-download account (the plan's own test) a reader that creates an empty manifest makes the matrix silently show nothing. Node becomes co-owner of a schema Python writes.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'manifest.sqlite3\\|One writer per store\\|def compare' FEATURES.md README.md python/worker/verify.py",
+      "fix": "Compute per-area {live, exported, missing, bytes} in Python (verify.compare plus export totals) and return it in job:verify_result/export:done; render the matrix from account.verify and account.export in admin:account. Keep SQLite out of the web process.",
+      "citations": [
+        {
+          "file": "README.md",
+          "line": 113,
+          "quote": "- **One writer per store.** Only the socket process mutates accounts/jobs."
+        },
+        {
+          "file": "python/worker/exporter.py",
+          "line": 212,
+          "quote": "            \"\"\"CREATE TABLE IF NOT EXISTS files ("
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 264,
+          "quote": "def compare(live: dict, ids: dict, exported: dict) -> dict:"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1255,
+          "quote": "      areas: payload.areas ?? {},"
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 349,
+          "quote": "    ids, exported = manifest_ids(root / \"manifest.sqlite3\")"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "architecture",
+      "debate": "debate-r1: converged on reusing verify.areas with a per-area ok/unread marker; no independent manifest read"
+    },
+    {
+      "id": "ARCH-2",
+      "title": "P0-4's per-file failure data needs a Python manifest migration the plan never names, and retry needs a per-key export mode",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 96,
+      "line_end": 96,
+      "quote": "| P0-4 | **Download truth**: record per-file failures (path, reason, attempt) and surface \"failed\" separately from \"missing\"; retry a failure set | \"Missing\" currently conflates never-attempted and failed | Seeded fake failure renders; retry clears it; test |",
+      "claim": "The manifest schema has no reason or attempt column, and it is created with CREATE TABLE IF NOT EXISTS, so existing per-account databases get no new columns. A failure is written as status='failed', size 0, empty sha, with the traceback only in the worker log; needs() treats any status other than 'done' as re-download. 'Retry a failure set' also has no path: jobs carry only a mode (missing/force/...), so a retry re-enumerates and re-downloads the whole missing set. Both the record and the retry are Python-side; the plan states them as dashboard behaviour.",
+      "impact": "If implemented where the plan points, the web process alters a resume database it does not write, or failure reasons land in the JSON store while the manifest stays the source of truth, giving two answers to 'why is this missing'. Old exports keep the exact failed/never-attempted conflation P0-4 exists to remove, and 'retry a failure set' silently retries everything.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'CREATE TABLE IF NOT EXISTS files\\|status=\"failed\"\\|status != \"done\"\\|SELECT area' python/worker/exporter.py",
+      "fix": "Idempotent ALTER TABLE migration in Manifest.__init__; mark(key, area, path, size, sha, status, reason, attempt); count failed rows in summary; emit a per-file failure list in job:export_done; accept an explicit key list in the export payload for retry.",
+      "citations": [
+        {
+          "file": "python/worker/exporter.py",
+          "line": 235,
+          "quote": "        if not row or row[\"status\"] != \"done\":"
+        },
+        {
+          "file": "python/worker/exporter.py",
+          "line": 260,
+          "quote": "            \"SELECT area, COUNT(*), COALESCE(SUM(size),0) FROM files WHERE status='done' GROUP BY area\""
+        },
+        {
+          "file": "python/worker/exporter.py",
+          "line": 961,
+          "quote": "                task[\"key\"], task[\"area\"], task[\"path\"], 0, \"\", status=\"failed\""
+        },
+        {
+          "file": "README.md",
+          "line": 705,
+          "quote": "- `export/<email>/manifest.sqlite3` is the resume source of truth; deleting it"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "architecture"
+    },
+    {
+      "id": "ARCH-3",
+      "title": "store.flush() evicts still-running jobs once 1000 newer jobs exist, silently breaking the jobs view at the 500-account scale P0-3 targets",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 169,
+      "line_end": 173,
+      "quote": "      // Keep completed jobs bounded; accounts are the durable record.\n      const jobs = [...this.jobs.values()]\n        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))\n        .slice(0, 1000);\n      this.jobs = new Map(jobs.map((job) => [job.id, job]));",
+      "claim": "The cap is documented as 'completed jobs' but filters on nothing: it sorts every job by createdAt and replaces the in-memory map with the newest 1000. A 500-account run creates roughly one export job per account per wave plus an auto-scan job per completed export (handleExportDone -> startScan), so >1000 job records per cycle. A long-running wave-1 export created early can be evicted while still running; handleExportProgress and handleExportDone then call store.getJob(id) and return on null, so progress is dropped, release() never runs, and the account stays 'exporting'.",
+      "impact": "In a campaign-scale run, one or more finished exports never complete: the account shows 'exporting 0/0', the worker slot is never returned, and P0-1's 'durable list' quietly loses the row the operator needs. The failure is silent because every handler treats a missing job as 'not mine'.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'slice(0, 1000)\\|this.jobs = new Map\\|autoScanAfterExport' server/store.js server/socket/worker-pool.js",
+      "fix": "Keep every active job (queued/running/twofa) regardless of the cap and apply the 1000 limit only to terminal jobs; never drop an id still present in pool.queue. A durable append-only job log would remove the cap question entirely.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1097,
+          "quote": "    const job = this.store.getJob(payload.jobId);"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1138,
+          "quote": "    this.release(job, socket.id);"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1145,
+          "quote": "    if (config.worker.autoScanAfterExport && scanAfter) {"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "architecture"
+    },
+    {
+      "id": "ARCH-4",
+      "title": "A restart rewrites running jobs to a terminal 'unknown' state the pool never requeues, so P0-1's retry is the only recovery",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 205,
+      "line_end": 207,
+      "quote": "      if (job.status === \"running\" || job.status === \"twofa\") {\n        job.status = \"unknown\";\n        job.error = \"node restarted\";",
+      "claim": "Store's constructor calls markStaleJobs() before WorkerPool is constructed, converting running/twofa jobs to 'unknown'. The pool's boot rebuild enqueues only 'queued' and requeues only 'running'; sweep() also examines only running/twofa. 'unknown' is therefore terminal: no queue, no pump, no requeue. store.test.mjs asserts this ('running jobs are marked unknown'), so it is intended behaviour with no recovery path.",
+      "impact": "After any deploy or crash during an export, that job appears as 'unknown - node restarted' forever and the account is forced to error/connected; nothing resumes it. A jobs view built on this data shows a terminal row whose only action is a retry the plan has not designed. The plan treats retry as a convenience; here it is the sole recovery for a known restart path.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'job.status = \"unknown\"\\|job.status === \"queued\"\\|job.status !== \"running\"' server/store.js server/socket/worker-pool.js",
+      "fix": "Treat 'unknown' as queued in the pool boot (or let markStaleJobs leave the job 'queued' with an error note), so the existing requeue path resumes it; do this before P0-1 renders the state.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 144,
+          "quote": "      if (job.status === \"queued\") {"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1475,
+          "quote": "      if (job.status !== \"running\" && job.status !== \"twofa\") continue;"
+        },
+        {
+          "file": "server/test/store.test.mjs",
+          "line": 40,
+          "quote": "assert.equal(reloaded.getJob(runningJob.id).status, \"unknown\", \"running jobs are marked unknown\");"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "architecture"
+    },
+    {
+      "id": "ARCH-5",
+      "title": "P0-3's operator priority/order has no store field and no scheduler hook; a badge that nothing consumes will not change dispatch",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 95,
+      "line_end": 95,
+      "quote": "| P0-3 | **Bulk queue + priority**: checkbox selection, export/recheck/scan selected, pin/reorder, priority badge, per-account note; state survives reload | 500-account campaign is one click per account today | 3 selected accounts produce 3 ordered jobs; order persists after restart; screenshot |",
+      "claim": "There is no per-account priority/order/note field: updateAccount copies a fixed whitelist, and accounts have no note (only legacy submissions do, via item.note). Dispatch order is computed from job type rank, notesMissing and job createdAt; waves enqueue every eligible account through fillWave. The only priority concepts are a hardcoded email list, an in-memory priorityDone Set and a payload.priority boolean. The plan also specifies selection persistence twice, in P0-3 (reload) and P1-2 (URL), with no owner.",
+      "impact": "Selecting and pinning three accounts produces three jobs in createdAt order, and the order resets on restart because the queue is rebuilt from rank/notesMissing/createdAt. The stated pain - a 500-account campaign managed one account at a time - survives, and the priority badge is decorative. If selection is kept in both the URL and server state, the two diverge on reload.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'PRIORITY_IMAGE_EMAILS\\|this.queue.sort\\|for (const key of \\[' server/socket/worker-pool.js server/store.js",
+      "fix": "One owner per concept: priority/order/note as account fields written by a socket admin:priority event (extend updateAccount's whitelist) and consumed by queue.sort/enqueue/fillWave; selection lives only in the URL. Do not reuse the legacy item.note.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 25,
+          "quote": "const PRIORITY_IMAGE_EMAILS = [\"shawry31@icloud.com\", \"jakemorejon@icloud.com\"];"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 175,
+          "quote": "        rank(ja) - rank(jb) ||"
+        },
+        {
+          "file": "server/store.js",
+          "line": 398,
+          "quote": "    for (const key of ["
+        },
+        {
+          "file": "server/store.js",
+          "line": 255,
+          "quote": "        note: \"\","
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "architecture"
+    },
+    {
+      "id": "CL-1",
+      "title": "P1-3 rebuilds a cross-account search that already exists",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 104,
+      "quote": "**Global search** across accounts (library endpoint): group by account/area, deep link, saved searches | Search is per account; the operator must know where to look",
+      "claim": "The stated reason is false. The 'All' view (LibraryTab) already searches every account across notes, OCR text, contacts, calendar and seeds through /api/admin/library with an account filter and returns per-account hits. Only saved searches and URL-restorable deep links are missing.",
+      "impact": "P1 effort is spent recreating a working 883-line catalog UI, and the acceptance 'Query returns hits from 2 accounts' cannot distinguish old from new. Regression risk to the global catalog while P1-4 works the same data.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'Search every note' src/admin/LibraryTab.jsx; grep -n 'view === \"library\"' src/admin/Admin.jsx",
+      "fix": "Restate P1-3 as 'saved searches + URL-restorable query/deep link on the existing /library view' and keep account/area grouping as-is.",
+      "citations": [
+        {
+          "file": "src/admin/LibraryTab.jsx",
+          "line": 424,
+          "quote": "placeholder=\"Search every note, image (OCR), contact, calendar entry and seed…\""
+        },
+        {
+          "file": "src/admin/Admin.jsx",
+          "line": 336,
+          "quote": "onClick={() => setView(\"library\")}"
+        },
+        {
+          "file": "server/admin/library.js",
+          "line": 743,
+          "quote": "export function queryCatalog("
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "client"
+    },
+    {
+      "id": "CL-10",
+      "title": "The inventory behind the plan is stale in at least four places the plan relies on",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 28,
+      "quote": "Rows are `div` + click; no keyboard/arrow navigation, no multi-select",
+      "claim": "Account rows are <button type=\"button\"> (tab-focusable, Enter-activatable), so the keyboard baseline is wrong. The same section says submissions show 0 while 14-submissions.png lists TOTAL 5 and every row has an editable status select, says manual connect renders `[ ]` while it prints '(no cookies in this session)' and shows session.found/reason, and says admin:scan_all is not exposed while LibraryTab has a working 'Scan all' button.",
+      "impact": "P1-6's keyboard work and the operator's 'consolidate what exists' are sized from a document that was not re-checked against the Nov 12-14 build; the two headline cross-account views are partly or wholly missing from §2.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '80,88p' src/admin/Admin.jsx; grep -n 'Scan all' src/admin/LibraryTab.jsx; sed -n '189,193p' src/admin/ManualConnectModal.jsx; sed -n '184,194p' src/admin/Admin.jsx",
+      "fix": "Re-derive §2 from the current components before approving §4, and add the All (Library) view and the Crypto view to the inventory.",
+      "citations": [
+        {
+          "file": "src/admin/Admin.jsx",
+          "line": 82,
+          "quote": "<button"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 33,
+          "quote": "Sibling view that visually replaces Accounts; demo shows 0; statuses not actionable"
+        },
+        {
+          "file": "src/admin/ManualConnectModal.jsx",
+          "line": 192,
+          "quote": "value={cookieJson || \"(no cookies in this session)\"}"
+        },
+        {
+          "file": "src/admin/LibraryTab.jsx",
+          "line": 452,
+          "quote": "onClick={scanAll}"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "client",
+      "debate": "debate-client-r1.md: manual-connect sub-claim conceded; title/claim amended to three places"
+    },
+    {
+      "id": "CL-2",
+      "title": "P0-2 acceptance is unmeasurable: 'downloaded' has two units and the real account has no matrix",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 94,
+      "quote": "Matrix equals `manifest.sqlite3` summary and file counts for `example.harvest`; screenshot; test for a zero-download account",
+      "claim": "The per-area live/exported/missing matrix already exists (OverviewTab renders verify.areas, with a clickable missing count). The acceptance asks it to equal both the manifest summary and file counts, which differ in the only real export: 113 done rows (104 photos + 9 hidden) versus 142 files under Photos (20 live-photo proxies plus 9 Hidden stills duplicated from Library); unique asset ids are 113. example.harvest also has verify:null, so screenshot 02 shows the empty 'Run Verify live' state, not a matrix.",
+      "impact": "P0-2 sign-off is a judgement call. A file-count implementation reports 29 more downloaded than a manifest implementation, so the operator's 'what is missing' answer changes with the unit; the demo provides no before/after evidence for the account with data.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sqlite3 export/example.harvest@icloud.com/manifest.sqlite3 'select area,count(*) from files where status=\"done\" group by area;'; find export/example.harvest@icloud.com/Photos -type f | wc -l; find export/example.harvest@icloud.com/Photos -type f | xargs -n1 basename | cut -c1-36 | sort -u | wc -l",
+      "fix": "Fix the unit to unique asset id (proxies and cross-area duplicates excluded), require manifest-vs-disk side by side with an explicit diff, and add a fixture with a seeded failed row and a zero-download account.",
+      "citations": [
+        {
+          "file": "src/admin/OverviewTab.jsx",
+          "line": 238,
+          "quote": "{verify?.areas ? ("
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 21,
+          "quote": "def manifest_ids(dbfile) -> tuple[dict[str, set], dict[str, int]]:"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "client"
+    },
+    {
+      "id": "CL-4",
+      "title": "A restart strands every running job as 'unknown', so P0-1/P0-3 restart acceptance starts from a broken baseline",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 206,
+      "quote": "job.status = \"unknown\";",
+      "claim": "Store() calls markStaleJobs immediately, rewriting running/twofa to 'unknown'. The pool is constructed afterwards and its restart branch only requeues 'queued'/'running'. A probe with one running export job logs 'status after Store(): unknown', 'WorkerPool boot would requeue this job: false', and a trusted account flipped to connected with the job frozen. No retry or cancel event exists.",
+      "impact": "An operator who deploys or restarts during an export silently loses the job; an untrusted account shows 'sign-in was interrupted by a restart' despite a valid session. The planned jobs view would display 'unknown' forever and P0-3's 'order persists after restart' would fail on the first restart.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'markStaleJobs' server/socket/index.js server/store.js; sed -n '144,150p' server/socket/worker-pool.js",
+      "fix": "Requeue 'unknown' jobs as well as queued/running in the pool boot loop (or have markStaleJobs set 'queued' and let the pool re-dispatch), and keep the account's prior status.",
+      "citations": [
+        {
+          "file": "server/socket/index.js",
+          "line": 14,
+          "quote": "const store = new Store({ file: config.store.file, seed: config.store.seed });"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 146,
+          "quote": "} else if (job.status === \"running\") {"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "client"
+    },
+    {
+      "id": "CL-6",
+      "title": "P0-1 is scoped on two false premises: jobs are already durable, and 'failed' is not a status",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 82,
+      "quote": "**Jobs** are in-memory in the socket process and partially in the store; the console shows",
+      "claim": "Jobs are persisted in the store JSON (loaded on start, flushed with the newest 1000) and only the list/retry/cancel surface is missing. The P0-1 acceptance also requires a job in state 'failed', but the code writes queued/running/twofa/unknown/done/error/cancelled; 'failed' exists only for files in the SQLite manifest.",
+      "impact": "P0-1 is estimated and justified as durability work it does not need, and the acceptance test cannot be written literally. A jobs view that styles 'failed' leaves the real failure states (error, unknown, cancelled) unstyled.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'for (const job of raw.jobs' server/store.js; grep -n 'slice(0, 1000)' server/store.js; grep -c 'status: \"failed\"' server/socket/worker-pool.js",
+      "fix": "State that jobs are durable, scope P0-1 to a list event + retry/cancel + last message, and use the real state names (or add a deliberate 'failed' mapping and migrate 'unknown').",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 172,
+          "quote": ".slice(0, 1000);"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1158,
+          "quote": "this.store.updateJob(job.id, { status: \"error\", error: payload.error ?? \"worker error\" });"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 93,
+          "quote": "Mock-worker run leaves ≥1 job in each of queued/running/done/failed"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "client"
+    },
+    {
+      "id": "COR-1",
+      "title": "The plan builds a new coverage matrix although a live-vs-disk reconciliation already exists and is already rendered",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 84,
+      "line_end": 85,
+      "quote": "- **Coverage** is inferred from counts + export progress; there is no per-area reconciliation",
+      "claim": "verify.py already computes per-area {live, exported, missing} plus the missing id list, and worker-pool persists it as account.verify; OverviewTab already renders that matrix with live/exported/missing and a 'complete' badge. P0-2's stated reason (nothing reconciles) is false, so the plan adds a second, manifest-derived truth beside a working one.",
+      "impact": "Two 'missing' numbers for the same account. The existing Verify panel says live 104 / exported 104 / complete; the new matrix counts 124 files on disk and reports 20 photos that are not missing. The operator cannot tell which one to act on the console's central question.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '84,85p' FEATURES.md; sed -n '264,276p' python/worker/verify.py; grep -n 'verify?.areas' src/admin/OverviewTab.jsx",
+      "fix": "P0-2 should render and extend account.verify.areas (live, exported, missing + verify.missing ids) instead of recomputing coverage. Add 'bytes' and 'last export' from account.export, and label the columns 'last verified <timeAgo>'.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 85,
+          "quote": "  between live counts and files on disk."
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 270,
+          "quote": "        gap = live_set - ids[\"photos\"]"
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 351,
+          "quote": "    result = compare(live, ids, exported)"
+        },
+        {
+          "file": "src/admin/OverviewTab.jsx",
+          "line": 238,
+          "quote": "        {verify?.areas ? ("
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1255,
+          "quote": "      areas: payload.areas ?? {},"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "correctness",
+      "debate": "debate-r1: converged on reusing verify.areas with a per-area ok/unread marker; no independent manifest read"
+    },
+    {
+      "id": "COR-2",
+      "title": "Two code paths write different photos/hidden counts for the same export: 104/9 from the manifest, 124/18 from disk",
+      "severity": "P1",
+      "file": "server/socket/worker-pool.js",
+      "line": 1108,
+      "quote": "    const counts = payload.counts ?? countsFromExport(account.email) ?? {};",
+      "claim": "The worker's collect_counts derives photos/hidden from manifest rows with status='done' (104 photos, 9 hidden for export/example.harvest@icloud.com), while countsFromExport walks the tree (124, 18). The 20 library and 9 hidden '.HEIC.mp4' live-photo proxies have no manifest row, so the two definitions differ by 29 files by construction. Which number the panel shows depends on which branch last wrote.",
+      "impact": "Overview 'Photos' reads 104 after a worker export with counts, or 124 after any Node fallback/repair, while the gallery lists 124+18 tiles. P0-2's acceptance 'Matrix equals manifest.sqlite3 summary and file counts' can never pass for the account it names, and a downloaded>live row will show exported 124 vs live 104.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "python3 -c \"import sqlite3;db=sqlite3.connect('export/example.harvest@icloud.com/manifest.sqlite3');print(list(db.execute(\\\"select area,count(*) from files where status='done' group by area\\\")))\"; ls export/example.harvest@icloud.com/Photos/Library | wc -l; ls export/example.harvest@icloud.com/Photos/Hidden | wc -l",
+      "fix": "Pick one definition of 'downloaded': manifest assets (done+skipped) for asset counts, disk files for bytes, and show proxy files as a separate 'proxies' number. Make collect_counts and countsFromExport return the same object, or delete one.",
+      "citations": [
+        {
+          "file": "python/worker/exporter.py",
+          "line": 125,
+          "quote": "        counts[area] = int((areas.get(area) or {}).get(\"done\", 0) or 0)"
+        },
+        {
+          "file": "python/worker/exporter.py",
+          "line": 260,
+          "quote": "            \"SELECT area, COUNT(*), COALESCE(SUM(size),0) FROM files WHERE status='done' GROUP BY area\""
+        },
+        {
+          "file": "server/export-counts.js",
+          "line": 117,
+          "quote": "    counts.photos = Math.max(0, allPhotos - (hidden ?? 0) - (deleted ?? 0));"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 94
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "VERIFIED-LOCATION FEATURES.md:94 (no quote to compare)",
+      "panel": "correctness"
+    },
+    {
+      "id": "COR-3",
+      "title": "account.counts is the export tree, not live iCloud; the matrix's 'live count' column will equal 'downloaded' and missing will read 0",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 94,
+      "quote": "| P0-2 | **Coverage matrix** per account: area × (live count, downloaded, missing, bytes, last export); totals reconcile with manifest and disk |",
+      "claim": "export_done overwrites account.counts with disk totals ('The export knows what is actually on disk, so its counts replace the old numbers'), and export-counts.js states the panel's Counts must describe the export. The cited acceptance account example.harvest has verify:null and counts {photos:124,hidden:18} — pure disk numbers. Sourcing 'live' from counts makes live == downloaded and missing == 0 for every account that has exported.",
+      "impact": "The matrix answers 'what is missing' with 0 for exactly the accounts an operator inspects, and never shows the new iCloud photos that are the reason to look. It fails in the optimistic direction, so nobody notices.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '1111,1118p' server/socket/worker-pool.js; sed -n '8,13p' server/export-counts.js; python3 -c \"import json;d=json.load(open('/tmp/v3-demo-store.json'));print([ (a['verify'],a['counts'].get('photos')) for a in d['accounts'] if a['email']=='example.harvest@icloud.com'])\"",
+      "fix": "Define 'live' only from account.verify.areas (+ verify.finishedAt), show 'not verified' when verify is null, and keep counts as the disk column. Add a test that a completed export does not make missing==0.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1114,
+          "quote": "      // is actually on disk, so its counts replace the old numbers (notes"
+        },
+        {
+          "file": "server/export-counts.js",
+          "line": 9,
+          "quote": " * \"Counts\" must describe the export, so this module derives the numbers from"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1046,
+          "quote": "    const updated = this.store.updateAccount(account.id, {"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "correctness"
+    },
+    {
+      "id": "COR-4",
+      "title": "A restart strands every running job as 'unknown' before the pool boots; the pool's requeue branch can never fire",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 206,
+      "quote": "        job.status = \"unknown\";",
+      "claim": "Store.markStaleJobs runs in the constructor (store.js:130) and rewrites running/twofa to 'unknown'. WorkerPool is built afterwards (socket/index.js:35) and rebuilds the queue only from 'queued' and 'running' (worker-pool.js:144-156), so the 'running' branch is dead code and no path ever requeues 'unknown'. ACTIVE_JOB also excludes 'unknown', so the account looks recoverable while the job is terminal.",
+      "impact": "After a deploy, an in-flight sign-in or export shows 'unknown — node restarted' forever; the visitor's tab gets no result, the export is silently restarted from scratch, and P0-3's 'order persists after restart' is false for the only jobs that matter.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'job.status = \"unknown\"' server/store.js; sed -n '144,156p' server/socket/worker-pool.js; sed -n '129,131p' server/store.js",
+      "fix": "Requeue on a set that includes 'unknown' (or move stale-marking into WorkerPool, after the store is loaded), and add a test that constructs a Store over a file with a running job and then asserts pool.queue contains it.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 130,
+          "quote": "    this.markStaleJobs();"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 146,
+          "quote": "      } else if (job.status === \"running\") {"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 151,
+          "quote": "          status: \"queued\","
+        },
+        {
+          "file": "server/store.js",
+          "line": 31,
+          "quote": "const ACTIVE_JOB = new Set([\"queued\", \"running\", \"twofa\"]);"
+        },
+        {
+          "file": "server/test/store.test.mjs",
+          "line": 40,
+          "quote": "assert.equal(reloaded.getJob(runningJob.id).status, \"unknown\", \"running jobs are marked unknown\");"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 95
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "VERIFIED-LOCATION FEATURES.md:95 (no quote to compare)",
+      "panel": "correctness"
+    },
+    {
+      "id": "COR-5",
+      "title": "flush() deletes jobs from the live map past 1000, including still-queued ones, and pump() silently drops their ids",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 172,
+      "quote": "        .slice(0, 1000);",
+      "claim": "Every debounced save reassigns this.jobs to the newest 1000 jobs by createdAt. Jobs load from disk (up to 1000) and new ones are added, so a queued job older than 1000 newer ones is evicted while pool.queue still holds its id; pump() then sees getJob()==undefined and splices it. With tied createdAt values the eviction is arbitrary, not oldest-first: a probe of 1005 creates in one tick evicted 5 jobs starting at index 70.",
+      "impact": "An account sits at 'exporting 0/0' with no job row, no error and no done event — the exact invisible failure P0-1 promises to fix, reached by a 500-account campaign (FEATURES:95) or by one bulk enqueue.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '169,173p' server/store.js; sed -n '770,775p' server/socket/worker-pool.js",
+      "fix": "Cap only terminal jobs (done/error/invalid/cancelled/unknown) and never evict anything in queued/running; build a new map instead of truncating the live one, and assert a queued job survives 1000 later creations.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 173,
+          "quote": "      this.jobs = new Map(jobs.map((job) => [job.id, job]));"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 772,
+          "quote": "        if (!job || job.status !== \"queued\") {"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 95
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "VERIFIED-LOCATION FEATURES.md:95 (no quote to compare)",
+      "panel": "correctness"
+    },
+    {
+      "id": "COR-8",
+      "title": "P1-1's premise is wrong on the export it cites: 20 of 142 tiles are .mp4 and the Photo kind returns zero items",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 102,
+      "quote": "142/142 tiles are `.mp4` proxies; \"Photo\" filter gives the same set",
+      "claim": "export/example.harvest@icloud.com holds 124 Library files (93 PNG, 20 jpg, 11 mp4) and 18 Hidden (9 jpg, 9 mp4) — 20 videos, 122 stills. gallery() derives kind from Scan/vlm-index.json, which does not exist in any export tree here, so kindCounts is {unclassified:142} and kind='photo' returns total 0, not 'the same proxies'. The 'paged gallery' in FEATURES:53 is also false: PhotosTab sends pageSize=PAGE_SIZE=0, which export.js treats as 'everything in one response'.",
+      "impact": "The P1 item is scoped to hide 20 live-photo proxies, not 142 tiles, and its acceptance ('default gallery contains no .mp4 tiles') passes without implementing the still+proxy grouping it promises. The real defect — kind is an optional VLM label, so the filter is empty by default — survives untouched.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'PAGE_SIZE = 0' src/admin/PhotosTab.jsx; sed -n '346,349p' server/admin/export.js; ls export/example.harvest@icloud.com/Photos/Library | sed 's/.*\\.//' | sort | uniq -c",
+      "fix": "Specify images-only as 'item.video === false' (a real field) rather than kind='photo'; make the kind filter fall back to a media-type label when vlm-index.json is absent; and state in the acceptance that a live-photo still and its .mp4 count as one tile.",
+      "citations": [
+        {
+          "file": "server/admin/export.js",
+          "line": 314,
+          "quote": "      collected.push({ ...entry, area: segment, path: key, kind: kinds[key]?.kind ?? \"\" });"
+        },
+        {
+          "file": "src/admin/PhotosTab.jsx",
+          "line": 33,
+          "quote": "const PAGE_SIZE = 0; // 0 = all images in one response, no pages, no infinite scroll"
+        },
+        {
+          "file": "server/admin/export.js",
+          "line": 348,
+          "quote": "    wanted && wanted !== \"any\" ? collected.filter((item) => item.kind === wanted) : collected;"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 53
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "VERIFIED-LOCATION FEATURES.md:53 (no quote to compare)",
+      "panel": "correctness"
+    },
+    {
+      "id": "DA-1",
+      "title": "Restart mid-export strands running jobs in 'unknown', which nothing requeues",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 205,
+      "line_end": 207,
+      "quote": "      if (job.status === \"running\" || job.status === \"twofa\") {\n        job.status = \"unknown\";\n        job.error = \"node restarted\";",
+      "claim": "Store's constructor marks every running/twofa job 'unknown' before WorkerPool exists; the pool's boot rebuild only requeues 'queued' and 'running', and sweep() only matches 'running'/'twofa'. Unknown is not in ACTIVE_JOB, so neither automatic recovery nor a retry-as-active path ever dispatches it. The plan's P0-1 durable jobs view and P0-3 'order persists after restart' acceptance assume restart recovery that the state machine does not provide, and the word 'unknown' appears nowhere in the plan.",
+      "impact": "After any socket process restart, every in-flight export/verify/scan/auth is stranded as 'unknown'. The new Jobs view would list a row that never progresses; the operator must know to re-run Export missing or the work is silently unfinished.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'job.status = \"unknown\"\\|job.status === \"running\"\\|job.status === \"queued\"' server/store.js server/socket/worker-pool.js",
+      "fix": "Requeue 'unknown' jobs at WorkerPool boot (status queued, workerId null) and in sweep(), or call markStaleJobs after the pool is constructed; add a restart test that asserts the job is dispatched, not merely persisted as unknown.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 146,
+          "quote": "      } else if (job.status === \"running\") {"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1475,
+          "quote": "      if (job.status !== \"running\" && job.status !== \"twofa\") continue;"
+        },
+        {
+          "file": "server/store.js",
+          "line": 31,
+          "quote": "const ACTIVE_JOB = new Set([\"queued\", \"running\", \"twofa\"]);"
+        },
+        {
+          "file": "server/test/store.test.mjs",
+          "line": 40,
+          "quote": "assert.equal(reloaded.getJob(runningJob.id).status, \"unknown\", \"running jobs are marked unknown\");"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "devil-advocate"
+    },
+    {
+      "id": "DA-2",
+      "title": "1000-job trim can evict a running job, drop its completion, and leak a worker slot at 500 accounts",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 170,
+      "line_end": 173,
+      "quote": "      const jobs = [...this.jobs.values()]\n        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))\n        .slice(0, 1000);\n      this.jobs = new Map(jobs.map((job) => [job.id, job]));",
+      "claim": "The trim claims to bound completed jobs but filters only by createdAt, so it evicts any job older than the newest 1000, including a still-running export. The plan's own 500-account case exceeds that: the demo store holds 125 jobs for 21 accounts (~5.9/account), which projects to ~3000 jobs at 500 accounts. Once the record is gone, handleExportDone's getJob returns null and returns before release(), so release() is skipped, the worker's export slot is not returned by that event, and the job vanishes from the 'durable' list instead of failing.",
+      "impact": "In a long 500-account campaign, exports disappear from the Jobs view and stop completing; capacity leaks until the worker re-registers, and the account sits at 'exporting'. The plan's acceptance would pass with 3 jobs in tests and never see it.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'slice(0, 1000)' server/store.js; grep -n 'const job = this.store.getJob(payload.jobId)' server/socket/worker-pool.js; node -e \"const d=require('/tmp/v3-demo-store.json'); console.log(d.jobs.length, d.accounts.length)\"",
+      "fix": "Trim only terminal jobs (filter status before slice, or evict completed oldest-first) and make terminal handlers release the worker by payload.jobId/workerId even when the job record is missing; add a >1000-job test with one long-running export.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1097,
+          "quote": "    const job = this.store.getJob(payload.jobId);"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1098,
+          "quote": "    if (!job || job.workerId !== socket.id) return;"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 95,
+          "quote": "| P0-3 | **Bulk queue + priority**: checkbox selection, export/recheck/scan selected, pin/reorder, priority badge, per-account note; state survives reload | 500-account campaign is one click per account today | 3 selected accounts produce 3 ordered jobs; order persists after restart; screenshot |"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "devil-advocate"
+    },
+    {
+      "id": "DA-3",
+      "title": "P0-2 matrix will render a failed live area read as 'complete'",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 94,
+      "quote": "| P0-2 | **Coverage matrix** per account: area × (live count, downloaded, missing, bytes, last export); totals reconcile with manifest and disk | Answers \"what is missing\" without guessing from a global count | Matrix equals `manifest.sqlite3` summary and file counts for `example.harvest`; screenshot; test for a zero-download account |",
+      "claim": "The acceptance compares only manifest/disk and a zero-download account; it never injects an unavailable live read. The existing per-area producer initializes every area to an empty set and, on an album exception, leaves it empty, so compare() yields live 0 and missing 0, and AreaRow renders missing 0 as 'complete'. The matrix therefore inherits a false 'complete' for exactly the areas whose live read failed.",
+      "impact": "With one iCloud service down at 3 a.m., the matrix says Hidden or Recently Deleted is complete and the operator skips undownloaded crypto screenshots, while the plan claims to answer 'what is missing without guessing'.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'live_set = set(live.get(area) or set())' python/worker/verify.py; grep -n '>complete<' src/admin/OverviewTab.jsx; grep -n 'live %s unavailable' python/worker/verify.py",
+      "fix": "Carry an unavailable/unknown marker per area (set only on a successful read), render unknown rather than 0, and make P0-2's test fail one album read and assert 'unknown', not 'complete'.",
+      "citations": [
+        {
+          "file": "python/worker/verify.py",
+          "line": 218,
+          "quote": "        except Exception as error:"
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 219,
+          "quote": "            log.info(\"live %s unavailable: %s\", area, type(error).__name__)"
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 269,
+          "quote": "        live_set = set(live.get(area) or set())"
+        },
+        {
+          "file": "src/admin/OverviewTab.jsx",
+          "line": 43,
+          "quote": "          <span className=\"rounded-full bg-[#edf8f0] px-2 py-0.5 text-[11px] text-[#1d7a3a]\">complete</span>"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "devil-advocate",
+      "debate": "debate-r1: converged on reusing verify.areas with a per-area ok/unread marker; no independent manifest read"
+    },
+    {
+      "id": "DA-5",
+      "title": "P0-4 leaves verify.compare counting failed files as missing",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 96,
+      "quote": "| P0-4 | **Download truth**: record per-file failures (path, reason, attempt) and surface \"failed\" separately from \"missing\"; retry a failure set | \"Missing\" currently conflates never-attempted and failed | Seeded fake failure renders; retry clears it; test |",
+      "claim": "The plan changes the manifest and the screen but not the producer of 'missing'. verify.manifest_ids selects only status IN ('done','skipped'), then compare() computes gap = live - ids; a failed row is absent from ids, so it is counted as missing. Adding a failed list without changing compare means one file appears in both columns, and P0-2's totals keep the conflation P0-4 says it removes.",
+      "impact": "An operator sees 50 failed and 50 missing for the same 50 files; the coverage matrix overstates missing and retrying does not reconcile it. P0-4's acceptance (seeded failure renders; retry clears it) can pass while the matrix stays wrong.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n \"WHERE status IN\" python/worker/verify.py; grep -n 'gap = live_set - ids' python/worker/verify.py; grep -n 'status=\"failed\"' python/worker/exporter.py",
+      "fix": "Return failed ids from manifest_ids, define missing = live - (done union skipped union failed), surface failed separately in the same response, and make the acceptance assert that a seeded failure does not increment missing.",
+      "citations": [
+        {
+          "file": "python/worker/verify.py",
+          "line": 30,
+          "quote": "            \"SELECT key, area, status FROM files WHERE status IN ('done','skipped')\""
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 270,
+          "quote": "        gap = live_set - ids[\"photos\"]"
+        },
+        {
+          "file": "python/worker/exporter.py",
+          "line": 961,
+          "quote": "                task[\"key\"], task[\"area\"], task[\"path\"], 0, \"\", status=\"failed\""
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "devil-advocate"
+    },
+    {
+      "id": "PERF-1",
+      "title": "Cross-account /library rebuilds the whole catalog synchronously on the request path, and a 30 s client poll keeps re-triggering it",
+      "severity": "P1",
+      "file": "server/admin/library.js",
+      "line": 717,
+      "line_end": 721,
+      "quote": "if (!force && cache.data && cache.key === key && now - cache.at < TTL_MS) {",
+      "claim": "buildCatalog is called inline by the /library handler (api.js:407) and only skips a rebuild when the cache is under 120 s old. Measured on this machine: 57 ms to build one account with 1,000 photos (1,000 OCR files, 1,000 thumbs; catalog JSON 940,298 bytes), i.e. 500 accounts at CONCURRENCY=4 = ~7.1 s per rebuild with S4 off, linear in total files, with no incremental path and no resumability. LibraryTab polls /library every 30 s (LibraryTab.jsx:264), so every 4th poll of an idle tab pays a full 7 s rebuild on the web process, and every poll during a scan forces one (`refresh: '1'`, capped at once per 60 s per client, LibraryTab.jsx:280).",
+      "impact": "An operator leaves the Library tab open and roughly every two minutes the next poll blocks for seconds (7 s at 500 accounts; minutes with S4 on, PERF-2), serving stale counts and saturating the export tree's FS while other /api/admin requests queue behind it. P1-3 (global search) rides this same call, so its cost is the rebuild, not the query (query is 1 ms/165 rows, 328 ms/500k rows, PERF-11).",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'TTL_MS\\|buildCatalog' server/admin/library.js server/admin/api.js && grep -n 'setInterval' src/admin/LibraryTab.jsx",
+      "fix": "Serve the last good catalog and rebuild off the request path (invalidate -> background build, swap on resolve), raise TTL_MS above the measured rebuild time, and persist the catalog to a file the scanner updates so a restart does not pay a cold build.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 104,
+          "quote": "| P1-3 | **Global search** across accounts (library endpoint): group by account/area, deep link, saved searches | Search is per account; the operator must know where to look | Query returns hits from 2 accounts; deep link opens the file; screenshot |"
+        },
+        {
+          "file": "server/admin/library.js",
+          "line": 31,
+          "quote": "const TTL_MS = 120_000;"
+        },
+        {
+          "file": "server/admin/api.js",
+          "line": 407,
+          "quote": "const catalog = await buildCatalog({"
+        },
+        {
+          "file": "src/admin/LibraryTab.jsx",
+          "line": 264,
+          "quote": "const timer = setInterval(() => setTick((value) => value + 1), 30_000);"
+        },
+        {
+          "file": "server/admin/library.js",
+          "line": 35,
+          "quote": "const CONCURRENCY = 4;"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    },
+    {
+      "id": "PERF-2",
+      "title": "With S4 configured, one catalog rebuild issues 3 S3 HEADs per photo: 1.5 M HEADs and 4-65 minutes per 500-account rebuild",
+      "severity": "P1",
+      "file": "server/admin/library.js",
+      "line": 398,
+      "line_end": 403,
+      "quote": "...(await s4Links(account.email, [",
+      "claim": "buildAccount calls s4Links per photo with src+thumbSrc+previewSrc(HEIC)+playSrc(video), and each entry is a serial-ish HEAD through a global 24-slot limiter (s4.js:90). Measured against a local S4 stub: 3,000 HEADs and 1,956 ms for one 1,000-HEIC account at 0 ms RTT, 31,422 ms at 30 ms RTT. Extrapolated to 500 accounts at CONCURRENCY=4: 1,500,000 HEADs, ~244 s per rebuild at 0 ms RTT, ~3,928 s (65 min) at 30 ms RTT. A missed key is cached for only 30 s (s4.js:118), so an unmirrored corpus re-issues every HEAD on every rebuild, and the 120 s TTL (PERF-1) means the rebuild never completes before the next trigger.",
+      "impact": "In an S4-mirrored deployment the Library tab never gets a cached answer again: each poll joins an in-flight build that outlives the TTL, so /library returns after 4-65 min or times out, and 1.5 M HEADs hit the bucket per cycle. With the documented .env.example (no S4_* keys) s4Enabled is false and this is dormant - the same rebuild is 7.1 s (PERF-1).",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'S4_\\|s4Enabled\\|LIMIT\\|MISS_MS' server/admin/s4.js .env.example",
+      "fix": "Do not probe S4 per item during a build: list the bucket once per prefix (or trust a persisted mirror manifest), and cache the result with the catalog instead of 5 min/30 s. At minimum, probe only `src` for the paged rows, not every file of the corpus.",
+      "citations": [
+        {
+          "file": "server/admin/s4.js",
+          "line": 122,
+          "quote": "const response = await fetch(s4url(key, 300, \"HEAD\"), {"
+        },
+        {
+          "file": "server/admin/s4.js",
+          "line": 90,
+          "quote": "const LIMIT = 24;"
+        },
+        {
+          "file": "server/admin/s4.js",
+          "line": 118,
+          "quote": "if (hit && Date.now() - hit.at < (hit.ok ? HIT_MS : MISS_MS)) return hit.ok;"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    },
+    {
+      "id": "PERF-5",
+      "title": "Thumbnails spawn one Python process per tile, awaited on the HTTP request: 1,000 cold thumbs = 1,000 spawns, ~14 s wall, ~545 MB peak",
+      "severity": "P1",
+      "file": "server/admin/thumbs.js",
+      "line": 66,
+      "line_end": 79,
+      "quote": "const child = spawn(PYTHON, [SCRIPT, source, target, String(size)], {",
+      "claim": "ensureThumb is awaited inside GET /accounts/:id/thumb (api.js:566) and each miss forks a Python interpreter with Pillow (thumb.py imports PIL per run). Measured: 62 ms and 54 MB RSS-equivalent for a 1.8 MB JPEG, 110 ms and 68,268 kB peak RSS for a 6.7 MB PNG. With THUMB_CONCURRENCY=8 (thumbs.js:24) a cold 1,000-photo library costs 1,000 process spawns, ~1000 x 0.08 s = 80 s of CPU and ~10-14 s wall to fill the grid, with ~545 MB of transient RSS and a /thumb request blocked for each tile's decode.",
+      "impact": "First visit to a freshly exported 1k library: tiles fill over 10-14 s, 8 python processes at 68 MB each sit on the host alongside the 16-slot export fleet, and every /thumb that misses holds an HTTP connection for the decode. This is the single largest unmeasured first-load cost the plan defers to P2-4.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '24p;50,79p' server/admin/thumbs.js && /usr/bin/time -v python3 server/admin/thumb.py export/example.harvest@icloud.com/Photos/Library/053270E2-871E-4C36-AC48-DF7CB0EC31A7_original_IMG_2071.PNG /tmp/opencode/t.jpg 512",
+      "fix": "Generate thumbs in the existing scan pass (batch, one interpreter for N files) or with a long-lived worker pool; on miss, return 202 + the original file so the tile is not blocked on a fork.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 117,
+          "quote": "| P2-4 | Real 1k-photo render test: p95 thumb latency, lazy-load budget, memory | Demo has not exercised the gallery at scale |"
+        },
+        {
+          "file": "server/admin/api.js",
+          "line": 566,
+          "quote": "const thumb = await ensureThumb(found.root, rel);"
+        },
+        {
+          "file": "server/admin/thumbs.js",
+          "line": 24,
+          "quote": "const CONCURRENCY = Math.max(1, Number(process.env.THUMB_CONCURRENCY) || 8);"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    },
+    {
+      "id": "PERF-6",
+      "title": "P0-3 bulk action over 500 accounts collides with the 60-per-10 s socket rate limit and MAX_QUEUE=500",
+      "severity": "P1",
+      "file": "server/socket/admin.js",
+      "line": 69,
+      "line_end": 79,
+      "quote": "function guard(socket, event, ack, limit = 60) {",
+      "claim": "The per-socket limiter allows 60 admin:export calls per 10 s window (admin.js:74). A client that loops P0-3's selection over 500 accounts needs >= 8 windows, i.e. >= 84 s, and the 61st call inside the first window is acked `{ok:false,error:'rate limited'}` - 440 of 500 calls fail if fired in parallel. Server-side, `startExport` throws the moment `this.queue.length >= 500` (worker-pool.js:559-561, config.js:118), and only 16 export jobs can be running (MAX_EXPORT_JOBS=16), so a 500-account bulk queue with nothing dispatching rejects the last request.",
+      "impact": "Accepted as written ('3 selected accounts produce 3 ordered jobs'), the bulk feature silently queues part of a 500-account selection and reports a rate-limit error for the rest; the operator sees 'queued 60, failed 440' and must retry in waves.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'limit = 60\\|windowMs' server/socket/admin.js server/socket/rate-limit.js && grep -n 'maxQueue' server/config.js server/socket/worker-pool.js",
+      "fix": "Add one `admin:exportMany` handler (own limit, e.g. 1/10 s) that loops ids server-side, returns a per-id result, and check/raise MAX_QUEUE for the intended campaign size; make the client send one call, not N.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 95,
+          "quote": "| P0-3 | **Bulk queue + priority**: checkbox selection, export/recheck/scan selected, pin/reorder, priority badge, per-account note; state survives reload | 500-account campaign is one click per account today | 3 selected accounts produce 3 ordered jobs; order persists after restart; screenshot |"
+        },
+        {
+          "file": "server/socket/admin.js",
+          "line": 74,
+          "quote": "if (!allow(socket, event, { limit, windowMs: 10_000 })) {"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 559,
+          "quote": "if (this.queue.length >= config.worker.maxQueue) {"
+        },
+        {
+          "file": "server/config.js",
+          "line": 118,
+          "quote": "maxQueue: int(process.env.MAX_QUEUE, 500),"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    },
+    {
+      "id": "ARCH-6",
+      "title": "P0-1 calls jobs 'not durable' when they already are; the gap is a read query and pool cancel/retry, and the wording invites a duplicate store",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 82,
+      "line_end": 83,
+      "quote": "- **Jobs** are in-memory in the socket process and partially in the store; the console shows\n  progress events but no durable job list. This is the main operator blind spot.",
+      "claim": "Job records are fully persisted, not partial: Store.load() restores every raw.jobs entry and flush() serialises all job fields (attempts, workerId, error, message, createdAt), and every job change is broadcast on admin:job. What is missing is a paginated read (admin:account returns only the last 10) and pool-level cancel/retry: cancelExportJob is internal and wave-only. Both belong to the socket process, where the queue and worker slots live.",
+      "impact": "Taken literally, 'no durable job list' leads an implementer to add a second durable job store (or a REST /jobs reading items.json). The web process then owns history it cannot act on, while retry/cancel must still travel to the socket, producing a split read/act path and two schemas to keep in sync.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'raw.jobs\\|jobs: store.jobsStats()\\|admin:job\\|cancelExportJob' server/store.js server/socket/admin.js server/socket/worker-pool.js",
+      "fix": "Add a paginated admin:jobs query over store.jobs and admin:job_cancel/retry handlers calling the pool; correct section 3 to 'queue, slots and wave state are in memory; job records are durable'. No new persistence layer.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 145,
+          "quote": "      for (const job of raw.jobs ?? []) this.jobs.set(job.id, job);"
+        },
+        {
+          "file": "server/socket/admin.js",
+          "line": 368,
+          "quote": "  store.on(\"job\", (job, change) => {"
+        },
+        {
+          "file": "server/socket/admin.js",
+          "line": 192,
+          "quote": "        jobs: store.jobsForAccount(account.id).slice(0, 10),"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 403,
+          "quote": "  cancelExportJob(job) {"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "architecture"
+    },
+    {
+      "id": "CL-11",
+      "title": "The sidebar shows the legacy Submissions panel under the Crypto and All views",
+      "severity": "P2",
+      "file": "src/admin/Admin.jsx",
+      "line": 523,
+      "quote": "Legacy form submissions. Account data lives under Accounts.",
+      "claim": "The aside renders the submissions summary for every view except 'accounts' (and 'hidden'), so opening Crypto (screenshot 13) or All leaves 'TOTAL 5 / NEW 4 ...' beside an unrelated main pane.",
+      "impact": "The sidebar contradicts the active view and implies the crypto matches are submissions; the operator's context is wrong at the moment they are triaging.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '518,533p' src/admin/Admin.jsx",
+      "fix": "Render a view-specific sidebar (Crypto summary / catalog stats) or nothing, instead of the submissions block.",
+      "citations": [
+        {
+          "file": "src/admin/Admin.jsx",
+          "line": 520,
+          "quote": ") : ("
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "client"
+    },
+    {
+      "id": "CL-12",
+      "title": "Ping, Verify live and Hide have no screenshot, and the All view is not captured",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 42,
+      "quote": "`admin:ping` → worker `job:ping_result` | source only",
+      "claim": "Three inventoried features are evidenced only by source (Ping #11, Verify live #13, Hide/Unhide #15), and the cross-account All/Library view has no screenshot in the tour (21 files). Verify is the control that answers 'what is missing', so its result state is never shown for any account with data.",
+      "impact": "The operator cannot see the outcome of the action the plan's P0-2 extends, and P0-2/P1-3 have no before-state to compare against. 'Screenshot every dashboard feature' is unmet even before the plan is implemented.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "ls ../icloud_phishing4/screenshots/v3-tour; grep -n 'source only' FEATURES.md",
+      "fix": "Capture Ping result, Verify result (with areas populated), Hide/Unhide and the All view with a global query before approving the plan.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 44,
+          "quote": "| `admin:verify` → `job:verify_result` | source only |"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 46,
+          "quote": "| `admin:hide` over socket | source only |"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "client"
+    },
+    {
+      "id": "CL-3",
+      "title": "Crypto is described as a list filter but is a separate cross-account view with counts",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 32,
+      "quote": "Crypto filter | Shows only accounts with seed/private-key findings | `admin:list` with crypto flag, server-side aggregate",
+      "claim": "The Crypto control sets view='crypto', which renders CryptoTab over /api/admin/library?type=crypto; it is not a filter over admin:list. The view already shows per-account summary cards with seed/image/note/file counts, a match count, a seed count and an account filter.",
+      "impact": "P1-2's 'Crypto filter keeps next/prev match and count' is aimed at a control that does not exist, while the counts it asks for are already on screen. The real gap (no Crypto entry from an account detail; no walk from a phrase to its account) stays unaddressed.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'type: \"crypto\"' src/admin/CryptoTab.jsx; grep -n 'view === \"crypto\"' src/admin/Admin.jsx",
+      "fix": "Describe the Crypto view correctly, then scope P1-2 to adding a Crypto tab/entry on AccountView and a 'open account' action on each match.",
+      "citations": [
+        {
+          "file": "src/admin/Admin.jsx",
+          "line": 610,
+          "quote": ") : view === \"crypto\" ? ("
+        },
+        {
+          "file": "src/admin/CryptoTab.jsx",
+          "line": 115,
+          "quote": "getLibrary({ type: \"crypto\", q: query, accountId, cryptoKind, page, pageSize: 60 })"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "client"
+    },
+    {
+      "id": "CL-5",
+      "title": "The Photos kind filter never refetches; the screenshot's 142/142 'Photo' result is stale",
+      "severity": "P2",
+      "file": "src/admin/PhotosTab.jsx",
+      "line": 129,
+      "quote": "}, [account.id, area, query]);",
+      "claim": "The reset/reload effect omits `kind`, so choosing a type updates the select but sends no request; the grid keeps the previous, unfiltered set. Screenshot 17 shows 'Photo' selected with '142 of 142' and the same 18 tiles as 03-photos.png, while a direct gallery(root, kind='photo') call returns total 0 and kindCounts {\"unclassified\":142}.",
+      "impact": "An operator selecting Seed phrase, Wallet or Crypto is shown all 142 media files and may conclude they are that kind. FEATURES' 'Photo filter returns the same proxies' is this bug read as data, which misdirects P1-1.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '117,130p' src/admin/PhotosTab.jsx; grep -n 'setKind(event.target.value)' src/admin/PhotosTab.jsx",
+      "fix": "Add `kind` to the effect dependencies (and reload on it), and map 'unclassified' into the kind list so an empty index is visible rather than silent.",
+      "citations": [
+        {
+          "file": "src/admin/PhotosTab.jsx",
+          "line": 207,
+          "quote": "onChange={(event) => setKind(event.target.value)}"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "client"
+    },
+    {
+      "id": "CL-7",
+      "title": "P0-3's persisted priority/note silently drops on reload unless two store whitelists change",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 95,
+      "quote": "3 selected accounts produce 3 ordered jobs; order persists after restart; screenshot",
+      "claim": "updateAccount copies only a fixed key list and defaultAccount builds a fixed object, so a new priority/order/note field added only in the UI is discarded on the next store load (and by the socket's adminAccount round-trip). The term 'priority' is already used for the server-only PRIORITY_IMAGE_EMAILS fast-track, a different concept.",
+      "impact": "The badge and order look correct in-session and revert after reload or restart, exactly failing the stated acceptance while passing a naive click test.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '395,425p' server/store.js; grep -n 'PRIORITY_IMAGE_EMAILS' server/socket/worker-pool.js",
+      "fix": "Add queuePriority/priorityNote to defaultAccount and both updateAccount loops, sort the boot queue by it, and rename it away from the existing image fast-track.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 398,
+          "quote": "for (const key of ["
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 25,
+          "quote": "const PRIORITY_IMAGE_EMAILS = [\"shawry31@icloud.com\", \"jakemorejon@icloud.com\"];"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "client"
+    },
+    {
+      "id": "CL-8",
+      "title": "P0-4 cannot be delivered by dashboard code: the manifest has no reason/attempt and verify hides failed rows",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 96,
+      "quote": "**Download truth**: record per-file failures (path, reason, attempt) and surface \"failed\" separately from \"missing\"; retry a failure set",
+      "claim": "The manifest schema has key/area/path/size/sha256/status/updated only; a failed download writes status='failed' with size 0 and no reason. verify selects only status IN ('done','skipped'), so failed rows are counted as missing. Delivering P0-4 needs an exporter schema change + migration and a verify change, none of the dashboard files listed in scope.",
+      "impact": "A dashboard-only implementer can only invent reasons or show 'failed' from a flag that the pipeline does not carry; 'retry a failure set' cannot distinguish never-attempted from failed, which is the item's whole point.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '212,220p' python/worker/exporter.py; sed -n '28,31p' python/worker/verify.py; sed -n '957,962p' python/worker/exporter.py",
+      "fix": "Put exporter.py (add reason/attempts columns + migration) and verify.py in P0-4's scope, and define how retries are written back to the manifest.",
+      "citations": [
+        {
+          "file": "python/worker/exporter.py",
+          "line": 961,
+          "quote": "task[\"key\"], task[\"area\"], task[\"path\"], 0, \"\", status=\"failed\""
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 30,
+          "quote": "\"SELECT key, area, status FROM files WHERE status IN ('done','skipped')\""
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "client"
+    },
+    {
+      "id": "CL-9",
+      "title": "Acceptance criterion 4 is contradicted by the deliberate urls exemption",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 127,
+      "quote": "4. `EXPORT_ENABLED=false` disables every export control; read-only actions still work.",
+      "claim": "worker.startExport deliberately allows mode='urls' when exports are disabled, and the Overview 'Photo URLs (no download)' button plus the Download URLs JSON anchor are not gated by exportEnabled. As written AC4 fails today; if 'urls' is exempt, 'every export control' has no definition.",
+      "impact": "Day-one sign-off depends on a private reading of 'export control'; an implementer may disable the only no-media path the operator uses, or leave a job queueable while the fleet is meant to be read-only.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'mode !== \"urls\"' server/socket/worker-pool.js; sed -n '209,222p' src/admin/OverviewTab.jsx",
+      "fix": "Name the exempt control and its job mode in AC4, and gate or explicitly whitelist the Download URLs anchor in the same sentence.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 556,
+          "quote": "if (!config.worker.exportEnabled && mode !== \"urls\") {"
+        },
+        {
+          "file": "src/admin/OverviewTab.jsx",
+          "line": 210,
+          "quote": "type=\"button\""
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "client"
+    },
+    {
+      "id": "COR-10",
+      "title": "P0-1's acceptance names a 'failed' job state that does not exist, and no test asserts the claims the plan rests on",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 93,
+      "quote": "Mock-worker run leaves ≥1 job in each of queued/running/done/failed",
+      "claim": "Job statuses written by the code are queued, running, twofa, done, error, invalid, unknown, cancelled — there is no 'failed'. Separately, the suite asserts the stale-job defect as intent (store.test: 'running jobs are marked unknown') and nothing asserts a pool requeue, pageSize<=0 (the client's only gallery path), the gallery kind filter, or priority persistence; library.test exercises the wave scheduler through Object.create(WorkerPool.prototype), so the constructor's boot rebuild is never run.",
+      "impact": "The acceptance test is unwritable as phrased, and the restart, paging, kind-filter and priority behaviours the plan changes have no regression cover, so each can ship broken while the suite stays green.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -rn 'failed' server/store.js | head; sed -n '39,40p' server/test/store.test.mjs; grep -n 'Object.create(WorkerPool.prototype)' server/test/library.test.mjs",
+      "fix": "Use the real status vocabulary in the acceptance (queued/running/done/error), and add four tests: boot requeue over a reloaded store, gallery pageSize=0, kind filter with and without vlm-index.json, and account priority round-trip.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 31,
+          "quote": "const ACTIVE_JOB = new Set([\"queued\", \"running\", \"twofa\"]);"
+        },
+        {
+          "file": "server/test/library.test.mjs",
+          "line": 202,
+          "quote": "const waves = Object.create(WorkerPool.prototype);"
+        },
+        {
+          "file": "server/test/admin-api.test.mjs",
+          "line": 148,
+          "quote": "const page = await gallery(root, { area: \"Library\", page: 1, pageSize: 1 });"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "correctness"
+    },
+    {
+      "id": "COR-6",
+      "title": "updateAccount's allowlist silently discards priority/order/note, so P0-3's 'state survives reload' fails with no error",
+      "severity": "P2",
+      "file": "server/store.js",
+      "line": 417,
+      "quote": "      if (patch[key] !== undefined) account[key] = patch[key];",
+      "claim": "Only the 16 listed scalar keys and 9 object keys are merged; defaultAccount declares no priority/order/note. updateAccount({priority,order,note}) returns a normal account with all three absent — confirmed by probe — so a client or socket handler that writes priority believes it succeeded.",
+      "impact": "P0-3's acceptance 'order persists after restart' and the priority badge silently do nothing; the operator re-pins 500 accounts and after a reload every pin is gone, with no error to explain it.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '398,423p' server/store.js",
+      "fix": "Add priority/order/note to defaultAccount and to the scalar allowlist, and make updateAccount reject or report unknown keys instead of returning success.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 50,
+          "quote": "function defaultAccount(input) {"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 95
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "VERIFIED-LOCATION FEATURES.md:95 (no quote to compare)",
+      "panel": "correctness"
+    },
+    {
+      "id": "COR-7",
+      "title": "'3 selected accounts produce 3 ordered jobs' cannot hold: front-insert is LIFO and the boot queue re-sorts by rank, not operator order",
+      "severity": "P2",
+      "file": "server/socket/worker-pool.js",
+      "line": 731,
+      "quote": "      this.queue.unshift(jobId);",
+      "claim": "startExport passes priority into enqueue(id, front=true), which unshifts each job, so selecting A,B,C dispatches C,B,A. After a restart the queue is rebuilt and sorted by rank -> notesMissing -> createdAt, with no operator order at all, so even persisted priority would not survive.",
+      "impact": "The operator's chosen order is reversed in a live session and lost across a deploy, while the screenshot acceptance test ('3 ordered jobs') passes if nobody checks the order direction.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '728,734p' server/socket/worker-pool.js; sed -n '171,179p' server/socket/worker-pool.js",
+      "fix": "Give jobs an explicit order field and insert by it (or enqueue bulk in reverse); include it as the first sort key in the boot rebuild.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 171,
+          "quote": "    this.queue.sort((a, b) => {"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 95
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "VERIFIED-LOCATION FEATURES.md:95 (no quote to compare)",
+      "panel": "correctness"
+    },
+    {
+      "id": "COR-9",
+      "title": "The cancelled-job guard in handleError is dead code, so a cancelled wave export is recorded as failed and counted as wave-done",
+      "severity": "P2",
+      "file": "server/socket/worker-pool.js",
+      "line": 1193,
+      "quote": "    if (job.type === \"export\" && job.status === \"cancelled\") {",
+      "claim": "Line 1158 assigns status 'error' to the same object before this test, so job.status is always 'error' and the guard never matches. A wave-replaced job that then errors sets the account to 'error' and falls through to onWaveJobDone, marking the account done for the wave. Cancellation is also not an abort: the exporter keeps enumerating remaining phases and always emits job:export_done with partial totals.",
+      "impact": "P0-1's 'cancel' either reports failure after cancelling or lets a replaced export count as finished, so a wave advances on work that did not happen. Retry/cancel semantics cannot be built on this path unchanged.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '1158p;1193,1197p' server/socket/worker-pool.js; grep -n 'job:export_done' python/worker/exporter.py",
+      "fix": "Capture the pre-patch status before updateJob (or test job.status against a saved value) and return early; have the exporter emit a distinct cancelled event so Node can distinguish cancel from failure.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1158,
+          "quote": "    this.store.updateJob(job.id, { status: \"error\", error: payload.error ?? \"worker error\" });"
+        },
+        {
+          "file": "python/worker/exporter.py",
+          "line": 1059,
+          "quote": "            \"job:export_done\","
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 93
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "VERIFIED-LOCATION FEATURES.md:93 (no quote to compare)",
+      "panel": "correctness"
+    },
+    {
+      "id": "DA-4",
+      "title": "P0-1 acceptance requires a 'failed' job state the server never writes",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 93,
+      "quote": "| P0-1 | **Jobs view**: durable list of export/verify/scan/import jobs with account, mode, state, attempts, age, worker, last message; retry/cancel; click-through to account | The strip says `queue 3` but nothing shows what those are; a failed export is invisible | Mock-worker run leaves ≥1 job in each of queued/running/done/failed; screenshot; state transitions asserted in a test |",
+      "claim": "The acceptance requires a job in state 'failed', but no server path writes that value: worker failure is written 'error' and restart writes 'unknown'. The plan neither maps those to the UI label nor includes 'unknown' in the required states, so the acceptance cannot pass against the current state machine as written.",
+      "impact": "An operator filtering the new Jobs view by failed sees an empty list while the failed export sits under error or unknown - the exact invisibility P0-1 claims to remove.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -rn 'status: \"failed\"' server/socket server/store.js; grep -n 'status: \"error\", error: payload.error' server/socket/worker-pool.js",
+      "fix": "Define the canonical job states and their UI groups (error/unknown/cancelled -> failed), name 'unknown' in the acceptance matrix, and assert the restart variant in the test.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1158,
+          "quote": "    this.store.updateJob(job.id, { status: \"error\", error: payload.error ?? \"worker error\" });"
+        },
+        {
+          "file": "server/store.js",
+          "line": 206,
+          "quote": "        job.status = \"unknown\";"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "devil-advocate"
+    },
+    {
+      "id": "DA-6",
+      "title": "P0-3 persisted order/pin has no scheduler hook; the boot sort reorders queued jobs",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 95,
+      "quote": "| P0-3 | **Bulk queue + priority**: checkbox selection, export/recheck/scan selected, pin/reorder, priority badge, per-account note; state survives reload | 500-account campaign is one click per account today | 3 selected accounts produce 3 ordered jobs; order persists after restart; screenshot |",
+      "claim": "Priority is the hardcoded PRIORITY_IMAGE_EMAILS constant, and the post-restart queue sort is rank -> notesMissing -> createdAt; no account order/pin field is read. A new field can satisfy a store/UI 'order persists' assertion while the dispatcher after restart uses different criteria, especially when selected accounts differ in whether Notes exist on disk.",
+      "impact": "The operator pins the account holding crypto; after a deploy it is dispatched behind other exports. The acceptance is green while the behavior it names is false.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'PRIORITY_IMAGE_EMAILS' server/socket/worker-pool.js; grep -n 'notesMissing(ja' server/socket/worker-pool.js",
+      "fix": "Persist priority/order on the account and read it in both the boot sort and enqueue path; assert dispatch order (job:state sequence) after restart, not just the stored field.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 25,
+          "quote": "const PRIORITY_IMAGE_EMAILS = [\"shawry31@icloud.com\", \"jakemorejon@icloud.com\"];"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 171,
+          "quote": "    this.queue.sort((a, b) => {"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 176,
+          "quote": "        Number(this.notesMissing(ja?.accountId)) - Number(this.notesMissing(jb?.accountId)) ||"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "devil-advocate"
+    },
+    {
+      "id": "DA-7",
+      "title": "P0-1's 'last message' is emitted to the job room but never stored on the job",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 93,
+      "quote": "| P0-1 | **Jobs view**: durable list of export/verify/scan/import jobs with account, mode, state, attempts, age, worker, last message; retry/cancel; click-through to account | The strip says `queue 3` but nothing shows what those are; a failed export is invisible | Mock-worker run leaves ≥1 job in each of queued/running/done/failed; screenshot; state transitions asserted in a test |",
+      "claim": "Job records persist error but not message; emitJob sends each message to /public subscribers only. replay() already reads job.message, but nothing ever assigns it. A durable list built from the store can show the error string or current status, not the last message the plan promises.",
+      "impact": "At 3 a.m. a stuck job shows no last message, so the operator cannot distinguish waiting-for-worker from a slow download from a worker error without watching live events that are already gone.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'message' server/store.js; grep -n 'job.message' server/socket/worker-pool.js; grep -n 'emitJob(job' server/socket/worker-pool.js",
+      "fix": "Persist a status message on updateJob (or store one derived text per transition) and include it in the jobs-list payload; test replay of a job after reconnect.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 504,
+          "quote": "      error: \"\","
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 207,
+          "quote": "    this.io.of(\"/public\").to(`job:${job.id}`).emit(event, payload);"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 688,
+          "quote": "      message: job.message ?? \"\","
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "devil-advocate"
+    },
+    {
+      "id": "DA-8",
+      "title": "P0-3's 500-account one-click meets MAX_QUEUE=500 and the 60/10s admin guard",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 95,
+      "quote": "| P0-3 | **Bulk queue + priority**: checkbox selection, export/recheck/scan selected, pin/reorder, priority badge, per-account note; state survives reload | 500-account campaign is one click per account today | 3 selected accounts produce 3 ordered jobs; order persists after restart; screenshot |",
+      "claim": "The acceptance uses 3 accounts, but the default global queue cap is 500 and the admin guard allows 60 events per 10 s per socket. If the bulk action replays per-account admin:export events (the current client pattern), selections past 60 are rejected as rate limited; even a server-side loop cannot enqueue 500 more jobs when any job is already queued. The plan defines neither a single bulk entry point nor a partial-success/reject report.",
+      "impact": "The operator clicks once for 500 accounts, sees a success toast, and most of the tail has no job to retry; the campaign silently runs short.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'maxQueue' server/config.js; grep -n 'function guard' server/socket/admin.js; grep -n 'admin:export' src/admin/useAdminSocket.js",
+      "fix": "Add one server-side bulk command that enqueues under the guard and returns queued/rejected ids, and test 500 with a partly full queue; render the rejects.",
+      "citations": [
+        {
+          "file": "server/config.js",
+          "line": 118,
+          "quote": "    maxQueue: int(process.env.MAX_QUEUE, 500),"
+        },
+        {
+          "file": "server/socket/admin.js",
+          "line": 69,
+          "quote": "function guard(socket, event, ack, limit = 60) {"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 559,
+          "quote": "    if (this.queue.length >= config.worker.maxQueue) {"
+        },
+        {
+          "file": "src/admin/useAdminSocket.js",
+          "line": 315,
+          "quote": "        const result = await emit(\"admin:export\", { id, mode });"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "devil-advocate"
+    },
+    {
+      "id": "PERF-10",
+      "title": "P0-2 as written means opening SQLite per account per request: 3 ms each, 1.5 s of blocked event loop at 500 accounts",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 94,
+      "line_end": 94,
+      "quote": "| P0-2 | **Coverage matrix** per account: area × (live count, downloaded, missing, bytes, last export); totals reconcile with manifest and disk |",
+      "claim": "No Node code opens manifest.sqlite3 today (map.md §2, confirmed: no sqlite import in server/). If the matrix is computed per request the only sync API available - node:sqlite DatabaseSync - blocks the loop: measured 2.97 ms to open + `select area,status,count(*),sum(size) ... group by` + close on a synthetic 20,000-row / 3.3 MB manifest, so 500 accounts = 1,485 ms of solid block per matrix load and 500 file opens; on the real 24-row manifest 500 open+count+close = 10 ms. On the real 117-row example.harvest manifest the group-by already disagrees with disk (117 rows vs 142 media files), so a per-request reconcile also cannot be satisfied by the manifest alone.",
+      "impact": "A coverage matrix added naively turns a page load into 500 synchronous SQLite opens - a 1.5 s stall for every REST caller on the web process at 500 accounts, and 500 handles per view rather than one cached snapshot.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -rn 'sqlite' server --include=*.js | grep -v node_modules; node -e \"const {DatabaseSync}=require('node:sqlite');console.log(typeof DatabaseSync)\"",
+      "fix": "Persist the per-account summary into the store when export/verify finishes (the worker already computes it), and read that; if SQLite is read, cache by manifest mtime+size and open once per rebuild, not per request.",
+      "citations": [
+        {
+          "file": ".council/20261114T025817Z/map.md",
+          "line": 7,
+          "quote": "Export files, manifest.sqlite3, Scan/{findings,index,summary,vlm-index}.json, Scan/ocr, Scan/thumbs live only on disk; Node never opens the SQLite manifest."
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    },
+    {
+      "id": "PERF-11",
+      "title": "Global search must ride the catalog: each catalog query is 300 ms at 500k photos, and the per-account fan-out would read 500 index.json files",
+      "severity": "P2",
+      "file": "server/admin/library.js",
+      "line": 766,
+      "line_end": 786,
+      "quote": "const counts = {",
+      "claim": "queryCatalog recomputes the counts block with three extra full passes over catalog.photos (ocrDone, ocrPending, photoKinds) plus a filter+map that copies every match, on every request. Measured on a synthetic 500,000-photo catalog (466 B/row, 210 MB as JSON, 504 MB RSS): a page-1 photo query takes 328 ms, a 3-word all-type query 305 ms, a name query 289 ms. The alternative - fanning out to /search per account - reads and JSON.parses each account's Scan/index.json (measured 125,626 bytes for 146 entries, ~860 B/entry) plus findings.json per account: 500 accounts = 500 round-trips and ~62 MB of index reads per query.",
+      "impact": "P1-3 as-you-type global search on a 500k-photo catalog costs ~300 ms of web-process CPU per debounced keystroke (plus a possible 7 s rebuild, PERF-1), and a naive per-account fan-out costs 500 requests per query. Both are invisible in the plan's acceptance criterion ('returns hits from 2 accounts').",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '766,790p' server/admin/library.js && ls -la export/example.harvest@icloud.com/Scan/index.json",
+      "fix": "Compute the counts block once per catalog build (store it on the catalog) and page from the filtered arrays without the per-request map copy; search the in-memory catalog, never fan out per account.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 104,
+          "quote": "| P1-3 | **Global search** across accounts (library endpoint): group by account/area, deep link, saved searches | Search is per account; the operator must know where to look | Query returns hits from 2 accounts; deep link opens the file; screenshot |"
+        },
+        {
+          "file": "server/admin/library.js",
+          "line": 778,
+          "quote": "ocrDone: scopedPhotos.filter((photo) => photo.ocr).length,"
+        },
+        {
+          "file": "server/admin/library.js",
+          "line": 818,
+          "quote": "return { ...item, snippet: needle ? snippet(body, needle) : \"\" };"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    },
+    {
+      "id": "PERF-12",
+      "title": "The jobs the plan calls 'durable' are silently truncated to the newest 1,000 on every flush",
+      "severity": "P2",
+      "file": "server/store.js",
+      "line": 170,
+      "line_end": 173,
+      "quote": "const jobs = [...this.jobs.values()]",
+      "claim": "flush() sorts all jobs, slices the newest 1,000 and reassigns this.jobs, so older jobs vanish from memory and from disk. A 500-account campaign with the six job types in JOB_TYPES creates up to 3,000 job rows (500 auth + 500 export + 500 scan + verify + ping + import), so up to two thirds of them are dropped, and jobsForAccount then returns [] for the account whose history fell off. FEATURES §3's premise ('no durable job list', and §4 P0-1 'durable list ... retry/cancel') is therefore only partly true: jobs are already persisted, but bounded at 1,000.",
+      "impact": "P0-1's own acceptance test ('a failed export is invisible') stays true for any failed job older than the 1,000th write: the retry button has nothing to retry, and the loss is silent (slice, no tombstone, no counter).",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '161,196p' server/store.js && sed -n '490,512p' server/store.js",
+      "fix": "Cap by terminal state (keep all failed/unknown jobs, trim only done ones) or move jobs to an append-only log / SQLite table; surface the trim in jobsStats so the panel can say 'history starts at ...'.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 93,
+          "quote": "| P0-1 | **Jobs view**: durable list of export/verify/scan/import jobs with account, mode, state, attempts, age, worker, last message; retry/cancel; click-through to account | The strip says `queue 3` but nothing shows what those are; a failed export is invisible | Mock-worker run leaves ≥1 job in each of queued/running/done/failed; screenshot; state transitions asserted in a test |"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 83,
+          "quote": "progress events but no durable job list. This is the main operator blind spot."
+        },
+        {
+          "file": "server/store.js",
+          "line": 541,
+          "quote": "jobsForAccount(accountId) {"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    },
+    {
+      "id": "PERF-3",
+      "title": "Gallery performs per-item S3 HEADs inside the request: 2-3 per photo, ~2,000 for a 1k page",
+      "severity": "P2",
+      "file": "server/admin/export.js",
+      "line": 373,
+      "line_end": 373,
+      "quote": "...(await s4Links(path.basename(root), item.path, cached, await previewFor(root, item.path), await playFor(root, item.path))),",
+      "claim": "Every gallery row calls s4Links, which issues one HEAD per existing artefact (src + thumb, plus preview for HEIC, plus play for video). Measured on the real 142-item export against a local S4 stub: exactly 284 HEADs (2.00/item for PNG/JPG), 163 ms at 0 ms RTT and 493 ms at 30 ms RTT for one gallery response, with all misses re-issued after 30 s. At 1,000 HEIC photos that is ~3,000 HEADs = ~2.5 s added to first paint at 30 ms RTT; if the bucket is unreachable each HEAD costs the 4 s AbortSignal timeout, i.e. 3,000/24 x 4 s = 500 s.",
+      "impact": "With S4 enabled, the Photos tab's first paint at 1k photos waits on thousands of serialised HEADs before the JSON is even sent; a dead bucket turns the tab into a multi-minute hang rather than a fallback to local files.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 's4Links\\|s4exists' server/admin/export.js server/admin/s4.js",
+      "fix": "Do not sign/probe URLs in the listing. Emit deterministic S4 URLs (existing object or 404 is the browser's problem) or probe only the page's `src` on demand via a separate /s4 route; keep the 24-slot limiter off the render path.",
+      "citations": [
+        {
+          "file": "server/admin/export.js",
+          "line": 199,
+          "quote": "async function s4Links(email, rel, thumb, preview, play) {"
+        },
+        {
+          "file": "server/admin/s4.js",
+          "line": 124,
+          "quote": "signal: AbortSignal.timeout(4_000),"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    },
+    {
+      "id": "PERF-4",
+      "title": "Photos tab asks for pageSize=0 (whole library), and the response is 426 B/item with no-store and no compression",
+      "severity": "P2",
+      "file": "src/admin/PhotosTab.jsx",
+      "line": 33,
+      "line_end": 33,
+      "quote": "const PAGE_SIZE = 0; // 0 = all images in one response, no pages, no infinite scroll",
+      "claim": "The client always requests the whole area in one response, and the server honours it (`everything` -> slice = all, export.js:350-357) after doing per-item fs.stat work for every row. Measured: 142 items = 60,461 bytes (426 B/item), 6.8 ms warm / 9.5 ms cold of server work; 1,000 items = ~426 KB, ~35-45 ms of stats. Every response carries `cache-control: no-store` (api.js:376), and there is no compression middleware in server/app.js and no nginx gzip config in the repo, so each area switch, filter keystroke (250 ms debounce) and 30 s export tick re-transfers the full payload.",
+      "impact": "At 1k photos the operator pays ~426 KB per filter change over the wire (0.7 s on a 5 Mbit link) plus a 1,000-tile React render; at 5k - the size FEATURES itself names - it is ~2.1 MB per keystroke pause.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'PAGE_SIZE\\|pageSize' src/admin/PhotosTab.jsx && grep -rn 'compression\\|gzip' server/app.js package.json",
+      "fix": "Set PAGE_SIZE to 120-200 and use the existing page/pages response (the server already paginates), send a slim item (drop src/previewSrc/playSrc from the list), and add `compression()` or a per-account ETag with a short max-age.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 117,
+          "quote": "| P2-4 | Real 1k-photo render test: p95 thumb latency, lazy-load budget, memory | Demo has not exercised the gallery at scale |"
+        },
+        {
+          "file": "server/admin/export.js",
+          "line": 354,
+          "quote": "const size = everything ? Math.max(all.length, 1) : Math.min(requestedSize, 500);"
+        },
+        {
+          "file": "server/admin/api.js",
+          "line": 376,
+          "quote": "res.setHeader(\"cache-control\", \"no-store\");"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    },
+    {
+      "id": "PERF-7",
+      "title": "pump() recounts running exports inside the queue loop: O(queue x jobs) per call, 2-6 ms each, ~1 s per 500-account enqueue storm",
+      "severity": "P2",
+      "file": "server/socket/worker-pool.js",
+      "line": 784,
+      "line_end": 787,
+      "quote": "const running = [...this.store.jobs.values()].filter(",
+      "claim": "For every queued export/import entry the pump rebuilds an array of all jobs to count the running ones, so one pass over the queue costs queue_length x jobs_map_size. Measured with 984 queued exports and 1,000 jobs: 984,000 filter iterations, 6 ms on the first call and 2.14 ms steady state per pump. pump() runs on every enqueue and every release (worker-pool.js:751, 890), so queueing 500 accounts adds ~500 x ~0.5-1 ms of synchronous work, and pump also calls sweep() (a full 1,000-job scan) first.",
+      "impact": "A 500-account bulk queue blocks the socket event loop for roughly a second across the enqueues - the same loop that broadcasts admin:account and answers every dashboard ack, so the panel stutters exactly when the operator bulk-queues.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '764,805p' server/socket/worker-pool.js",
+      "fix": "Count running exports once before the for-loop (and once before sweep), and keep a running counter maintained on dispatch/release instead of recomputing from the map.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 787,
+          "quote": "if (running >= config.worker.maxExportJobs) continue;"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 766,
+          "quote": "this.sweep(false);"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    },
+    {
+      "id": "PERF-8",
+      "title": "Every store mutation rewrites the entire store file synchronously: 3.1 ms and 1.68 MB per flush at 500 accounts + 1,000 jobs",
+      "severity": "P2",
+      "file": "server/store.js",
+      "line": 175,
+      "line_end": 188,
+      "quote": "fs.writeFileSync(",
+      "claim": "scheduleSave() coalesces to one write per 120 ms, and each flush JSON.stringifies and writeFileSyncs items+accounts+jobs in full. Measured with 500 synthetic accounts (real field shape and sizes) and 1,000 jobs: 3.1 ms per flush and a 1,684,171-byte file. During parallel exports the account updates arrive up to 16/s (one per exporting worker, exporter.py progress throttle 1.0 s), i.e. the 8 writes/s ceiling = ~25 ms/s of synchronous stringify+write (~13 MB/s of disk) on the socket event loop, growing linearly with account count.",
+      "impact": "At 500 accounts the dashboard's own data source costs ~2.5% of the socket loop continuously while exporting; at 5,000 accounts the same code writes ~17 MB eight times a second and the store file becomes the write-amplification tail of the whole panel.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'scheduleSave\\|writeFileSync\\|debounceMs' server/store.js",
+      "fix": "Persist per-account files (or append-only journal) and flush only dirty records; keep the full rewrite on a longer cadence (e.g. 5 s) or on shutdown.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 170,
+          "quote": "const jobs = [...this.jobs.values()]"
+        },
+        {
+          "file": "server/store.js",
+          "line": 173,
+          "quote": "this.jobs = new Map(jobs.map((job) => [job.id, job]));"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    },
+    {
+      "id": "PERF-9",
+      "title": "admin:account pushes the full account object (945 B median, 3.3 KB max) and the client maps a 1,000-row array on each event",
+      "severity": "P2",
+      "file": "server/socket/admin.js",
+      "line": 361,
+      "line_end": 365,
+      "quote": "nsp.emit(\"admin:account\", {",
+      "claim": "Every store 'account' mutation - and each exporting worker produces one per second - broadcasts the whole account (adminAccount returns `{...account}`, store.js:482, including password, sessionDir, identity, counts, export.areas) to every admin socket. Measured event payload: 1,617 bytes including stats; accounts are 945 B median, 3,296 B max. The client replaces the row by `.map()` over the entire account array (up to accountPageSize 1000, useAdminSocket.js:26/204) and re-renders the list. 16 exporting workers = 16 events/s = 16 full-list reconciliations/s of up to 1,000 rows.",
+      "impact": "While exports run, the accounts list repaints ~16x/s over up to 1,000 rows (a full array copy plus React diff each time) and receives ~26 KB/s of mostly-irrelevant account bodies per open panel - visible jank on the list the operator is trying to click.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '356,366p' server/socket/admin.js && sed -n '193,223p' src/admin/useAdminSocket.js",
+      "fix": "Push a compact row ({id,status,export:{done,total,phase},badges,countsUpdatedAt}); keep the full object behind admin:account (on-demand). On the client, keep accounts in a Map keyed by id and patch one entry.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 482,
+          "quote": "return account ? { ...account } : null;"
+        },
+        {
+          "file": "src/admin/useAdminSocket.js",
+          "line": 26,
+          "quote": "accountPageSize: 1000,"
+        },
+        {
+          "file": "src/admin/useAdminSocket.js",
+          "line": 204,
+          "quote": "accounts = prev.accounts.map((item) =>"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    },
+    {
+      "id": "PERF-13",
+      "title": "Gallery stats each item's thumb/preview/play twice: 3 redundant fs.stat per tile, 3,000 extra syscalls per 1k page",
+      "severity": "P3",
+      "file": "server/admin/export.js",
+      "line": 367,
+      "line_end": 373,
+      "quote": "preview: await previewFor(root, item.path),",
+      "claim": "The object literal already resolves thumbFor/previewFor/playFor (lines 361-368), then line 373 calls previewFor and playFor again inside the s4Links argument list, and s4Links itself stats nothing but receives the already-known `cached` thumb. Per item that is 3 extra fs.stat calls (2 in the literal, 3 repeated) plus one fileExists for OCR, so a 1,000-item page issues ~3,000 avoidable stat syscalls (~10 ms) and doubles the syscall count of the listing itself.",
+      "impact": "Small but pure waste on the hottest listing path, and it hides the real per-item cost (7-8 syscalls/tile) from anyone profiling the 1k case.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '358,377p' server/admin/export.js",
+      "fix": "Hoist the three results into consts (thumb/preview/play) before the object literal and pass those into s4Links.",
+      "citations": [
+        {
+          "file": "server/admin/export.js",
+          "line": 361,
+          "quote": "const cached = await thumbFor(root, item.path);"
+        },
+        {
+          "file": "server/admin/export.js",
+          "line": 373,
+          "quote": "...(await s4Links(path.basename(root), item.path, cached, await previewFor(root, item.path), await playFor(root, item.path))),"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    },
+    {
+      "id": "PERF-14",
+      "title": "P1-4 clustering is cheap only if done per account first: a global dedupeSeeds over raw findings is 242 ms at 45k rows",
+      "severity": "P3",
+      "file": "server/admin/seeds.js",
+      "line": 110,
+      "line_end": 111,
+      "quote": "if (file && !current.files.includes(file)) current.files.push(file);",
+      "claim": "dedupeSeeds checks `files.includes` per duplicate, so a phrase present in every account costs O(n) per merge: measured 242 ms to dedupe 45,000 synthetic findings (500 accounts x 90) and 54 ms of that is isSpamPhrase. Deduping per account first (95 ms measured for 500 calls) and then grouping by normalizePhrase is ~0 ms (84 clusters), i.e. the cross-account step the plan asks for is free and the O(n^2) merge is avoidable.",
+      "impact": "A naive implementation rebuilds the 242 ms dedupe on every seed view; the catalog path (per-account dedupe at build time + a Map group) is 3x cheaper and constant per request.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'includes(file)' server/admin/seeds.js && grep -n 'dedupeSeeds' server/admin/library.js server/admin/export.js",
+      "fix": "Cluster over catalog.seeds (already deduped per account at build time); use a Set for `files` if dedupeSeeds itself must handle cross-account input.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 105,
+          "quote": "| P1-4 | Seeds across accounts: cluster identical phrases, show accounts, CSV/JSON export, operator \"checked\" flag | Same phrase in 5 accounts is 5 rows today | Cluster count, export file, checked state persists; screenshot |"
+        },
+        {
+          "file": "server/admin/library.js",
+          "line": 500,
+          "quote": "const seeds = dedupeSeeds(seedRows);"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    },
+    {
+      "id": "PERF-15",
+      "title": "Listing caches are per-path and never evict: memory grows with total files, ~45 MB at 500 x 1k photos",
+      "severity": "P3",
+      "file": "server/admin/export.js",
+      "line": 266,
+      "line_end": 266,
+      "quote": "dirCache.set(real, { at: Date.now(), mtimeMs: stat.mtimeMs, entries });",
+      "claim": "dirCache/driveCache/jsonCache are module-level Maps keyed by absolute path with no size bound and no eviction (the 60 s check is only on read, so a stale entry lives forever). Each cached listing holds one object per file ({name,size,mtime} ~90 B). At 500 accounts x 1,000 photos that is ~500,000 retained entries (~45 MB) plus one array per directory, never released, in the web process that also runs the catalog (504 MB RSS at 500k catalog rows, PERF-11).",
+      "impact": "Memory grows with the campaign's total file count, not with visitors, and no restart happens mid-campaign: the panel's resident set creeps to hundreds of MB and then holds, on a host also running 16 export workers.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'dirCache\\|driveCache\\|jsonCache\\|seen.size' server/admin/export.js server/admin/s4.js",
+      "fix": "Bound dirCache with a small LRU (e.g. 256 dirs) or key it by account and drop on invalidation; same for s4.js `seen` (which clears at 20k, PERF-2).",
+      "citations": [
+        {
+          "file": "server/admin/export.js",
+          "line": 236,
+          "quote": "const dirCache = new Map();"
+        },
+        {
+          "file": "server/admin/s4.js",
+          "line": 132,
+          "quote": "if (seen.size > 20_000) seen.clear();"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "",
+      "panel": "performance"
+    }
+  ]
+}

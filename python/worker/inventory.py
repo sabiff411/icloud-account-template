@@ -8,6 +8,7 @@ enumeration separately.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 log = logging.getLogger("worker.inventory")
@@ -147,7 +148,13 @@ def collect(api) -> dict[str, Any]:
 
     photos = getattr(api, "photos", None)
     if photos is not None:
-        counts["photos"] = _safe("photos.all", lambda: len(api.photos.all), 0) or 0
+        # `photos.all` raises on some accounts (and used to leave the panel
+        # showing 0 photos for a 20k library).  Fall back to the Library
+        # album, which is the same set.
+        total = _safe("photos.all", lambda: len(api.photos.all), None)
+        if not total:
+            total = _safe("photos.library", lambda: len(api.photos.albums["Library"]), 0) or 0
+        counts["photos"] = total or 0
         counts["albums"] = _safe("photos.albums", lambda: len(api.photos.albums), 0) or 0
         counts["hidden"] = _safe(
             "photos.hidden", lambda: len(api.photos.albums["Hidden"]), 0
@@ -155,6 +162,11 @@ def collect(api) -> dict[str, Any]:
         counts["deleted"] = _safe(
             "photos.deleted", lambda: len(api.photos.albums["Recently Deleted"]), 0
         ) or 0
+        counts["videos"] = _safe(
+            "photos.videos", lambda: len(api.photos.albums["Videos"]), 0
+        ) or 0
+        # Library includes videos; "Images" is the still-picture part.
+        counts["images"] = max(0, int(counts.get("photos") or 0) - int(counts["videos"]))
 
     notes = getattr(api, "notes", None)
     if notes is not None:
@@ -193,3 +205,88 @@ def collect(api) -> dict[str, Any]:
         )
 
     return {"identity": identity, "counts": counts}
+
+
+def quick_counts(api) -> dict:
+    """Cheap live counters for a ping.
+
+    Album lengths are a count query (~1 s each), not a full asset walk, so
+    this runs in seconds instead of the hours a verify needs on a 20k
+    library.  Notes and Drive are skipped: their counts stay from the last
+    export/verify until one of those runs again.
+    """
+    counts: dict[str, int] = {}
+    # A ping must stay cheap.  A big library behind a flaky residential exit
+    # can spend minutes in reminders/mail retries; after this budget the rest
+    # keeps its last value instead of holding an auth slot.
+    deadline = time.monotonic() + 90
+
+    photos = getattr(api, "photos", None)
+    if photos is not None:
+        albums = _safe("photos.albums", lambda: photos.albums, None)
+        if albums is not None:
+            counts["albums"] = len(albums)
+            for key, name in (
+                ("photos", "Library"),
+                ("hidden", "Hidden"),
+                ("deleted", "Recently Deleted"),
+                ("videos", "Videos"),
+            ):
+                value = _safe(f"photos.{name}", lambda name=name: len(albums[name]), None)
+                if value is not None:
+                    counts[key] = int(value)
+            if "photos" in counts:
+                counts["images"] = max(0, counts["photos"] - counts.get("videos", 0))
+
+    cards = (
+        _safe("contacts.all", lambda: api.contacts.all, None)
+        if time.monotonic() < deadline
+        else None
+    )
+    if cards is not None:
+        counts["contacts"] = len(cards)
+        counts["contactsPhone"], counts["contactsEmail"] = _contact_stats(cards)
+
+    calendars = (
+        _safe("calendar.get_calendars", lambda: api.calendar.get_calendars(), None)
+        if time.monotonic() < deadline
+        else None
+    )
+    if calendars is not None:
+        counts["calendars"] = len(calendars)
+
+    lists = (
+        _safe("reminders.lists", lambda: list(api.reminders.lists()), None)
+        if time.monotonic() < deadline
+        else None
+    )
+    if lists is not None:
+        total = 0
+        for reminders_list in lists:
+            if time.monotonic() >= deadline:
+                break
+            result = _safe(
+                "reminders.list",
+                lambda item=reminders_list: api.reminders.list_reminders(
+                    item.id, include_completed=True
+                ),
+                None,
+            )
+            if result is not None:
+                total += len(getattr(result, "reminders", []) or [])
+        counts["reminders"] = total
+
+    mail = (
+        _safe("mail", lambda: getattr(api, "mail", None), None)
+        if time.monotonic() < deadline
+        else None
+    )
+    if mail is not None:
+        folders = _safe("mail.folders", lambda: mail.folders(), None)
+        if folders is not None:
+            counts["mailFolders"] = len(folders)
+            counts["mailMessages"] = sum(
+                int(getattr(folder, "message_count", 0) or 0) for folder in folders
+            )
+
+    return counts

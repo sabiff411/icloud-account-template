@@ -1,0 +1,24 @@
+{
+  "role": "architecture",
+  "findings": [
+    {"id": "ARCH-1", "confidence": "medium", "basis": "checked"},
+    {"id": "ARCH-2", "confidence": "high", "basis": "checked"},
+    {"id": "ARCH-3", "confidence": "medium", "basis": "checked"},
+    {"id": "ARCH-4", "confidence": "high", "basis": "checked"},
+    {"id": "ARCH-5", "confidence": "high", "basis": "checked"},
+    {"id": "ARCH-6", "confidence": "high", "basis": "checked"}
+  ],
+  "top3_cost_of_inaction": [
+    {"rank": 1, "id": "ARCH-4", "reason": "Happens on every deploy during an export, is already the intended behaviour, and leaves a terminal job with no requeue path. If P0-1 ships first, it renders a dead state and the plan still has no recovery."},
+    {"rank": 2, "id": "ARCH-2", "reason": "The manifest is the resume source of truth. Deferring the schema decision forces a migration of every existing export later or splits failure truth across manifest and JSON store; either way P0-4 keeps conflating failed and never-attempted."},
+    {"rank": 3, "id": "ARCH-3", "reason": "Silent, not loud: a running job evicted at the 500-account scale P0-3 introduces leaves an account exporting and a worker slot leaked, with no error path. Cost grows exactly with the campaign size the plan is for."}
+  ],
+  "would_drop_if_forced": {
+    "id": "ARCH-6",
+    "reason": "It is a P2 framing/correction finding: jobs are durable already, and the fix is an admin:jobs query plus pool cancel/retry. Dropping it leaves the other five intact; the risk it names (a duplicate job store) is avoidable in review without a code change."
+  },
+  "notes": [
+    "ARCH-1 is a close fourth: if inaction means a web-side SQLite reader gets built, the cost is a second schema owner, but moving the join into Python later is mechanical.",
+    "No finding was upgraded or downgraded during reflection; ARCH-3 stays medium because no 500-account runtime was measured."
+  ]
+}

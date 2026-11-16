@@ -118,6 +118,9 @@ export function countsFromExport(email, exportDir = config.icloud.exportDir) {
   }
   const videos = videosIn(path.join(root, "Photos"));
   if (videos !== null) counts.videos = videos;
+  if (counts.photos !== undefined) {
+    counts.images = Math.max(0, counts.photos - (counts.videos ?? 0));
+  }
 
   const notes = countFiles(path.join(root, "Notes", "txt"));
   if (notes !== null) counts.notes = notes;
@@ -159,6 +162,9 @@ export function countsFromExport(email, exportDir = config.icloud.exportDir) {
 /** Update one account when its on-disk counts changed. */
 export function refreshAccountCounts(store, account, exportDir = config.icloud.exportDir) {
   if (!account?.email) return false;
+  // A live check (manual Verify or the 5-hour keepalive) is the truth:
+  // startup must not replace it with "what happens to be on disk".
+  if (account.countsUpdatedAt || account.verify?.finishedAt) return false;
   const counts = countsFromExport(account.email, exportDir);
   if (!counts) return false;
   const current = account.counts || {};
@@ -166,7 +172,10 @@ export function refreshAccountCounts(store, account, exportDir = config.icloud.e
     ([key, value]) => Number(current[key]) !== Number(value)
   );
   if (!changed) return false;
-  store.updateAccount(account.id, { counts });
+  store.updateAccount(account.id, {
+    counts,
+    countsUpdatedAt: new Date().toISOString(),
+  });
   return true;
 }
 
@@ -175,6 +184,43 @@ export function refreshAllCounts(store, exportDir = config.icloud.exportDir) {
   let changed = 0;
   for (const account of store.accounts.values()) {
     try {
+      // Fill counters that were never written from the last live check's
+      // areas.  Only missing keys are touched, so a fresher ping wins.
+      const areas = account.verify?.areas ?? {};
+      const current = account.counts || {};
+      const fill = {};
+      const fillIfMissing = (key, value) => {
+        if (value != null && current[key] == null) fill[key] = Number(value) || 0;
+      };
+      fillIfMissing("photos", areas.photos?.live);
+      fillIfMissing("hidden", areas.hidden?.live);
+      fillIfMissing("deleted", areas.deleted?.live);
+      fillIfMissing("driveFiles", areas.drive?.live);
+      fillIfMissing("contacts", areas.contacts?.live);
+      fillIfMissing("calendars", areas.calendar?.live);
+      fillIfMissing("reminders", areas.reminders?.live);
+      if (Object.keys(fill).length) {
+        store.updateAccount(account.id, {
+          counts: fill,
+          countsUpdatedAt: account.verify?.finishedAt || new Date().toISOString(),
+        });
+        changed += 1;
+      }
+
+      // Records written before "images" existed have photos + videos but no
+      // still-picture count.  Derive it; a live check can replace it later.
+      const counts = { ...current, ...fill };
+      if (counts.images == null && counts.photos != null) {
+        store.updateAccount(account.id, {
+          counts: {
+            images: Math.max(
+              0,
+              Number(counts.photos) - Number(counts.videos || 0)
+            ),
+          },
+        });
+        changed += 1;
+      }
       if (refreshAccountCounts(store, account, exportDir)) changed += 1;
     } catch (error) {
       console.error("[counts]", account.email, error.message);

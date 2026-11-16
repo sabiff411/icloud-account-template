@@ -29,6 +29,11 @@ export default function DriveTab({ account }) {
     getJson(accountUrl(account.id, "tree", { path }))
       .then((result) => {
         if (!alive) return;
+        if (result.missing) {
+          setError("path not found");
+          setLoading(false);
+          return;
+        }
         setData({ dirs: result.dirs || [], files: result.files || [] });
         setLoading(false);
       })
@@ -53,7 +58,7 @@ export default function DriveTab({ account }) {
   );
 
   if (loading) return <Spinner label="Loading Drive" />;
-  if (error) return <Empty title="Drive is not exported yet">{error}</Empty>;
+  if (error) return <Empty title="Drive is not exported yet">{/path not found/i.test(error) ? `${(Number(account.counts?.driveFiles) || 0).toLocaleString()} in iCloud · 0 downloaded. Run Export missing to fetch Drive.` : error}</Empty>;
 
   return (
     <div>

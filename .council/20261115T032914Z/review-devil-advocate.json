@@ -1,0 +1,203 @@
+{
+  "role": "devil-advocate",
+  "findings": [
+    {
+      "id": "DEV-1",
+      "title": "Prometheus join by private IP cannot match db-mon-1, so the node table is falsely red on day one",
+      "severity": "P1",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 104,
+      "line_end": 105,
+      "quote": "The node table is joined to Prometheus target health by private IP; a target that\nis absent is `red` with `\"no node_exporter target\"`.",
+      "claim": "FLEET.md gives db-mon-1 private 10.20.0.30, but Prometheus scrapes it as host.docker.internal:9100. There is no 10.20.0.30 node_exporter target in the evidence, so the plan's own absent-target rule marks the box that hosts NFS/Postgres/Redis/Prometheus red while its exporter is up.",
+      "impact": "The page's headline becomes '9 nodes, 1 red' forever, and the Prometheus card simultaneously says 9/9 targets up. The operator's first action is to chase a healthy db-mon-1, which is exactly the noise the page was built to remove; acceptance step 5's '8/9 targets up' also cannot be reconciled with the node table.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n '10.20.0.30' .council/20261115T032914Z/evidence-fleet.txt deploy/FLEET.md",
+      "fix": "Match targets on the instance host OR the node's public IP, and add an explicit alias for host.docker.internal -> db-mon-1 (or scrape db-mon-1 via 10.20.0.30:9100 from the mesh). Best: derive the node list from target labels instead of hardcoding FLEET.md.",
+      "citations": [
+        {
+          "file": "deploy/FLEET.md",
+          "line": 12,
+          "quote": "| db-mon-1 | 82.221.141.135 | 10.20.0.30 | data+ops | NFS, Postgres 16, Redis 7, Prometheus:9090, Grafana:3000, Uptime:3001 |"
+        },
+        {
+          "file": ".council/20261115T032914Z/evidence-fleet.txt",
+          "line": 9,
+          "quote": "host.docker.internal:9100 up "
+        },
+        {
+          "file": ".council/20261115T032914Z/evidence-fleet.txt",
+          "line": 12,
+          "quote": "10.20.0.44:9100 up "
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "DEV-2",
+      "title": "A hung NFS statfs starves the web process's threadpool; the 1200 ms race bounds the response, not the damage",
+      "severity": "P1",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 156,
+      "line_end": 157,
+      "quote": "- `statfs` on a hard-mounted NFS can block in the kernel; the 1200 ms race\n  returns a red result but the request thread may stay until the mount recovers.",
+      "claim": "fs.promises.statfs runs on libuv's threadpool (4 threads by default). Promise.race and AbortSignal time out the promise, not the kernel call, and the 5 s cache starts a fresh statfs every 5 s. After ~20 s of a hung hard mount the pool is exhausted, and every fs and getaddrinfo call in the web process queues behind it - including express.static and the mtime store read (admin/api.js:160).",
+      "impact": "When NFS hangs, the page that exists to report it stalls the web tier serving the capture page: assets stop loading, /api/admin/health itself times out, and the operator loses the one signal they opened the page for. At 3 a.m. with nobody watching, a single mount hang becomes a web outage, not a red row.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'statfs\\|Promise.allSettled\\|HEALTH_CACHE_MS' .council/20261115T032914Z/plan.md; grep -n 'fs.stat(storeFile)\\|express.static' server/admin/api.js server/app.js",
+      "fix": "Run statfs out of process (df -P on the mount, or a child node process) and kill it at the budget; or a worker_thread you terminate. Keep at most one statfs in flight (skip scheduling while one is outstanding) and serve the last-good result marked stale.",
+      "citations": [
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 62,
+          "quote": "- `probeNfs(dir)` — `fs.promises.statfs` (NFSv4), computes used ratio."
+        },
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 67,
+          "quote": "- All probes run through `Promise.allSettled` with a 1200 ms per-probe budget and"
+        },
+        {
+          "file": "server/admin/api.js",
+          "line": 160,
+          "quote": "      const stat = await fs.stat(storeFile);"
+        },
+        {
+          "file": "server/app.js",
+          "line": 108,
+          "quote": "    express.static(dist, {"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "DEV-3",
+      "title": "The workers check promises per-role coverage the socket pool cannot compute",
+      "severity": "P2",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 48,
+      "quote": "| workers | >= 1 per expected role | fewer than expected | 0 |",
+      "claim": "The plan feeds this from WorkerPool.snapshot() 'from its existing maps (same numbers already emitted in admin:ready)'. Those numbers are slotStats() = {workers, auth, export, queued}; worker:ready carries only slot counts and addWorker stores only {socket, slots, connectedAt}. No hostname, node id or role reaches the pool, so 'per expected role' is unimplementable as written and degrades to a hardcoded total.",
+      "impact": "The worker tier cannot say which role or node is missing, and a hardcoded 7 drifts with the fleet. With 2 download + 5 OCR workers, a total check can read green while the OCR role is gone, or red with no way to localise it - the second half of the page's question ('which dependency is failing') is lost.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'worker:ready' python/worker/__main__.py; grep -n -A6 'addWorker(socket)' server/socket/worker-pool.js; grep -n -A8 'slotStats()' server/socket/worker-pool.js",
+      "fix": "Have the worker send its node id or role in worker:ready (or map socket.handshake.address through fleet.js privateIp), or drop 'per role' and state the check as 'total >= EXPECTED_WORKERS' with an explicit config value.",
+      "citations": [
+        {
+          "file": "python/worker/__main__.py",
+          "line": 56,
+          "quote": "        self.emitter.send(\"worker:ready\", {\"slots\": self.slots()})"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1451,
+          "quote": "    this.workers.set(socket.id, {"
+        },
+        {
+          "file": "server/socket/admin.js",
+          "line": 90,
+          "quote": "    workers: pool.slotStats(),"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "DEV-4",
+      "title": "Postgres and Redis checks have no configured host or credential in the web process",
+      "severity": "P2",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 59,
+      "line_end": 60,
+      "quote": "- `probeRedis(url, password)` — raw RESP `AUTH` (if a password is set) then\n  `PING`; accepts `+PONG`; reads at most 256 bytes.",
+      "claim": "The plan never says where url/password come from. server/config.js has no redis or postgres section (config object is admin/geo/telegram/store/worker/icloud, 59-154) and .env.example has no REDIS/POSTGRES keys. FLEET.md puts REDIS_PASSWORD and DB_PASSWORD only on db-mon-1; the web runs on session-1 whose secret list omits both.",
+      "impact": "On day one the Redis check sends no AUTH, gets NOAUTH, and by the plan's own table (line 46) that is yellow forever; Postgres has no host/port source either. Two of nine checks are permanent noise, so overall never clears even after the gate is fixed, or a live secret gets pasted into server code.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'REDIS\\|POSTGRES\\|PGHOST\\|DB_HOST' server/config.js .env.example",
+      "fix": "Add REDIS_URL/REDIS_PASSWORD and PG_HOST/PG_PORT to config.js and .env.example, and state that the values are copied to session-1's env; treat NOAUTH as red ('server requires auth, we have no password'), not yellow.",
+      "citations": [
+        {
+          "file": "server/config.js",
+          "line": 59,
+          "quote": "export const config = {"
+        },
+        {
+          "file": "server/config.js",
+          "line": 154,
+          "quote": "};"
+        },
+        {
+          "file": "deploy/FLEET.md",
+          "line": 30,
+          "quote": "- db-mon-1: `/root/fleet-secrets.txt` — DB_PASSWORD, REDIS_PASSWORD, GRAFANA_PASSWORD"
+        },
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 45,
+          "quote": "| redis | `AUTH` + `PING` -> `PONG` | `NOAUTH` (password missing) | refused / timeout / `-ERR` |"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "DEV-5",
+      "title": "The new unauthenticated /healthz is published on a listener bound to all interfaces, not loopback",
+      "severity": "P2",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 77,
+      "quote": "- `GET /healthz` -> `200 {\"ok\":true,\"uptime\":…,\"workers\":{...},\"accounts\":…}`",
+      "claim": "socket/index.js calls httpServer.listen(config.socketPort, cb) with no host, which binds ::/0.0.0.0; only the log string at 110 says 127.0.0.1, and map.md:27 repeats that log as if it were the bind. The plan then adds worker/slot counts and the account count to that listener with no auth.",
+      "impact": "Any host that can reach 4001 on session-1 (UFW permitting) reads fleet capacity and account count without a session - the 'read-only, admin-only' posture the panel otherwise keeps. Low sensitivity today with one account, but it is a new unauthenticated surface added for a number the admin SPA already receives.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '108,111p' server/socket/index.js; sed -n '25,30p' .council/20261115T032914Z/map.md",
+      "fix": "httpServer.listen(port, '127.0.0.1') (nginx proxies from the same host), or return only {ok,uptime} unauthenticated and keep counts behind the admin route. Correct map.md:27 to say the bind is unspecified/all-interfaces.",
+      "citations": [
+        {
+          "file": "server/socket/index.js",
+          "line": 108,
+          "quote": "  httpServer.listen(config.socketPort, () => {"
+        },
+        {
+          "file": "server/socket/index.js",
+          "line": 110,
+          "quote": "      `[socket] ws://127.0.0.1:${config.socketPort} (/public, /admin, /worker)`"
+        },
+        {
+          "file": ".council/20261115T032914Z/map.md",
+          "line": 27,
+          "quote": "- Web/socket split: web proxies `/socket.io` (`app.js:38-54`, 150-156); socket binds 127.0.0.1 (108)."
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    }
+  ],
+  "not_examined": [
+    "Live host session-1: actual .env (REDIS_URL/PG creds, GATE_SECRET, GATE_MODE), UFW rules for 4001/5432/6379/4100, and the NFS mount options (hard/soft, timeo)",
+    "Prometheus /api/v1/targets label set - whether a node/host label exists that makes the private-IP join work",
+    "python/worker slots() implementation and whether OCR nodes really advertise scan slots",
+    "src/admin/Admin.jsx state plumbing for state.workers and how admin:ready reaches the tab",
+    "server/store.js internals, and the admin-api test harness beyond map.md's summary",
+    "Whether the deployed Python worker's worker:ready payload matches the repo (evidence says pkg 1.0.0)"
+  ],
+  "open_questions": [
+    "Does Prometheus expose a node/host label per target, or only instance=host:port? If only instance, the join must change or the scrape config must.",
+    "Are the NFS mounts hard or soft on session-1? That decides whether DEV-2 is an outage or a rare blip.",
+    "Is port 4001 reachable from outside session-1's UFW rules today?",
+    "Should overall exclude the acknowledged, out-of-scope gate red so the pill can still move on a new regression?",
+    "Does session-1's deployed .env already carry Redis/Postgres settings that .env.example omits?"
+  ]
+}

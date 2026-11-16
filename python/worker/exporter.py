@@ -10,17 +10,23 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 import threading
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from .events import json_safe
 from . import scan as scan_module
+
+try:  # pyicloud raises this when a signed media URL has expired (410)
+    from pyicloud.exceptions import PyiCloudEndpointGoneException
+except Exception:  # pragma: no cover - older pyicloud without the class
+    PyiCloudEndpointGoneException = ()
 
 log = logging.getLogger("worker.export")
 
@@ -43,12 +49,66 @@ AREA_PRIORITY = {
     "account": 4,
     "mail": 5,
     "drive": 6,
-    "photos": 7,
-    "hidden": 8,
+    "hidden": 7,
     "deleted": 8,
+    "photos": 9,
 }
 
 VIDEO_EXT = {".mov", ".mp4", ".m4v", ".3gp", ".avi", ".mkv", ".webm"}
+
+# Applications/installers in iCloud Drive are not worth a download.  Photos,
+# notes and every other file are never filtered.  Override with a comma list
+# in DRIVE_SKIP_EXT (extensions with or without the dot), or "none" to keep
+# every drive file.
+DEFAULT_DRIVE_SKIP_EXT = {
+    ".app",
+    ".appimage",
+    ".apk",
+    ".bat",
+    ".cmd",
+    ".com",
+    ".cpl",
+    ".deb",
+    ".dmg",
+    ".exe",
+    ".ipa",
+    ".jar",
+    ".mpkg",
+    ".msi",
+    ".msix",
+    ".msu",
+    ".pif",
+    ".pkg",
+    ".rpm",
+    ".scr",
+    ".xip",
+}
+
+
+def _drive_skip_ext() -> set[str]:
+    raw = os.environ.get("DRIVE_SKIP_EXT")
+    if raw is None:
+        return set(DEFAULT_DRIVE_SKIP_EXT)
+    if raw.strip().lower() in ("", "none", "off"):
+        return set()
+    values = set()
+    for item in raw.split(","):
+        item = item.strip().lower()
+        if not item:
+            continue
+        values.add(item if item.startswith(".") else f".{item}")
+    return values
+
+
+DRIVE_SKIP_EXT = _drive_skip_ext()
+
+
+def is_skipped_drive(relpath: str) -> bool:
+    """True for an app/installer file, or a file inside a ``.app`` bundle."""
+    path = Path(str(relpath or ""))
+    if path.suffix.lower() in DRIVE_SKIP_EXT:
+        return True
+    return any(part.lower().endswith(".app") for part in path.parts[:-1])
 
 
 def collect_counts(root: Path, areas: dict) -> dict:
@@ -116,6 +176,8 @@ def collect_counts(root: Path, areas: dict) -> dict:
             if path.is_file() and path.suffix.lower() in VIDEO_EXT
         )
     counts["videos"] = videos
+    # Library files include videos; Images is the still-picture part.
+    counts["images"] = max(0, int(counts.get("photos") or 0) - int(videos))
     return counts
 
 
@@ -219,7 +281,12 @@ class Exporter:
         self.tasks: list[dict] = []
         self.done = 0
         self.failed = 0
+        self.skipped = 0
         self.bytes = 0
+        # Live totals discovered during enumeration (album lengths, drive
+        # file count).  Sent with progress so the dashboard counts follow the
+        # account, not only the files already on disk.
+        self.live_counts: dict[str, int] = {}
         self.areas: dict[str, dict] = {
             area: {"done": 0, "total": 0, "bytes": 0} for area in AREAS
         }
@@ -241,6 +308,7 @@ class Exporter:
         fetch: Callable[[], Any],
         kind: str = "stream",
         priority: int | None = None,
+        legacy_key: str | None = None,
     ):
         if not contained(self.root, path):
             path = self.root / safe_name(path.name)
@@ -259,6 +327,7 @@ class Exporter:
                 "fetch": fetch,
                 "kind": kind,
                 "priority": priority,
+                "legacy_key": legacy_key,
             }
         )
         self.areas.setdefault(area, {"done": 0, "total": 0, "bytes": 0})
@@ -281,6 +350,26 @@ class Exporter:
             albums = api.photos.albums
         except Exception:
             return
+        # Cheap live totals for the dashboard.  len() is a count query, not
+        # an asset walk, so it is safe before the long enumeration.
+        try:
+            self.live_counts["albums"] = len(albums)
+        except Exception:
+            pass
+        for key, album_name in (
+            ("photos", "Library"),
+            ("hidden", "Hidden"),
+            ("deleted", "Recently Deleted"),
+            ("videos", "Videos"),
+        ):
+            try:
+                self.live_counts[key] = len(albums[album_name])
+            except Exception:
+                pass
+        if "photos" in self.live_counts:
+            self.live_counts["images"] = max(
+                0, self.live_counts["photos"] - self.live_counts.get("videos", 0)
+            )
         plan = [
             ("hidden", "Hidden"),
             ("deleted", "Recently Deleted"),
@@ -343,8 +432,28 @@ class Exporter:
                 dest = self.root / "Photos" / safe_name(album_name) / f"{safe_name(asset_id[:8])}_{filename}"
                 key = f"photo:{asset_id}"
 
-                def fetch(url=url):
-                    return api.session.get(url, stream=True, timeout=(20, 120))
+                def fetch(url=url, asset_id=asset_id, album=album):
+                    """Download with one URL refresh.
+
+                    Apple signs these media URLs for roughly 15 minutes.  A
+                    big/old account can still be downloading a 50-item batch
+                    when the URL expires (410), so re-read the asset from
+                    CloudKit for a fresh URL instead of losing the photo.
+                    """
+                    try:
+                        return api.session.get(url, stream=True, timeout=(20, 120))
+                    except PyiCloudEndpointGoneException:
+                        try:
+                            fresh = album.get(asset_id) if hasattr(album, "get") else None
+                        except Exception:
+                            fresh = None
+                        versions = getattr(fresh, "versions", {}) or {}
+                        new_url = (versions.get("original") or {}).get("url")
+                        if new_url and new_url != url:
+                            return api.session.get(
+                                new_url, stream=True, timeout=(20, 120)
+                            )
+                        raise
 
                 self.add(
                     area=area,
@@ -362,6 +471,64 @@ class Exporter:
             except Exception as error:
                 log.info("photo enumerate failed: %s", type(error).__name__)
         self._drain(8)
+
+    def enumerate_photo_urls(self, api):
+        """Write signed photo URLs to ``Photos/urls.json`` (no downloads).
+
+        Apple's ``downloadURL`` is a signed CDN link that needs no cookies,
+        so the client can fetch the original directly.  The signature lasts
+        about 15 minutes; the file records when it was generated.
+        """
+        try:
+            albums = api.photos.albums
+        except Exception:
+            return
+        items: list[dict] = []
+        seen: set[str] = set()
+        for album in albums:
+            album_name = str(getattr(album, "name", "") or getattr(album, "title", "") or "album")
+            try:
+                assets = iter(album)
+            except Exception:
+                continue
+            for asset in assets:
+                if self._cancelled():
+                    break
+                asset_id = str(getattr(asset, "id", "") or "")
+                if not asset_id or asset_id in seen:
+                    continue
+                versions = getattr(asset, "versions", {}) or {}
+                original = versions.get("original") or {}
+                url = original.get("url")
+                if not url:
+                    continue
+                seen.add(asset_id)
+                items.append(
+                    {
+                        "id": asset_id,
+                        "album": album_name,
+                        "filename": original.get("filename")
+                        or getattr(asset, "filename", "")
+                        or f"{asset_id}.bin",
+                        "size": int(original.get("size") or getattr(asset, "size", 0) or 0),
+                        "width": original.get("width"),
+                        "height": original.get("height"),
+                        "url": url,
+                    }
+                )
+        generated = datetime.now(timezone.utc)
+        payload = {
+            "generatedAt": generated.isoformat(),
+            "expiresAt": (generated + timedelta(minutes=15)).isoformat(),
+            "count": len(items),
+            "items": items,
+        }
+        path = self.root / "Photos" / "urls.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        self.live_counts["photoUrls"] = len(items)
 
     def enumerate_notes(self, api):
         try:
@@ -395,12 +562,14 @@ class Exporter:
             root = api.drive.root
         except Exception:
             return
-        stack = [(root, self.root / "Drive")]
+        stack = [(root, self.root / "Drive", "")]
         seen = set()
+        drive_files = 0
+        drive_skipped = 0
         while stack:
             if self._cancelled():
                 return
-            node, dest_dir = stack.pop()
+            node, dest_dir, prefix = stack.pop()
             try:
                 children = node.get_children()
             except Exception:
@@ -408,16 +577,38 @@ class Exporter:
             for child in children or []:
                 if self._cancelled():
                     return
-                name = safe_name(getattr(child, "name", "") or "file")
+                raw_name = str(getattr(child, "name", "") or "")
+                name = safe_name(raw_name or "file")
                 if getattr(child, "type", "") == "folder":
-                    stack.append((child, dest_dir / name))
+                    # Do not walk into a macOS .app bundle: every file inside
+                    # is an application resource, and verify skips the same
+                    # subtree.
+                    if raw_name.lower().endswith(".app"):
+                        continue
+                    stack.append((child, dest_dir / name, f"{prefix}{raw_name}/"))
                     continue
-                key = f"drive:{getattr(child, 'name', '')}:{getattr(child, 'size', 0)}"
+                # Include the folder path: two files with the same name and
+                # size in different folders are different files and must not
+                # collapse into one manifest row.
+                key = (
+                    f"drive:{prefix}{raw_name}:"
+                    f"{int(getattr(child, 'size', 0) or 0)}"
+                )
                 if key in seen:
                     continue
                 seen.add(key)
                 size = int(getattr(child, "size", 0) or 0)
                 dest = dest_dir / name
+
+                if is_skipped_drive(f"{prefix}{raw_name}"):
+                    row = self.manifest.get(key)
+                    if not row or row.get("status") != "skipped":
+                        self.manifest.mark(
+                            key, "drive", dest, size, "", status="skipped"
+                        )
+                    self.skipped += 1
+                    drive_skipped += 1
+                    continue
 
                 def fetch(child=child):
                     # Some drive nodes (e.g. the "Shortcuts" folder) come
@@ -431,7 +622,18 @@ class Exporter:
                         pass
                     return child.open(stream=True, timeout=(20, 120))
 
-                self.add(area="drive", key=key, path=dest, size=size, fetch=fetch)
+                self.add(
+                    area="drive",
+                    key=key,
+                    path=dest,
+                    size=size,
+                    fetch=fetch,
+                    legacy_key=f"drive:{raw_name}:{size}",
+                )
+                drive_files += 1
+
+        self.live_counts["driveFiles"] = drive_files
+        self.live_counts["driveSkipped"] = drive_skipped
 
     def enumerate_mail(self, api):
         """Export the experimental iCloud Mail surface when the installed
@@ -713,9 +915,24 @@ class Exporter:
     def _download_task(self, task: dict) -> None:
         total = self._total_known()
         area = self.areas.setdefault(task["area"], {"done": 0, "total": 0, "bytes": 0})
-        if not self.force and not self.manifest.needs(
+        already = not self.force and not self.manifest.needs(
             task["key"], task["path"], task["size"]
+        )
+        legacy = task.get("legacy_key")
+        if (
+            not already
+            and not self.force
+            and legacy
+            and legacy != task["key"]
+            and not self.manifest.needs(legacy, task["path"], task["size"])
         ):
+            # The same file is already on disk under the old name-only key
+            # (manifests written before drive keys included the folder path).
+            # Adopt it instead of downloading the whole drive again.
+            size = int(task["path"].stat().st_size if task["path"].exists() else 0)
+            self.manifest.mark(task["key"], task["area"], task["path"], size, "")
+            already = True
+        if already:
             self.done += 1
             area["done"] += 1
             size = int(task["path"].stat().st_size if task["path"].exists() else 0)
@@ -769,7 +986,10 @@ class Exporter:
         api = self.ctx.api
         seen: set[str] = set()
         if api is not None:
-            if self.only_mail:
+            if self.mode == "urls":
+                # Metadata only: signed iCloud URLs, no image download.
+                self.enumerate_photo_urls(api)
+            elif self.only_mail:
                 # Mail is large and optional: only the explicit "Export mail"
                 # button reaches this path.
                 self.enumerate_mail(api)
@@ -824,16 +1044,23 @@ class Exporter:
         totals = {
             "done": self.done,
             "failed": self.failed,
+            "skipped": self.skipped,
             "total": total,
             "bytes": self.bytes,
             "areas": self.areas,
         }
+        if self.mode == "urls":
+            # No files were downloaded: keep the live counters untouched.
+            counts = {}
+        else:
+            counts = collect_counts(self.root, self.areas)
+            counts["driveSkipped"] = self.skipped
         self.ctx.emit(
             "job:export_done",
             {
                 "manifest": str(self.manifest.path),
                 "totals": totals,
-                "counts": collect_counts(self.root, self.areas),
+                "counts": counts,
             },
         )
         return totals
@@ -856,6 +1083,7 @@ class Exporter:
                 "overallDone": overall,
                 "overallTotal": total,
                 "areas": self.areas,
+                **({"counts": self.live_counts} if self.live_counts else {}),
             },
             area="overall",
             throttle=1.0,

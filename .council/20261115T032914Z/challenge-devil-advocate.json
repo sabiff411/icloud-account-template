@@ -1,0 +1,55 @@
+{
+  "role": "devil-advocate",
+  "attempted_counterexamples": [
+    {
+      "scenario": "Join Prometheus target health to the 9 static fleet nodes by private IP (plan.md:100-105).",
+      "assumption": "Every FLEET.md node appears in Prometheus targets under its 10.20.0.x address, so an absent target really means the exporter is down.",
+      "evidence": "deploy/FLEET.md:12 '| db-mon-1 | 82.221.141.135 | 10.20.0.30 | data+ops | ...'; .council/20261115T032914Z/evidence-fleet.txt:4-12 lists 10.20.0.10/.21/.22/.41/.42/.43/.44/.45 plus 'host.docker.internal:9100 up' - no 10.20.0.30.",
+      "result": "refuted",
+      "observed": "db-mon-1's exporter is up but scraped as host.docker.internal:9100, so the plan's 'absent -> red with no node_exporter target' rule paints db-mon-1 red on day one while the same 9 targets are 9/9 up. The node table and the Prometheus card disagree, and '9/9 nodes' is unreachable.",
+      "uncertainty": "If the scrape config carries a node/host label, the join could be fixed without changing the address. The evidence file shows instances only; /api/v1/targets labels were not read."
+    },
+    {
+      "scenario": "NFS mount hangs (one dependency down) while the health page auto-refreshes (plan.md:62, 67-70, 156-157).",
+      "assumption": "The 1200 ms race contains the damage of a blocked statfs to the health request that triggered it.",
+      "evidence": "plan.md:156-157 'the request thread may stay until the mount recovers'; server/admin/api.js:160 'const stat = await fs.stat(storeFile);'; server/app.js:108 'express.static(dist, {'.",
+      "result": "refuted",
+      "observed": "fs.promises.statfs runs on libuv's threadpool (default 4 threads). Promise.race/AbortSignal time out the promise, not the kernel call. With a 5 s cache a new statfs starts every 5 s, so ~20 s of a hung mount exhausts the pool and queues every fs and getaddrinfo in the web process behind it - including the static assets and store mtime read the capture page needs. The health page degrades the tier it monitors; the plan's own weakness note understates this as one stranded request.",
+      "uncertainty": "Mount options are not in the repo. A soft mount with timeo well under 1200 ms would make the accumulation rare; a hard mount makes it near-certain."
+    },
+    {
+      "scenario": "Add GET /healthz to the socket process's plain createServer callback without breaking Engine.IO (plan.md:72-84, server/socket/index.js:20-23).",
+      "assumption": "Engine.IO leaves the original request listener in place for non-/socket.io paths, so a /healthz branch there is safe.",
+      "evidence": "node_modules/engine.io/build/server.js:674-691 saves the existing 'request' listeners, removeAllListeners, intercepts path matches and delegates the rest; node_modules/socket.io/dist/index.js:327-345 does the same for client serving.",
+      "result": "supported",
+      "observed": "The delegation is explicit in the installed libraries. A /healthz branch in the original callback is only reached for non-Engine.IO paths; the plan's claim that Engine.IO paths are untouched holds.",
+      "uncertainty": "Verified against the installed engine.io/socket.io versions only; a major upgrade could change the wrapping."
+    },
+    {
+      "scenario": "Workers check '>= 1 per expected role' (plan.md:48) fed from WorkerPool.snapshot().",
+      "assumption": "The pool can attribute connected workers to expected roles (download vs OCR).",
+      "evidence": "python/worker/__main__.py:56 'self.emitter.send(\"worker:ready\", {\"slots\": self.slots()})'; server/socket/worker-pool.js:1450-1456 stores only {socket, slots, connectedAt}; server/socket/admin.js:90 emits pool.slotStats() = {workers, auth, export, queued}.",
+      "result": "refuted",
+      "observed": "No hostname, node id or role ever reaches the pool. Role coverage cannot be computed; the check collapses to a total count (hardcoded 7, which drifts) and cannot say which role/node is missing - the page's stated purpose for the worker tier.",
+      "uncertainty": "socket.handshake.address might carry the mesh IP and could be mapped back to fleet.js roles, if workers connect directly rather than through a proxy; not verified live."
+    },
+    {
+      "scenario": "5 s cache plus 15 s auto-refresh cannot amplify probe load (plan.md:69-70, 118).",
+      "assumption": "The refresh cadence multiplies probes into a load problem.",
+      "evidence": "plan.md:69-70 'Results are cached for 5 s ...'; plan.md:118 'auto-refresh every 15 s, paused when the tab is hidden'; evidence-fleet.txt:41 one account, 7 workers.",
+      "result": "supported",
+      "observed": "One admin cookie and one account: at most ~12 collectHealth batches/minute, 9 concurrent probes each, worst case ~1200 ms. Network probe load is negligible; the amplification risk is the statfs threadpool, not request count.",
+      "uncertainty": "The cache is per process and per tab refresh, so N open tabs scale linearly - still trivial at N<=10."
+    },
+    {
+      "scenario": "Gate check: does 'status endpoint answers' prove the gate works once the :4100 provider exists (plan.md:41, 46, 158-159)?",
+      "assumption": "A green gate row means the gate is usable, so the current red is meaningful and will clear when the provider ships.",
+      "evidence": "server/gate.js:528-540 status() returns {ok:true, reason:'status_error'} on a network error (fails open); server/gate.js:637-651 the redeem path is what decoys a ?g= visitor and is never exercised by a status probe.",
+      "result": "refuted",
+      "observed": "The plan probes /api/status, the one gate call that already fails open. A provider with working status and broken redeem reads green while every token-holder is still decoyed; the day-one red only proves nothing listens, not that redeem works. The plan admits this in section 7, so it is a known overclaim rather than a discovery.",
+      "uncertainty": "The provider does not exist, so no live contract (status body, secret, HTTP codes) can be tested. The probe mirrors gate.js's own postJson shape, which is the best available evidence."
+    }
+  ],
+  "verdict": "REVISE",
+  "reason": "The shape is right and Engine.IO/refresh attacks fail, but two facts are wrong as written: db-mon-1 is scraped as host.docker.internal, so the private-IP join shows a permanent false red on the node the page exists to explain; and a hung NFS statfs consumes a shared threadpool thread per refresh, so the health page can stall the web tier it reports on. Both are cheap to fix before building."
+}

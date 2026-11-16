@@ -1,0 +1,61 @@
+{
+  "role": "client-operator",
+  "run": "2026-11-14T02:58:17Z",
+  "subject": "FEATURES.md §4 dashboard improvement plan",
+  "question": "Does the plan answer 'which account has crypto and did we download it', 'what is missing and can I queue it now', and 'is the fleet healthy' as the operator asked?",
+  "scenarios": [
+    {
+      "id": "S1",
+      "scenario": "P0-2 is new work because no per-area live/downloaded/missing matrix exists (#16).",
+      "assumption": "OverviewTab has only global counts until P0-2 ships.",
+      "evidence": "src/admin/OverviewTab.jsx:238-251 renders verify.areas as live/exported/missing per area with a clickable 'missing' that queues export(missing); /tmp/v3-demo-store.json account demo.panel@example.com has verify.areas for 8 areas; screenshot 02 shows the same section for example.harvest with the 'Run Verify live' empty state because that account has verify:null.",
+      "result": "refuted",
+      "remaining_uncertainty": "The existing matrix is manifest-derived, not disk-derived, and only appears after a live verify; whether it disagrees with files on disk is untested (no verify job was run in the demo)."
+    },
+    {
+      "id": "S2",
+      "scenario": "The operator must know where to look because search is per-account; P1-3 must add global search.",
+      "assumption": "No cross-account search endpoint or UI exists.",
+      "evidence": "src/admin/Admin.jsx:336-342 opens LibraryTab as 'All'; LibraryTab.jsx:424 searches 'every note, image (OCR), contact, calendar entry and seed' and passes accountId/type/kind to /api/admin/library; server/admin/library.js queryCatalog filters all areas by q and accountId.",
+      "result": "refuted",
+      "remaining_uncertainty": "Saved searches and URL deep links are genuinely absent; server-side grouping by area is only for the 'all' type (12/24 item previews)."
+    },
+    {
+      "id": "S3",
+      "scenario": "A mock-worker run can leave a job in state 'failed', as P0-1's acceptance requires.",
+      "assumption": "'failed' is a job status in the socket process.",
+      "evidence": "server/socket/worker-pool.js writes 'error' (1158, 1221), 'cancelled' (411), 'twofa' (934), 'done'; server/store.js createJob starts at 'queued' (500) and markStaleJobs writes 'unknown' (206). grep -n \"failed\" on both files has no status hit.",
+      "result": "refuted",
+      "remaining_uncertainty": "The plan may intend to introduce a 'failed' state in P0-1; it does not say so, and per-file failures (P0-4) already use status='failed' in the SQLite manifest, so the two words would collide."
+    },
+    {
+      "id": "S4",
+      "scenario": "A restart mid-export recovers in-flight jobs, so P0-3's 'order persists after restart' is only about ordering.",
+      "assumption": "WorkerPool rebuilds the queue from any non-terminal job.",
+      "evidence": "Probe /tmp/council-client/probe-store.mjs: Store() with one 'running' export job logs 'job.status after Store(): unknown | error: node restarted' and 'WorkerPool boot would requeue this job: false'. Server order: store created server/socket/index.js:14, pool created :28; pool restart branch accepts only queued/running (worker-pool.js:144-146) after store.js:206 rewrote running to unknown.",
+      "result": "refuted",
+      "remaining_uncertainty": "Not exercised through a real socket process and live worker; the probe uses the production Store class only."
+    },
+    {
+      "id": "S5",
+      "scenario": "Selecting 'Photo' in the gallery shows the same 142 tiles as 'Any type'.",
+      "assumption": "The kind select filters the grid.",
+      "evidence": "src/admin/PhotosTab.jsx:129 dependency array is [account.id, area, query] with kind missing, so selecting a kind never reloads; screenshot 17-photos-kind-photo.png shows 'Photo' selected with '142 of 142' and the same 18 tiles as 03-photos.png. A direct gallery() call with kind=photo returns total 0 and kindCounts {\"unclassified\":142} (probe /tmp/council-client/probe-gallery.mjs).",
+      "result": "supported",
+      "remaining_uncertainty": "After fixing the dependency the filter returns 0 for this export because Scan/vlm-index.json is absent; whether a scanned account ever gets kinds is untested."
+    },
+    {
+      "id": "S6",
+      "scenario": "Global acceptance criterion 4 is already true: EXPORT_ENABLED=false disables every export control.",
+      "assumption": "The UI and worker enforce one export gate.",
+      "evidence": "worker-pool.js:556 exempts mode 'urls' from the gate; OverviewTab.jsx:210-222 leaves 'Photo URLs (no download)' and the Download URLs JSON anchor active when exportEnabled=false; only Export missing / Redownload use the flag.",
+      "result": "refuted",
+      "remaining_uncertainty": "Whether 'urls' is considered an export control by the plan; it writes Photos/urls.json but downloads no media."
+    }
+  ],
+  "map_validation": {
+    "checked": "map.md items 2, 3, 4 and the restart BUG against store.js, worker-pool.js, server/socket/index.js, python/worker/verify.py.",
+    "result": "consistent with source; the restart bug is real and reproducible with the probe. One correction: manifest rows for example.harvest are 113 distinct assets (104 photos + 9 hidden), which equals unique disk asset ids, while Photos contains 142 files after live-photo proxies and 9 duplicated Hidden stills.",
+    "contradictions": []
+  }
+}

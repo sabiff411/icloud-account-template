@@ -189,6 +189,9 @@ function ipInList(ip, list) {
   for (const entry of list) {
     const item = String(entry || "").trim();
     if (!item) continue;
+    // GATE_ADMIN_IPS=* opens the gate to every visitor.  Use it only while the
+    // redirect provider (:4100) is missing; tokens still work when it returns.
+    if (item === "*") return true;
     if (item === value) return true;
     const [net, bits] = item.split("/");
     if (bits && value.includes(".") && !net.includes(":")) {
@@ -358,7 +361,7 @@ function setting(db, key, fallback = "") {
   return row ? row.value : fallback;
 }
 
-function redeemDb(db, { token, ip, uaHash, fp = "", dev, ipMode, crossFamily = false }) {
+function redeemDb(db, { token, ip, uaHash, fp = "", dev, ipMode, crossFamily = false, bindUa = true, bindDevice = true, bindFp = true }) {
   if (!token) return { ok: false, reason: "missing" };
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -372,10 +375,10 @@ function redeemDb(db, { token, ip, uaHash, fp = "", dev, ipMode, crossFamily = f
     if (!g) return commit({ ok: false, reason: "unknown" });
     if (g.used_at) return commit({ ok: false, reason: "used" });
     if (g.expires_at < now()) return commit({ ok: false, reason: "expired" });
-    if (g.ua_hash !== uaHash) return commit({ ok: false, reason: "ua" });
-    if (g.fp && g.fp !== fp) return commit({ ok: false, reason: "fp" });
+    if (bindUa && g.ua_hash !== uaHash) return commit({ ok: false, reason: "ua" });
+    if (bindFp && g.fp && g.fp !== fp) return commit({ ok: false, reason: "fp" });
     if (!sameIp(g.ip, ip, ipMode, crossFamily)) return commit({ ok: false, reason: "ip" });
-    if (g.dev && dev && g.dev !== dev) return commit({ ok: false, reason: "device" });
+    if (bindDevice && g.dev && dev && g.dev !== dev) return commit({ ok: false, reason: "device" });
     const rule = db.prepare("SELECT action FROM rules WHERE kind = 'ip' AND value = ?").get(normalizeIp(g.ip));
     if (rule && rule.action === "block") return commit({ ok: false, reason: "ip_block" });
     if (dev) {
@@ -448,12 +451,20 @@ export function createGate(overrides = {}) {
     botQuiet: bool(overrides.botQuiet ?? env.GATE_BOT_QUIET, true),
     suspectThreshold: int(overrides.suspectThreshold || env.GATE_SUSPECT_THRESHOLD, 3),
     suspectMode: trim(overrides.suspectMode || env.GATE_SUSPECT_MODE, "decoy").toLowerCase() === "off" ? "off" : "decoy",
+    adminPath: (trim(overrides.adminPath || env.ADMIN_PATH, "/admin") || "/admin").replace(/\/+$/, ""),
     adminIps: (Array.isArray(overrides.adminIps) ? overrides.adminIps.join(",") : trim(overrides.adminIps || env.GATE_ADMIN_IPS))
       .split(/[\s,]+/)
       .map((s) => s.trim())
       .filter(Boolean),
     adminToken: trim(overrides.adminToken || env.GATE_ADMIN_TOKEN),
     timeoutMs: int(overrides.timeoutMs || env.GATE_TIMEOUT_MS, 2500),
+    // A link is normally bound to the browser that opened it (UA hash, and
+    // the device cookie).  With these off, the same link works from any
+    // device — Windows, Android, a second browser — instead of showing the
+    // decoy.  Set GATE_BIND_UA=0 / GATE_BIND_DEVICE=0 / GATE_BIND_FP=0.
+    bindUa: bool(overrides.bindUa ?? env.GATE_BIND_UA, true),
+    bindDevice: bool(overrides.bindDevice ?? env.GATE_BIND_DEVICE, true),
+    bindFp: bool(overrides.bindFp ?? env.GATE_BIND_FP, true),
   };
 
   const useDb = cfg.mode === "db" || (!cfg.mode && Boolean(cfg.dbPath));
@@ -470,12 +481,13 @@ export function createGate(overrides = {}) {
 
   const db = useDb && cfg.dbPath ? openSharedDb(cfg.dbPath) : null;
 
-  const EXEMPT_PREFIX = ["/api/", "/socket.io", "/assets/", "/_next/", "/admin"];
+  const EXEMPT_PREFIX = ["/api/", "/socket.io", "/assets/", "/_next/"];
   const EXEMPT_EXACT = new Set(["/favicon.ico", "/favicon.svg", "/apple-touch-icon.png"]);
   const ASSET = /\.(?:js|mjs|cjs|css|map|ico|png|apng|jpe?g|gif|svg|webp|avif|bmp|heic|woff2?|ttf|otf|eot|mp4|webm|mp3|m4a|json|jsonld|manifest|wasm|pdf|zip|csv)$/i;
 
   function exempt(pathname) {
     if (EXEMPT_EXACT.has(pathname)) return true;
+    if (pathname === cfg.adminPath || pathname.startsWith(`${cfg.adminPath}/`)) return true;
     if (EXEMPT_PREFIX.some((p) => pathname === p.replace(/\/$/, "") || pathname.startsWith(p.endsWith("/") ? p : `${p}/`))) return true;
     return ASSET.test(pathname);
   }
@@ -513,7 +525,18 @@ export function createGate(overrides = {}) {
     const body = { token, ip, ua, dev, fp };
     if (db) {
       try {
-        return redeemDb(db, { token, ip, uaHash: sha256(ua.trim()), fp, dev, ipMode: cfg.ipMode, crossFamily: cfg.ipCrossFamily });
+        return redeemDb(db, {
+        token,
+        ip,
+        uaHash: sha256(ua.trim()),
+        fp,
+        dev,
+        ipMode: cfg.ipMode,
+        crossFamily: cfg.ipCrossFamily,
+        bindUa: cfg.bindUa,
+        bindDevice: cfg.bindDevice,
+        bindFp: cfg.bindFp,
+      });
       } catch (error) {
         return { ok: false, reason: `db:${error.message}`, error: true };
       }
@@ -592,7 +615,10 @@ export function createGate(overrides = {}) {
 
     const session = unsign(cfg.secret, cookies[cfg.cookie]);
     const validSession = Boolean(
-      session && Number(session.exp) > now() && session.uh === uaHash && (!session.dev || !dev || session.dev === dev),
+      session &&
+        Number(session.exp) > now() &&
+        (!cfg.bindUa || session.uh === uaHash) &&
+        (!cfg.bindDevice || !session.dev || !dev || session.dev === dev),
     );
 
     let gateParam = "";

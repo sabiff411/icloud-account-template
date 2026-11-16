@@ -3,7 +3,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { buildCatalog, queryCatalog, accountsWithExport, invalidateCatalog } from "../admin/library.js";
+import { buildCatalog, queryCatalog, accountsWithExport, invalidateCatalog, cryptoMatch } from "../admin/library.js";
 import { safeName } from "../admin/export.js";
 import { WorkerPool, shouldScanForOcr } from "../socket/worker-pool.js";
 
@@ -59,6 +59,7 @@ await write(
 await write(path.join(alice, "Photos", "Library", "IMG_0001.jpg"), Buffer.from("one"));
 await write(path.join(alice, "Photos", "Library", "IMG_0002.jpg"), Buffer.from("two"));
 await write(path.join(alice, "Photos", "Library", "HEIC_1.HEIC"), Buffer.from("heic"));
+await write(path.join(alice, "Drive", "Crypto Jahresauszug.pdf"), Buffer.from("pdf"));
 await write(path.join(alice, "Scan", "thumbs", "Photos", "Library", "HEIC_1.HEIC.jpg"), Buffer.from("thumb"));
 await write(path.join(alice, "Scan", "ocr", "Photos", "Library", "IMG_0001.jpg.txt"), "safe code 1234");
 await write(
@@ -72,6 +73,14 @@ await write(
         name: "IMG_0001.jpg",
         text: "safe code 1234",
       },
+      {
+        path: "Drive/Crypto Jahresauszug.pdf",
+        area: "drive",
+        kind: "file",
+        name: "Crypto Jahresauszug.pdf",
+        text: "Bitcoin wallet balance and seed phrase backup",
+        mtime: 1000,
+      },
     ],
   })
 );
@@ -82,7 +91,7 @@ await write(
       {
         file: "Photos/Library/IMG_0001.jpg",
         area: "photos",
-        phrase: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        phrase: "again empty warm hip fat allow broccoli turn finger insane hunt service",
         words: 12,
         tier: "high",
         checksum: true,
@@ -108,6 +117,52 @@ assert.equal(
   catalog.photos.find((item) => item.name === "HEIC_1.HEIC").thumb,
   "Scan/thumbs/Photos/Library/HEIC_1.HEIC.jpg"
 );
+assert.equal(catalog.crypto.length, 3, "one seed, the wallet note and one Drive match");
+assert.ok(catalog.crypto.some((item) => item.kind === "seed" && item.signal === "seed"));
+assert.ok(
+  catalog.crypto.some(
+    (item) => item.source === "Drive" && item.path === "Drive/Crypto Jahresauszug.pdf" && item.email === "alice@example.com"
+  )
+);
+assert.ok(
+  catalog.crypto.some((item) => item.kind === "note" && item.source === "Notes" && item.matched === "wallet")
+);
+assert.equal(catalog.cryptoAccounts.length, 1, "one account has crypto signals");
+assert.equal(catalog.cryptoAccounts[0].seeds, 1);
+assert.equal(catalog.cryptoAccounts[0].notes, 1);
+assert.equal(catalog.cryptoAccounts[0].files, 1);
+assert.ok(catalog.cryptoAccounts[0].signals.some((signal) => signal.name === "seed"));
+
+const cryptoDrive = queryCatalog(catalog, { type: "crypto", q: "bitcoin" });
+assert.equal(cryptoDrive.items.length, 1);
+assert.equal(cryptoDrive.items[0].path, "Drive/Crypto Jahresauszug.pdf");
+assert.equal(cryptoDrive.counts.crypto, 3);
+assert.equal(cryptoDrive.summary.length, 1);
+
+const cryptoAll = queryCatalog(catalog, { type: "crypto" });
+assert.equal(cryptoAll.items.length, 3);
+assert.equal(cryptoAll.items[0].kind, "seed", "seeds come first");
+
+assert.equal(cryptoMatch("addr bc1q8azd2dx6hfu9dm5456fxm073399lv9d7fq99w0").signal, "address");
+assert.equal(cryptoMatch("id 367e8e8d273b4beca12ae31ad77989db"), null, "UUID is not a BTC address");
+assert.equal(cryptoMatch("Bison").signal, "exchange");
+assert.equal(cryptoMatch("BTC").signal, "ticker");
+assert.equal(cryptoMatch("Sparplan").signal, "trading");
+assert.equal(cryptoMatch("plain quarterly report"), null);
+
+const cryptoNotes = queryCatalog(catalog, { type: "crypto", cryptoKind: "note" });
+assert.equal(cryptoNotes.items.length, 1);
+assert.equal(cryptoNotes.items[0].kind, "note");
+
+const verifiedSeeds = queryCatalog(catalog, { type: "seeds", checksum: "valid" });
+assert.equal(verifiedSeeds.items.length, 1);
+assert.equal(verifiedSeeds.items[0].checksum, true);
+assert.equal(queryCatalog(catalog, { type: "seeds", checksum: "failed" }).items.length, 0);
+assert.equal(queryCatalog(catalog, { type: "seeds", words: 15 }).items.length, 0);
+
+const seedCopy = queryCatalog(catalog, { type: "seeds", checksum: "valid", compact: "1" });
+assert.equal(seedCopy.items.length, 0);
+assert.match(seedCopy.lines, /checksum valid\t12 words/);
 
 const byText = queryCatalog(catalog, { type: "notes", q: "wallet" });
 assert.equal(byText.items.length, 1);

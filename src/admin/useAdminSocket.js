@@ -29,6 +29,7 @@ const initial = {
   accountStats: null,
   jobs: null,
   workers: null,
+  exportEnabled: true,
   selectedAccount: null,
   accountJobs: [],
 };
@@ -100,6 +101,7 @@ export function useAdminSocket() {
           accountStats: result.stats ?? prev.accountStats,
           jobs: result.jobs ?? prev.jobs,
           workers: result.workers ?? prev.workers,
+          exportEnabled: result.exportEnabled ?? prev.exportEnabled,
         }));
       } catch (error) {
         note(error.message);
@@ -146,11 +148,16 @@ export function useAdminSocket() {
           accountStats: payload.accountStats ?? prev.accountStats,
           jobs: payload.jobs ?? prev.jobs,
           workers: payload.workers ?? prev.workers,
+          exportEnabled: payload.exportEnabled ?? prev.exportEnabled,
         }));
       });
 
       socket.on("admin:wave", (wave) => {
         setState((prev) => ({ ...prev, wave: wave ?? null }));
+      });
+
+      socket.on("admin:workers", (workers) => {
+        setState((prev) => ({ ...prev, workers: workers ?? prev.workers }));
       });
 
       socket.on("admin:change", ({ stats, change }) => {

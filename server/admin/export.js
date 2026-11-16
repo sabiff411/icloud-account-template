@@ -1,5 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { dedupeSeeds, filterSeeds, seedLabel } from "./seeds.js";
+import { thumbRel } from "./thumbs.js";
+import { s4exists, s4Key, s4url } from "./s4.js";
 
 /* Read-only access to one account's export tree.
  *
@@ -18,6 +21,8 @@ const IMAGE_EXT = new Set([
   ".tiff",
   ".heic",
   ".heif",
+  ".avif",
+  ".dng",
 ]);
 const VIDEO_EXT = new Set([".mov", ".mp4", ".m4v", ".3gp"]);
 const MEDIA_EXT = new Set([...IMAGE_EXT, ...VIDEO_EXT]);
@@ -40,6 +45,8 @@ const TYPES = {
   ".tiff": "image/tiff",
   ".heic": "image/heic",
   ".heif": "image/heif",
+  ".avif": "image/avif",
+  ".dng": "image/x-adobe-dng",
   ".mp4": "video/mp4",
   ".mov": "video/quicktime",
   ".m4v": "video/x-m4v",
@@ -103,17 +110,50 @@ function isMedia(name) {
 }
 
 /** Directory listing for the Drive/Notes/Photos tree. */
+/** Directory listing rebuilt from the manifest (local bytes pruned). */
+function treeFromManifest(manifest, rel) {
+  const prefix = rel ? `${String(rel).replace(/\/+$/, "")}/` : "";
+  const dirs = new Map();
+  const files = [];
+  for (const entry of manifest) {
+    if (!entry.p || !entry.p.startsWith(prefix)) continue;
+    const rest = entry.p.slice(prefix.length);
+    if (!rest) continue;
+    const slash = rest.indexOf("/");
+    if (slash < 0) {
+      files.push({
+        name: rest,
+        path: entry.p,
+        size: entry.s,
+        mtime: entry.m,
+        media: isMedia(rest),
+      });
+    } else {
+      const name = rest.slice(0, slash);
+      if (!dirs.has(name)) dirs.set(name, { name, path: `${prefix}${name}` });
+    }
+  }
+  return { base: rel, dirs: [...dirs.values()].sort(byName), files: files.sort(byName) };
+}
+
 export async function readTree(root, rel = "") {
   const dir = resolveWithin(root, rel);
   if (!dir) return null;
   const real = await realWithin(root, dir);
-  if (!real) return null;
-  let entries;
-  try {
-    entries = await fs.readdir(real, { withFileTypes: true });
-  } catch {
-    return null;
+  let entries = null;
+  if (real) {
+    try {
+      entries = await fs.readdir(real, { withFileTypes: true });
+    } catch {
+      entries = null;
+    }
   }
+  const manifest = await manifestFiles(root);
+  if ((!entries || entries.length === 0) && manifest) {
+    const rebuilt = treeFromManifest(manifest, rel);
+    if (rebuilt.dirs.length || rebuilt.files.length) return rebuilt;
+  }
+  if (!entries) return null;
   const baseRel = relPosix(root, dir);
   const dirs = [];
   const files = [];
@@ -142,6 +182,15 @@ export async function readTree(root, rel = "") {
   dirs.sort(byName);
   files.sort(byName);
   return { path: baseRel, dirs, files };
+}
+
+async function fileExists(file) {
+  try {
+    const stat = await fs.stat(file);
+    return stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
 }
 
 async function thumbFor(root, rel) {
@@ -179,63 +228,298 @@ async function playFor(root, rel) {
   return "";
 }
 
-/** One page of photos. `area` may be "All" (Library + Hidden + Deleted). */
-export async function gallery(root, { area = "All", q = "", page = 1, pageSize = 60 } = {}) {
+/** S4 delivery links for one item, only for objects already mirrored. */
+async function s4Links(email, rel, thumb, preview, play, skipCheck = false) {
+  if (skipCheck) {
+    return {
+      src: rel ? s4url(s4Key(email, rel)) : "",
+      thumbSrc: thumb ? s4url(s4Key(email, thumb)) : "",
+      previewSrc: preview ? s4url(s4Key(email, preview)) : "",
+      playSrc: play ? s4url(s4Key(email, play)) : "",
+    };
+  }
+  const [src, thumbSrc, previewSrc, playSrc] = await Promise.all([
+    s4exists(s4Key(email, rel)).then((ok) => (ok ? s4url(s4Key(email, rel)) : "")),
+    thumb
+      ? s4exists(s4Key(email, thumb)).then((ok) => (ok ? s4url(s4Key(email, thumb)) : ""))
+      : Promise.resolve(""),
+    preview
+      ? s4exists(s4Key(email, preview)).then((ok) => (ok ? s4url(s4Key(email, preview)) : ""))
+      : Promise.resolve(""),
+    play
+      ? s4exists(s4Key(email, play)).then((ok) => (ok ? s4url(s4Key(email, play)) : ""))
+      : Promise.resolve(""),
+  ]);
+  return { src, thumbSrc, previewSrc, playSrc };
+}
+
+/** True once the account is provably complete on S4 (written by the prune). */
+const s4DoneCache = new Map();
+async function s4Done(root) {
+  const cached = s4DoneCache.get(root);
+  if (cached && Date.now() - cached.at < 120_000) return cached.ok;
+  let ok = false;
+  try {
+    ok = (await fs.stat(path.join(root, "Scan", "s4-complete.json"))).isFile();
+  } catch {
+    ok = false;
+  }
+  s4DoneCache.set(root, { ok, at: Date.now() });
+  return ok;
+}
+
+const thumbRelFor = (rel) => `Scan/thumbs/${rel}.jpg`;
+
+/** Media listing written before the local bytes were pruned. */
+const manifestCache = new Map();
+async function manifestFiles(root) {
+  const cached = manifestCache.get(root);
+  if (cached && Date.now() - cached.at < 60_000) return cached.files;
+  let files = null;
+  try {
+    const data = JSON.parse(await fs.readFile(path.join(root, "Scan", "s4-manifest.json"), "utf8"));
+    files = Array.isArray(data?.files) ? data.files : null;
+  } catch {
+    files = null;
+  }
+  manifestCache.set(root, { at: Date.now(), files });
+  return files;
+}
+
+/** Recursively list files under dir (Drive media). */
+async function walkFiles(dir, out = []) {
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) await walkFiles(full, out);
+    else if (entry.isFile()) out.push(full);
+  }
+  return out;
+}
+
+
+/* --- listing caches -------------------------------------------------------
+ * The gallery used to readdir + stat every file (and walk the whole Drive
+ * tree) on every request; with 60k photos that made the panel feel frozen.
+ * Listings are cached and only rebuilt when the directory mtime changes. */
+const dirCache = new Map();
+const driveCache = new Map();
+const jsonCache = new Map();
+
+async function listDir(real) {
+  let stat = null;
+  try {
+    stat = await fs.stat(real);
+  } catch {
+    return [];
+  }
+  const cached = dirCache.get(real);
+  if (cached && cached.mtimeMs === stat.mtimeMs && Date.now() - cached.at < 60_000) {
+    return cached.entries;
+  }
+  let names = [];
+  try {
+    names = await fs.readdir(real);
+  } catch {
+    return [];
+  }
+  const entries = [];
+  for (const name of names) {
+    try {
+      const info = await fs.stat(path.join(real, name));
+      if (info.isFile()) entries.push({ name, size: info.size, mtime: info.mtimeMs });
+    } catch {
+      // vanished during listing
+    }
+  }
+  dirCache.set(real, { at: Date.now(), mtimeMs: stat.mtimeMs, entries });
+  return entries;
+}
+
+async function driveFiles(root) {
+  const cached = driveCache.get(root);
+  if (cached && Date.now() - cached.at < 120_000) return cached.files;
+  const files = await walkFiles(path.join(root, "Drive"));
+  driveCache.set(root, { at: Date.now(), files });
+  return files;
+}
+
+async function cachedJson(file) {
+  const cached = jsonCache.get(file);
+  // The classifier refreshes vlm-index.json every minute; a 15 s window keeps
+  // the type filter close to live without re-reading the file per tile page.
+  if (cached && Date.now() - cached.at < 15_000) return cached.value;
+  const value = await readJson(file, {});
+  jsonCache.set(file, { at: Date.now(), value });
+  return value;
+}
+
+/** One page of photos. `area` may be "All" (Library + Hidden + Deleted + Drive). */
+export async function gallery(root, { area = "All", q = "", kind = "", page = 1, pageSize = 60 } = {}) {
   const requested = String(area || "All").replace(/[\\/]+/g, "_");
   const segments =
     requested.toLowerCase() === "all"
       ? ["Library", "Hidden", "Recently Deleted"]
       : [requested];
+  const wantsDrive = requested.toLowerCase() === "all" || requested.toLowerCase() === "drive";
   const needle = String(q || "").trim().toLowerCase();
   const collected = [];
+  let kinds = {};
+  try {
+    kinds = (await cachedJson(path.join(root, "Scan", "vlm-index.json"))) || {};
+  } catch {
+    kinds = {};
+  }
 
+  const manifest = await manifestFiles(root);
   for (const segment of segments) {
     const rel = `Photos/${segment}`;
+    const seen = new Set();
+    if (manifest) {
+      const prefix = `Photos/${segment}/`;
+      for (const entry of manifest) {
+        if (!entry.p.startsWith(prefix)) continue;
+        const name = path.basename(entry.p);
+        if (!isMedia(name)) continue;
+        if (needle && !name.toLowerCase().includes(needle)) continue;
+        seen.add(entry.p);
+        collected.push({
+          name,
+          size: entry.s,
+          mtime: entry.m,
+          area: segment,
+          path: entry.p,
+          kind: kinds[entry.p]?.kind ?? "",
+        });
+      }
+    }
+    // Always merge the directory on disk: the manifest is regenerated in
+    // batches, and a file that finished downloading a second ago must already
+    // be visible.  Listing is cached on the directory mtime.
     const dir = resolveWithin(root, rel);
     if (!dir) continue;
     const real = await realWithin(root, dir);
     if (!real) continue;
-    let names = [];
-    try {
-      names = await fs.readdir(real);
-    } catch {
-      continue;
-    }
-    const candidates = names.filter((name) => {
-      if (!isMedia(name)) return false;
-      return !needle || name.toLowerCase().includes(needle);
-    });
-    const stats = await Promise.all(
-      candidates.map(async (name) => {
-        try {
-          const stat = await fs.stat(path.join(real, name));
-          if (!stat.isFile()) return null;
-          return { name, size: stat.size, mtime: stat.mtimeMs, area: segment };
-        } catch {
-          return null;
-        }
-      })
-    );
-    for (const item of stats) {
-      if (item) collected.push({ ...item, path: `${rel}/${item.name}` });
+    const entries = await listDir(real);
+    for (const entry of entries) {
+      if (!isMedia(entry.name)) continue;
+      if (needle && !entry.name.toLowerCase().includes(needle)) continue;
+      const key = `${rel}/${entry.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      collected.push({ ...entry, area: segment, path: key, kind: kinds[key]?.kind ?? "" });
     }
   }
 
-  const all = collected.sort((a, b) => b.mtime - a.mtime || byName(a, b));
-  const size = Math.min(Math.max(Number(pageSize) || 60, 1), 120);
-  const pages = Math.max(1, Math.ceil(all.length / size));
-  const current = Math.min(Math.max(Number(page) || 1, 1), pages);
-  const slice = all.slice((current - 1) * size, current * size);
+  if (wantsDrive) {
+    const seen = new Set();
+    if (manifest) {
+      for (const entry of manifest) {
+        if (!entry.p.startsWith("Drive/")) continue;
+        if (!isMedia(entry.p)) continue;
+        if (needle && !entry.p.toLowerCase().includes(needle)) continue;
+        seen.add(entry.p);
+        collected.push({
+          name: path.basename(entry.p),
+          size: entry.s,
+          mtime: entry.m,
+          area: "Drive",
+          path: entry.p,
+          kind: kinds[entry.p]?.kind ?? "",
+        });
+      }
+    }
+    for (const file of await driveFiles(root)) {
+      const suffix = path.extname(file).toLowerCase();
+      if (!IMAGE_EXT.has(suffix) && !VIDEO_EXT.has(suffix)) continue;
+      if (needle && !file.toLowerCase().includes(needle)) continue;
+      const rel = relPosix(root, file);
+      if (seen.has(rel)) continue;
+      seen.add(rel);
+      let stat = null;
+      try {
+        stat = await fs.stat(file);
+      } catch {
+        continue;
+      }
+      collected.push({
+        name: path.basename(file),
+        size: stat.size,
+        mtime: stat.mtimeMs,
+        area: "Drive",
+        path: rel,
+        kind: kinds[rel]?.kind ?? "",
+      });
+    }
+  }
+
+  const kindCounts = collected.reduce((acc, item) => {
+    const key = item.kind || "unclassified";
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const wanted = String(kind || "").trim();
+  const filtered =
+    wanted && wanted !== "any" ? collected.filter((item) => item.kind === wanted) : collected;
+  const all = filtered.sort((a, b) => b.mtime - a.mtime || byName(a, b));
+  // pageSize <= 0 means "everything in one response": the profile view shows
+  // one list with no pages and no infinite scroll.
+  const requestedSize = Number(pageSize);
+  const everything = !Number.isFinite(requestedSize) || requestedSize <= 0;
+  const size = everything ? Math.max(all.length, 1) : Math.min(requestedSize, 500);
+  const pages = everything ? 1 : Math.max(1, Math.ceil(all.length / size));
+  const current = everything ? 1 : Math.min(Math.max(Number(page) || 1, 1), pages);
+  const slice = everything ? all : all.slice((current - 1) * size, current * size);
   const items = await Promise.all(
-    slice.map(async (item) => ({
-      ...item,
-      thumb: await thumbFor(root, item.path),
-      preview: await previewFor(root, item.path),
-      play: await playFor(root, item.path),
-      video: VIDEO_EXT.has(path.extname(item.name).toLowerCase()),
-    }))
+    slice.map(async (item) => {
+      const video = VIDEO_EXT.has(path.extname(item.name).toLowerCase());
+      const cached = await thumbFor(root, item.path);
+      return {
+        ...item,
+        // Deterministic even when the local thumb was pruned: the S4 link is
+        // built from this path, and the local route regenerates it on demand.
+        thumb: cached || thumbRel(item.path),
+        preview: await previewFor(root, item.path),
+        play: await playFor(root, item.path),
+        video,
+        // OCR is a later pass (vision LLM): the image shows first, the tile
+        // carries "OCR pending" until Scan/ocr/<path>.txt exists.
+        ocr: video ? true : await fileExists(path.join(root, "Scan", "ocr", `${item.path}.txt`)),
+        // Paths are deterministic: after pruning nothing local is left to
+        // stat, and the S4 link is what the browser actually uses.
+        ...(await s4Links(
+          path.basename(root),
+          item.path,
+          // A thumb link is only offered when the thumb really exists (the
+          // prune keeps Scan/, so this is a local stat, not an S3 call).
+          // Complete accounts get the deterministic thumb key (no HEAD); a
+          // miss falls back to the full image in the browser.
+          (await fileExists(path.join(root, thumbRelFor(item.path)))) ||
+          (await s4Done(root))
+            ? thumbRelFor(item.path)
+            : "",
+          (await previewFor(root, item.path)) ||
+            (/[.](heic|heif)$/i.test(item.path) ? `Scan/previews/${item.path}.jpg` : ""),
+          (await playFor(root, item.path)) || (video ? `Scan/play/${item.path}.mp4` : ""),
+          await s4Done(root)
+        )),
+      };
+    })
   );
-  return { area: requested, items, total: all.length, page: current, pages, pageSize: size };
+  return {
+    area: requested,
+    items,
+    total: all.length,
+    page: current,
+    pages,
+    pageSize: size,
+    kindCounts,
+  };
 }
 
 async function readJson(file, fallback) {
@@ -328,35 +612,58 @@ async function walkNames(root, needle, limit = 200) {
  */
 export async function search(
   root,
-  { q = "", kind = "all", tier = "", page = 1, pageSize = 50 } = {}
+  {
+    q = "",
+    kind = "all",
+    tier = "",
+    page = 1,
+    pageSize = 50,
+    checksum = "",
+    words = 0,
+    spam = "",
+    all = "",
+    compact = "",
+  } = {}
 ) {
   const needle = String(q || "").trim();
   const lower = needle.toLowerCase();
-  const size = Math.min(Math.max(Number(pageSize) || 50, 1), 120);
+  const size = Math.min(Math.max(Number(pageSize) || 50, 1), 5000);
   const current = Math.max(Number(page) || 1, 1);
   const result = { q: needle, kind, tier, page: current, images: [], notes: [], files: [], seeds: [] };
 
   if (kind === "seed" || (!needle && kind === "all")) {
-    let findings = await loadFindings(root);
-    if (tier === "valid") findings = findings.filter((item) => item.checksum);
-    else if (tier) findings = findings.filter((item) => item.tier === tier);
+    const every = dedupeSeeds(await loadFindings(root));
+    const spamCount = every.filter((item) => item.spam).length;
+    let findings = filterSeeds(every, { tier, checksum, words });
+    if (spam !== "1") findings = findings.filter((item) => !item.spam);
     if (lower) {
       findings = findings.filter(
         (item) =>
-          String(item.phrase || "").toLowerCase().includes(lower) ||
-          String(item.name || "").toLowerCase().includes(lower)
+          item.phrase.includes(lower) ||
+          String(item.name || "").toLowerCase().includes(lower) ||
+          item.files.some((file) => file.toLowerCase().includes(lower))
       );
     }
-    const slice = findings.slice(0, size);
-    result.seeds = await Promise.all(
-      slice.map(async (item) => ({
-        ...item,
-        path: item.file || item.path || "",
-        thumb: item.file ? await thumbFor(root, item.file) : "",
-      }))
-    );
-    if (kind === "seed") return result;
+    const start = all === "1" || compact === "1" ? 0 : (current - 1) * size;
+    const slice = all === "1" || compact === "1" ? findings : findings.slice(start, start + size);
+    if (compact === "1") {
+      result.lines = findings.map(seedLabel).join("\n");
+      result.seeds = [];
+    } else {
+      result.seeds = await Promise.all(
+        slice.map(async (item) => ({
+          ...item,
+          path: item.file || item.path || "",
+          thumb: item.file ? await thumbFor(root, item.file) : "",
+        }))
+      );
+    }
     result.seedTotal = findings.length;
+    result.seedSpam = spamCount;
+    result.seedAll = every.length;
+    result.seedPage = current;
+    result.seedPages = Math.max(1, Math.ceil(findings.length / size));
+    if (kind === "seed") return result;
   }
 
   if (!needle) return result;

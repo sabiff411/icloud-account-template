@@ -1,0 +1,11 @@
+{
+  "score": 5,
+  "verdict": "REVISE",
+  "top3": [
+    "Fix P0-2 before coding: define 'downloaded' as unique asset id (exclude live-photo proxies and Hidden duplicates), require a manifest-vs-disk diff per area, and capture a verify result for example.harvest; today 113 manifest/asset rows vs 142 files makes the acceptance unpassable.",
+    "Fix the restart path and state vocabulary first: requeue jobs rewritten to 'unknown' (store.js:206 vs worker-pool.js:144-146), then define retry/cancel and real states (error/unknown) for P0-1; add priority/note to both store whitelists before promising P0-3 survives reload.",
+    "Rebase §2 and §4 scope: add the All/Library and Crypto views, drop the duplicate global search in P1-3, and put the exporter schema change + verify failed-row handling in P0-4; without that P0-4 is not dashboard-deliverable."
+  ],
+  "confidence": "high",
+  "what_would_change": "Specifying P0-2's unit and evidence, correcting the inventory, and fixing the restart requeue would raise this to 8/10; a live verify run on the real export and a mock-worker run covering queued/running/error/unknown would settle the remaining runtime unknowns."
+}

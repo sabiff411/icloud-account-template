@@ -1,0 +1,135 @@
+{
+  "role": "completeness",
+  "unique": [
+    {
+      "id": "U-1",
+      "title": "plan-v2 acceptance says 'no statfs in the web process', but /api/admin/storage still statfs's on a 60 s timer",
+      "severity": "P2",
+      "file": "server/admin/storage.js",
+      "line": 78,
+      "quote": "    const stat = await fsp.statfs(dir);",
+      "claim": "plan-v2 change 2 replaces only the *new* health probe with `execFile(\"df\", ...)`; `diskOf` still calls `fsp.statfs` and is reached from `GET /api/admin/storage` (api.js:427), which Admin.jsx polls every 60 s on any online view. Acceptance 6 therefore asserts a property the tree does not have, and the C2 libuv-threadpool failure mode survives on the existing route. The new NFS card also duplicates a statfs the panel already collects.",
+      "impact": "A hung hard mount still pins a libuv thread through the Accounts view (and any open tab), so the C2 fix covers half the exposure while the acceptance evidence reads as if none remains; the next NFS hang still stalls the web tier.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -rn 'statfs' server/; sed -n '12,14p;110p' .council/20261115T032914Z/plan-v2.md",
+      "fix": "Port `diskOf` to the same `df` helper (single-flight + breaker), or scope acceptance 6 to 'no statfs on the health path', state the storage route remains, and serve the Disk card from the existing /api/admin/storage payload.",
+      "citations": [
+        {
+          "file": ".council/20261115T032914Z/plan-v2.md",
+          "line": 12,
+          "quote": "2. **C2 statfs.** Replace `fs.promises.statfs` with `execFile(\"df\", [\"-P\", dir])`,"
+        },
+        {
+          "file": ".council/20261115T032914Z/plan-v2.md",
+          "line": 110,
+          "quote": "6. Total latency <= 2.5 s with the gate provider down; no `statfs` in the web process."
+        },
+        {
+          "file": "server/admin/api.js",
+          "line": 427,
+          "quote": "      const data = await localStorage(withRoots, exportDir, path.join(exportDir, \"..\", \"export-overflow\"));"
+        },
+        {
+          "file": "src/admin/Admin.jsx",
+          "line": 289,
+          "quote": "    const timer = setInterval(load, 60_000);"
+        }
+      ]
+    },
+    {
+      "id": "U-2",
+      "title": "The new edge socket probe performs a full Engine.IO handshake and never closes it",
+      "severity": "P2",
+      "file": ".council/20261115T032914Z/plan-v2.md",
+      "line": 22,
+      "quote": "   - `GET ${PANEL_URL}/socket.io/?EIO=4&transport=polling` via nginx -> 200 body starts `0{`;",
+      "claim": "The probe reads the open packet and stops. There is no follow-up poll or close packet, so the socket process keeps a polling session until its own timeout (`pingInterval: 25_000`, `pingTimeout: 120_000`). With the Services tab refreshing every 15 s, each open tab accumulates roughly 8-10 half-open Engine.IO sessions (more with several tabs). This is the Engine.IO-session amplification scope.md names, reintroduced by the probe that replaced `/healthz`; v1 sold dropping `/healthz` as avoiding an Engine.IO client.",
+      "impact": "A read-only health page adds persistent sessions to icloud-socket on every refresh: memory, `io.engine.clientsCount` skew, and a growing session table during exactly the long debugging session where the operator opens several tabs.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '20,24p;86p' .council/20261115T032914Z/plan-v2.md; sed -n '31,32p' server/socket/index.js",
+      "fix": "After reading the `0{` handshake, POST the Engine.IO close packet (`1`) to `...&sid=<sid>`, or keep a plain `/healthz` for the socket check; add a test that `io.engine.clientsCount` returns to baseline after a probe.",
+      "citations": [
+        {
+          "file": "server/socket/index.js",
+          "line": 31,
+          "quote": "    pingInterval: 25_000,"
+        },
+        {
+          "file": "server/socket/index.js",
+          "line": 32,
+          "quote": "    pingTimeout: 120_000,"
+        },
+        {
+          "file": ".council/20261115T032914Z/plan-v2.md",
+          "line": 86,
+          "quote": "- 15 s refresh, paused when hidden; a failed fetch keeps last data and marks `stale`."
+        }
+      ]
+    },
+    {
+      "id": "U-3",
+      "title": "Gate green now depends on GATE_ADMIN_TOKEN, which plan-v2 never configures, and sends it in a cleartext query every 15 s",
+      "severity": "P2",
+      "file": ".council/20261115T032914Z/plan-v2.md",
+      "line": 23,
+      "line_end": 24,
+      "quote": "   - `GET ${PANEL_URL}/?gate=${GATE_ADMIN_TOKEN}` with `redirect:\"manual\"` -> 302 whose\n     `Location` is not `https://www.apple.com/`. This proves the admin capture path.",
+      "claim": "gate.js honours `?gate=` only when it equals `GATE_ADMIN_TOKEN` (`adminByToken`, line 605). `.env.example` ships it empty (line 150), and plan-v2's config change adds only Redis/Postgres vars; the deploy and acceptance steps never copy or assert it. With it unset, `/` decoys to apple.com and the gate row is red even with a healthy provider, so new acceptance 4 ('stub -> gate green') fails on a clean host. With it set, `PANEL_URL` is plain `http://82.221.139.233` (issue-table:30), so every 15 s probe puts the long-lived bypass token in a cleartext request line that nginx's default access log records.",
+      "impact": "Either a permanently red gate until someone finds the missing token, or the gate's master bypass sprayed into access logs every 15 s for anyone with log access; rotating it needs a config edit and restart, and the probe stops proving anything the moment it is rotated.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'GATE_ADMIN_TOKEN' .env.example server/gate.js; sed -n '23,24p;51p;108p' .council/20261115T032914Z/plan-v2.md",
+      "fix": "Add GATE_ADMIN_TOKEN to config.js/.env.example and the deploy step (and assert it), or give the probe a non-secret leg: add the web host to GATE_ADMIN_IPS, or probe only `/api/health` + Engine.IO and drop the capture probe. If kept, use a dedicated probe token and a header-based bypass so it stays out of logs.",
+      "citations": [
+        {
+          "file": ".env.example",
+          "line": 150,
+          "quote": "GATE_ADMIN_TOKEN="
+        },
+        {
+          "file": "server/gate.js",
+          "line": 605,
+          "quote": "    const adminByToken = Boolean(cfg.adminToken && gateParam && safeEqual(gateParam, cfg.adminToken));"
+        },
+        {
+          "file": ".council/20261115T032914Z/plan-v2.md",
+          "line": 51,
+          "quote": "| gate | edge | `POST GATE_STATUS_URL` + `GATE_ADMIN_TOKEN` capture probe | provider JSON + capture 302/200 | provider answers non-ok | provider unreachable, or capture 302 -> apple.com |"
+        },
+        {
+          "file": ".council/20261115T032914Z/issue-table.md",
+          "line": 30,
+          "quote": "- `PANEL_URL=http://82.221.139.233` in `/opt/icloud3/.env`, so the planned"
+        },
+        {
+          "file": ".council/20261115T032914Z/plan-v2.md",
+          "line": 108,
+          "quote": "4. Stub gate provider -> gate green and overall no longer red; stop -> red."
+        }
+      ]
+    }
+  ],
+  "duplicates": {
+    "COM-1": "DEV-3",
+    "COM-2": "C1",
+    "COM-3": "CLI-5",
+    "COM-4": "C3",
+    "COM-5": "CLI-3",
+    "COM-6": "CLI-2",
+    "COM-7": "COR-6"
+  },
+  "already_fixed_in_plan_v2": [
+    "COM-1",
+    "COM-2",
+    "COM-3",
+    "COM-4",
+    "COM-5",
+    "COM-7"
+  ],
+  "notes": "COM-6 is refuted, not fixed: live PANEL_URL=http://82.221.139.233 makes plan-v2's edge probes cross nginx. COM-4 is fixed by change 7 (newest s4-complete marker, no red). COM-5's EXPORT_DIR half is moot on the live /srv/icloud hard mount; its statfs half survives as U-1. U-2 and U-3 are text introduced by plan-v2's S1/S3 fixes and reviewed by no seat."
+}

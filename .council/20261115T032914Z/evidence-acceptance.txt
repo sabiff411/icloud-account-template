@@ -1,0 +1,97 @@
+# Acceptance evidence — 2026-11-15T04:29:48Z
+## baseline
+baseline overall= red nodes_up= 9 / 9
+  web green | nginx -> web HTTP 200 | 23 ms
+  socket green | Engine.IO handshake via nginx | 26 ms
+  gate red | unreachable: fetch failed | 13 ms
+  capture green | capture path HTTP 200 | 32 ms
+  nfs green | 6% used · 106 GB free on /srv/icloud | 23 ms
+  postgres green | TCP 10.20.0.30:5432 reachable (auth not checked) | 4 ms
+  redis green | AUTH + PING -> PONG | 9 ms
+  prometheus green | 9/9 targets up | 23 ms
+  s4 yellow | not configured: S4_ENDPOINT / S4_KEY empty | 10 ms
+## anonymous
+anon_http=401
+## gate stub up
+with-stub overall= red nodes_up= 9 / 9
+  web green | nginx -> web HTTP 200 | 21 ms
+  socket green | Engine.IO handshake via nginx | 26 ms
+  gate red | unreachable: fetch failed | 14 ms
+  capture green | capture path HTTP 200 | 32 ms
+  nfs green | 6% used · 106 GB free on /srv/icloud | 18 ms
+  postgres green | TCP 10.20.0.30:5432 reachable (auth not checked) | 5 ms
+  redis green | AUTH + PING -> PONG | 7 ms
+  prometheus green | 9/9 targets up | 20 ms
+  s4 yellow | not configured: S4_ENDPOINT / S4_KEY empty | 11 ms
+## ocr-1 exporter down
+ocr1-down overall= red nodes_up= 8 / 9
+  web green | nginx -> web HTTP 200 | 15 ms
+  socket green | Engine.IO handshake via nginx | 20 ms
+  gate red | unreachable: fetch failed | 11 ms
+  capture green | capture path HTTP 200 | 23 ms
+  nfs green | 6% used · 106 GB free on /srv/icloud | 14 ms
+  postgres green | TCP 10.20.0.30:5432 reachable (auth not checked) | 5 ms
+  redis green | AUTH + PING -> PONG | 11 ms
+  prometheus yellow | 8/9 targets up | 20 ms
+  s4 yellow | not configured: S4_ENDPOINT / S4_KEY empty | 7 ms
+  node ocr-1 red node_exporter down
+## restore
+active
+restored overall= red nodes_up= 9 / 9
+  web green | nginx -> web HTTP 200 | 28 ms
+  socket green | Engine.IO handshake via nginx | 33 ms
+  gate red | unreachable: fetch failed | 15 ms
+  capture green | capture path HTTP 200 | 40 ms
+  nfs green | 6% used · 106 GB free on /srv/icloud | 15 ms
+  postgres green | TCP 10.20.0.30:5432 reachable (auth not checked) | 7 ms
+  redis green | AUTH + PING -> PONG | 9 ms
+  prometheus green | 9/9 targets up | 30 ms
+  s4 yellow | not configured: S4_ENDPOINT / S4_KEY empty | 11 ms
+## socket uptime (deploy restarted web only)
+Sun 2026-11-15 02:24:39 UTC
+Sun 2026-11-15 04:26:54 UTC
+## storage route
+storage_http=200 bytes=528 time=0.985541s
+## screenshot
+screenshots/fleet-services-final.png
+## unit/build
+health.test.mjs: all assertions passed
+admin api test ok
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 366ms
+
+## gate stub retry (separate ssh so the child survives)
+stub_http=000
+with-stub overall= red gate= red s4= yellow
+stub-down overall= red gate= red s4= yellow
+
+## gate stub retry 2 (pkill no self-match)
+stub_http=000
+with-stub overall= red gate= red s4= yellow
+no-4100
+stub-down overall= red gate= red s4= yellow
+
+## gate stub as a transient systemd unit
+active
+stub_http=200
+with-stub overall= yellow gate= green s4= yellow
+inactive
+no-4100
+stub-down overall= red gate= red s4= yellow
+
+## node-red moves the headline (stub gate up, S4 still yellow)
+active
+stub-gate-on overall= yellow gate= green prom= green nodes_up= 9
+ocr1-down overall= red gate= green prom= yellow nodes_up= 8
+inactive
+final overall= red gate= red prom= green nodes_up= 9
+
+## worker disconnect push (post-review fix)
+baseline            7/7 workers | Workers GREEN
+ocr-5 stopped       6/7 workers | Workers YELLOW | auth 24 · export 12
+ocr-5 restarted     7/7 workers | Workers GREEN | auth 25 · export 13
+screenshot          screenshots/fleet-services-6of7.png
+note                icloud-socket was restarted once to deploy the push; the health-page deploy itself restarted web only
+screenshot (tall)   screenshots/fleet-services-final-tall.png (1440x1900, node table + groups)
+suite               socket 11/11 with a local socket server; health/admin-api/build green
+report              .council/20261115T032914Z/report.md (SHIP 8/10)

@@ -1,0 +1,365 @@
+{
+  "role": "devil-advocate",
+  "artifact": "FEATURES.md §4 improvement plan",
+  "verdict": "REVISE",
+  "one_line": "The P0 features are the right ones, but the plan builds a screen over a job/coverage state machine it does not change; restart, >1000 jobs, failed-vs-error and failed-vs-missing are all outside the acceptance.",
+  "findings": [
+    {
+      "id": "DA-1",
+      "title": "Restart mid-export strands running jobs in 'unknown', which nothing requeues",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 205,
+      "line_end": 207,
+      "quote": "      if (job.status === \"running\" || job.status === \"twofa\") {\n        job.status = \"unknown\";\n        job.error = \"node restarted\";",
+      "claim": "Store's constructor marks every running/twofa job 'unknown' before WorkerPool exists; the pool's boot rebuild only requeues 'queued' and 'running', and sweep() only matches 'running'/'twofa'. Unknown is not in ACTIVE_JOB, so neither automatic recovery nor a retry-as-active path ever dispatches it. The plan's P0-1 durable jobs view and P0-3 'order persists after restart' acceptance assume restart recovery that the state machine does not provide, and the word 'unknown' appears nowhere in the plan.",
+      "impact": "After any socket process restart, every in-flight export/verify/scan/auth is stranded as 'unknown'. The new Jobs view would list a row that never progresses; the operator must know to re-run Export missing or the work is silently unfinished.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'job.status = \"unknown\"\\|job.status === \"running\"\\|job.status === \"queued\"' server/store.js server/socket/worker-pool.js",
+      "fix": "Requeue 'unknown' jobs at WorkerPool boot (status queued, workerId null) and in sweep(), or call markStaleJobs after the pool is constructed; add a restart test that asserts the job is dispatched, not merely persisted as unknown.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 146,
+          "quote": "      } else if (job.status === \"running\") {"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1475,
+          "quote": "      if (job.status !== \"running\" && job.status !== \"twofa\") continue;"
+        },
+        {
+          "file": "server/store.js",
+          "line": 31,
+          "quote": "const ACTIVE_JOB = new Set([\"queued\", \"running\", \"twofa\"]);"
+        },
+        {
+          "file": "server/test/store.test.mjs",
+          "line": 40,
+          "quote": "assert.equal(reloaded.getJob(runningJob.id).status, \"unknown\", \"running jobs are marked unknown\");"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "DA-2",
+      "title": "1000-job trim can evict a running job, drop its completion, and leak a worker slot at 500 accounts",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 170,
+      "line_end": 173,
+      "quote": "      const jobs = [...this.jobs.values()]\n        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))\n        .slice(0, 1000);\n      this.jobs = new Map(jobs.map((job) => [job.id, job]));",
+      "claim": "The trim claims to bound completed jobs but filters only by createdAt, so it evicts any job older than the newest 1000, including a still-running export. The plan's own 500-account case exceeds that: the demo store holds 125 jobs for 21 accounts (~5.9/account), which projects to ~3000 jobs at 500 accounts. Once the record is gone, handleExportDone's getJob returns null and returns before release(), so release() is skipped, the worker's export slot is not returned by that event, and the job vanishes from the 'durable' list instead of failing.",
+      "impact": "In a long 500-account campaign, exports disappear from the Jobs view and stop completing; capacity leaks until the worker re-registers, and the account sits at 'exporting'. The plan's acceptance would pass with 3 jobs in tests and never see it.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'slice(0, 1000)' server/store.js; grep -n 'const job = this.store.getJob(payload.jobId)' server/socket/worker-pool.js; node -e \"const d=require('/tmp/v3-demo-store.json'); console.log(d.jobs.length, d.accounts.length)\"",
+      "fix": "Trim only terminal jobs (filter status before slice, or evict completed oldest-first) and make terminal handlers release the worker by payload.jobId/workerId even when the job record is missing; add a >1000-job test with one long-running export.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1097,
+          "quote": "    const job = this.store.getJob(payload.jobId);"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1098,
+          "quote": "    if (!job || job.workerId !== socket.id) return;"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 95,
+          "quote": "| P0-3 | **Bulk queue + priority**: checkbox selection, export/recheck/scan selected, pin/reorder, priority badge, per-account note; state survives reload | 500-account campaign is one click per account today | 3 selected accounts produce 3 ordered jobs; order persists after restart; screenshot |"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "DA-3",
+      "title": "P0-2 matrix will render a failed live area read as 'complete'",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 94,
+      "quote": "| P0-2 | **Coverage matrix** per account: area × (live count, downloaded, missing, bytes, last export); totals reconcile with manifest and disk | Answers \"what is missing\" without guessing from a global count | Matrix equals `manifest.sqlite3` summary and file counts for `example.harvest`; screenshot; test for a zero-download account |",
+      "claim": "The acceptance compares only manifest/disk and a zero-download account; it never injects an unavailable live read. The existing per-area producer initializes every area to an empty set and, on an album exception, leaves it empty, so compare() yields live 0 and missing 0, and AreaRow renders missing 0 as 'complete'. The matrix therefore inherits a false 'complete' for exactly the areas whose live read failed.",
+      "impact": "With one iCloud service down at 3 a.m., the matrix says Hidden or Recently Deleted is complete and the operator skips undownloaded crypto screenshots, while the plan claims to answer 'what is missing without guessing'.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'live_set = set(live.get(area) or set())' python/worker/verify.py; grep -n '>complete<' src/admin/OverviewTab.jsx; grep -n 'live %s unavailable' python/worker/verify.py",
+      "fix": "Carry an unavailable/unknown marker per area (set only on a successful read), render unknown rather than 0, and make P0-2's test fail one album read and assert 'unknown', not 'complete'.",
+      "citations": [
+        {
+          "file": "python/worker/verify.py",
+          "line": 218,
+          "quote": "        except Exception as error:"
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 219,
+          "quote": "            log.info(\"live %s unavailable: %s\", area, type(error).__name__)"
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 269,
+          "quote": "        live_set = set(live.get(area) or set())"
+        },
+        {
+          "file": "src/admin/OverviewTab.jsx",
+          "line": 43,
+          "quote": "          <span className=\"rounded-full bg-[#edf8f0] px-2 py-0.5 text-[11px] text-[#1d7a3a]\">complete</span>"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "DA-4",
+      "title": "P0-1 acceptance requires a 'failed' job state the server never writes",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 93,
+      "quote": "| P0-1 | **Jobs view**: durable list of export/verify/scan/import jobs with account, mode, state, attempts, age, worker, last message; retry/cancel; click-through to account | The strip says `queue 3` but nothing shows what those are; a failed export is invisible | Mock-worker run leaves ≥1 job in each of queued/running/done/failed; screenshot; state transitions asserted in a test |",
+      "claim": "The acceptance requires a job in state 'failed', but no server path writes that value: worker failure is written 'error' and restart writes 'unknown'. The plan neither maps those to the UI label nor includes 'unknown' in the required states, so the acceptance cannot pass against the current state machine as written.",
+      "impact": "An operator filtering the new Jobs view by failed sees an empty list while the failed export sits under error or unknown - the exact invisibility P0-1 claims to remove.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -rn 'status: \"failed\"' server/socket server/store.js; grep -n 'status: \"error\", error: payload.error' server/socket/worker-pool.js",
+      "fix": "Define the canonical job states and their UI groups (error/unknown/cancelled -> failed), name 'unknown' in the acceptance matrix, and assert the restart variant in the test.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1158,
+          "quote": "    this.store.updateJob(job.id, { status: \"error\", error: payload.error ?? \"worker error\" });"
+        },
+        {
+          "file": "server/store.js",
+          "line": 206,
+          "quote": "        job.status = \"unknown\";"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "DA-5",
+      "title": "P0-4 leaves verify.compare counting failed files as missing",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 96,
+      "quote": "| P0-4 | **Download truth**: record per-file failures (path, reason, attempt) and surface \"failed\" separately from \"missing\"; retry a failure set | \"Missing\" currently conflates never-attempted and failed | Seeded fake failure renders; retry clears it; test |",
+      "claim": "The plan changes the manifest and the screen but not the producer of 'missing'. verify.manifest_ids selects only status IN ('done','skipped'), then compare() computes gap = live - ids; a failed row is absent from ids, so it is counted as missing. Adding a failed list without changing compare means one file appears in both columns, and P0-2's totals keep the conflation P0-4 says it removes.",
+      "impact": "An operator sees 50 failed and 50 missing for the same 50 files; the coverage matrix overstates missing and retrying does not reconcile it. P0-4's acceptance (seeded failure renders; retry clears it) can pass while the matrix stays wrong.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n \"WHERE status IN\" python/worker/verify.py; grep -n 'gap = live_set - ids' python/worker/verify.py; grep -n 'status=\"failed\"' python/worker/exporter.py",
+      "fix": "Return failed ids from manifest_ids, define missing = live - (done union skipped union failed), surface failed separately in the same response, and make the acceptance assert that a seeded failure does not increment missing.",
+      "citations": [
+        {
+          "file": "python/worker/verify.py",
+          "line": 30,
+          "quote": "            \"SELECT key, area, status FROM files WHERE status IN ('done','skipped')\""
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 270,
+          "quote": "        gap = live_set - ids[\"photos\"]"
+        },
+        {
+          "file": "python/worker/exporter.py",
+          "line": 961,
+          "quote": "                task[\"key\"], task[\"area\"], task[\"path\"], 0, \"\", status=\"failed\""
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "DA-6",
+      "title": "P0-3 persisted order/pin has no scheduler hook; the boot sort reorders queued jobs",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 95,
+      "quote": "| P0-3 | **Bulk queue + priority**: checkbox selection, export/recheck/scan selected, pin/reorder, priority badge, per-account note; state survives reload | 500-account campaign is one click per account today | 3 selected accounts produce 3 ordered jobs; order persists after restart; screenshot |",
+      "claim": "Priority is the hardcoded PRIORITY_IMAGE_EMAILS constant, and the post-restart queue sort is rank -> notesMissing -> createdAt; no account order/pin field is read. A new field can satisfy a store/UI 'order persists' assertion while the dispatcher after restart uses different criteria, especially when selected accounts differ in whether Notes exist on disk.",
+      "impact": "The operator pins the account holding crypto; after a deploy it is dispatched behind other exports. The acceptance is green while the behavior it names is false.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'PRIORITY_IMAGE_EMAILS' server/socket/worker-pool.js; grep -n 'notesMissing(ja' server/socket/worker-pool.js",
+      "fix": "Persist priority/order on the account and read it in both the boot sort and enqueue path; assert dispatch order (job:state sequence) after restart, not just the stored field.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 25,
+          "quote": "const PRIORITY_IMAGE_EMAILS = [\"shawry31@icloud.com\", \"jakemorejon@icloud.com\"];"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 171,
+          "quote": "    this.queue.sort((a, b) => {"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 176,
+          "quote": "        Number(this.notesMissing(ja?.accountId)) - Number(this.notesMissing(jb?.accountId)) ||"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "DA-7",
+      "title": "P0-1's 'last message' is emitted to the job room but never stored on the job",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 93,
+      "quote": "| P0-1 | **Jobs view**: durable list of export/verify/scan/import jobs with account, mode, state, attempts, age, worker, last message; retry/cancel; click-through to account | The strip says `queue 3` but nothing shows what those are; a failed export is invisible | Mock-worker run leaves ≥1 job in each of queued/running/done/failed; screenshot; state transitions asserted in a test |",
+      "claim": "Job records persist error but not message; emitJob sends each message to /public subscribers only. replay() already reads job.message, but nothing ever assigns it. A durable list built from the store can show the error string or current status, not the last message the plan promises.",
+      "impact": "At 3 a.m. a stuck job shows no last message, so the operator cannot distinguish waiting-for-worker from a slow download from a worker error without watching live events that are already gone.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'message' server/store.js; grep -n 'job.message' server/socket/worker-pool.js; grep -n 'emitJob(job' server/socket/worker-pool.js",
+      "fix": "Persist a status message on updateJob (or store one derived text per transition) and include it in the jobs-list payload; test replay of a job after reconnect.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 504,
+          "quote": "      error: \"\","
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 207,
+          "quote": "    this.io.of(\"/public\").to(`job:${job.id}`).emit(event, payload);"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 688,
+          "quote": "      message: job.message ?? \"\","
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "DA-8",
+      "title": "P0-3's 500-account one-click meets MAX_QUEUE=500 and the 60/10s admin guard",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 95,
+      "quote": "| P0-3 | **Bulk queue + priority**: checkbox selection, export/recheck/scan selected, pin/reorder, priority badge, per-account note; state survives reload | 500-account campaign is one click per account today | 3 selected accounts produce 3 ordered jobs; order persists after restart; screenshot |",
+      "claim": "The acceptance uses 3 accounts, but the default global queue cap is 500 and the admin guard allows 60 events per 10 s per socket. If the bulk action replays per-account admin:export events (the current client pattern), selections past 60 are rejected as rate limited; even a server-side loop cannot enqueue 500 more jobs when any job is already queued. The plan defines neither a single bulk entry point nor a partial-success/reject report.",
+      "impact": "The operator clicks once for 500 accounts, sees a success toast, and most of the tail has no job to retry; the campaign silently runs short.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'maxQueue' server/config.js; grep -n 'function guard' server/socket/admin.js; grep -n 'admin:export' src/admin/useAdminSocket.js",
+      "fix": "Add one server-side bulk command that enqueues under the guard and returns queued/rejected ids, and test 500 with a partly full queue; render the rejects.",
+      "citations": [
+        {
+          "file": "server/config.js",
+          "line": 118,
+          "quote": "    maxQueue: int(process.env.MAX_QUEUE, 500),"
+        },
+        {
+          "file": "server/socket/admin.js",
+          "line": 69,
+          "quote": "function guard(socket, event, ack, limit = 60) {"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 559,
+          "quote": "    if (this.queue.length >= config.worker.maxQueue) {"
+        },
+        {
+          "file": "src/admin/useAdminSocket.js",
+          "line": 315,
+          "quote": "        const result = await emit(\"admin:export\", { id, mode });"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    }
+  ],
+  "attempted_counterexamples": [
+    {
+      "scenario": "Restart mid-export; does the boot rebuild recover it?",
+      "assumption": "The plan's durable jobs list implies restart recovery.",
+      "evidence": "server/store.js:205-207 -> server/socket/worker-pool.js:144-156; server/test/store.test.mjs:40",
+      "result": "supported",
+      "outcome": "Running jobs become 'unknown' before the pool boots; only queued/running are requeued. DA-1.",
+      "uncertainty": "Manual Export missing creates a fresh job, so an operator can recover if they notice."
+    },
+    {
+      "scenario": "500-account campaign exceeds the 1000-job store trim while a photo export runs.",
+      "assumption": "Job records persist until completion.",
+      "evidence": "server/store.js:170-173; demo /tmp/v3-demo-store.json 125 jobs / 21 accounts; server/socket/worker-pool.js:1096-1098",
+      "result": "supported",
+      "outcome": "The oldest running job can be evicted; completion is dropped and the worker slot is not released. DA-2.",
+      "uncertainty": "Depends on reaching 1000 jobs before the long export ends; the code path is unconditional once reached."
+    },
+    {
+      "scenario": "One live iCloud album read fails; does the coverage matrix say unknown?",
+      "assumption": "P0-2 proves 'what is missing' by matching the manifest.",
+      "evidence": "python/worker/verify.py:212-219,269-273; src/admin/OverviewTab.jsx:34-43",
+      "result": "supported",
+      "outcome": "Failed read -> live 0 / missing 0 / 'complete'. DA-3.",
+      "uncertainty": "A new independent enumeration could add an error marker, but nothing in the plan or acceptance requires it."
+    },
+    {
+      "scenario": "P0-1's 'failed' filter after a worker error.",
+      "assumption": "A failed job state exists.",
+      "evidence": "grep for status: \"failed\" in server/socket and server/store.js returns no writer; worker-pool.js:1158 writes error.",
+      "result": "supported",
+      "outcome": "Acceptance cannot pass as written and the failed filter can be empty. DA-4.",
+      "uncertainty": "A UI mapping of error/unknown to failed would fix the screen but must be specified."
+    },
+    {
+      "scenario": "P0-4 fake failure is also counted as missing.",
+      "assumption": "Surfacing failed separately changes the missing count.",
+      "evidence": "python/worker/verify.py:30 selects only done/skipped; :270 computes gap; exporter.py:961 writes failed.",
+      "result": "supported",
+      "outcome": "Same file appears in both failed and missing. DA-5.",
+      "uncertainty": "Only if compare() is left unchanged; the plan does not mention it."
+    },
+    {
+      "scenario": "Pinned account order survives restart in dispatch order.",
+      "assumption": "Storing an order field is enough.",
+      "evidence": "server/socket/worker-pool.js:25, 171-179 use a hardcoded email list and rank/notes/createdAt.",
+      "result": "supported",
+      "outcome": "Order can persist in the store but not in dispatch. DA-6.",
+      "uncertainty": "If 'pin/reorder' means account-list presentation only, the finding is P3; the acceptance wording implies jobs."
+    },
+    {
+      "scenario": "P0-2 blocked by missing SQLite support in Node.",
+      "assumption": "A new npm dependency is required.",
+      "evidence": "server/gate.js:24 uses require(\"node:sqlite\").DatabaseSync; Node v24.21.0.",
+      "result": "refuted",
+      "outcome": "Not a blocker; the real questions are process ownership, lock handling and stale absolute manifest paths.",
+      "uncertainty": "A concurrent writer can still return SQLITE_BUSY; the plan does not say how the read is done."
+    }
+  ],
+  "not_examined": [
+    "Did not run the server, mock worker or verify against a live iCloud account; all findings are static source reads.",
+    "Did not render the dashboard or inspect the 20 screenshots; the UI claims rely on the FEATURES/evidence text and OverviewTab source.",
+    "Did not audit the capture page (/public) or the Telegram bot, both explicitly out of scope.",
+    "Did not measure the 1k/5k-photo gallery, thumbnail latency or memory.",
+    "Did not read every Python worker module; only exporter.py, verify.py and the event surface needed for these claims.",
+    "Did not verify a 500-account store in practice; the job-count projection comes from the demo store's 125/21 ratio."
+  ],
+  "open_questions": [
+    "Should an operator-set priority replace PRIORITY_IMAGE_EMAILS, or coexist with it? The plan's 'priority badge' is ambiguous.",
+    "Which process owns manifest.sqlite3 reads for the matrix - web (node:sqlite) or socket? The current design says the web process never touches owned state.",
+    "What is the canonical terminal job vocabulary: error, unknown, cancelled, failed? The plan and code use three different sets.",
+    "Does P0-4 'attempt' mean the exporter's internal 3 retries inside one download or attempts across operator retries? The schema has neither.",
+    "How should the matrix render an account that has never been verified and has no login counts - unknown, or 0?"
+  ]
+}

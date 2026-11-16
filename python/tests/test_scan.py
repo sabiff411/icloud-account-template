@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from worker import scan
@@ -32,6 +35,76 @@ class ChecksumTests(unittest.TestCase):
 
     def test_short_has_no_checksum(self):
         self.assertFalse(scan.checksum_ok("abandon about".split()))
+
+
+class SpamTests(unittest.TestCase):
+    def test_repeated_word_is_spam(self):
+        sample = list(scan.word_index())
+        self.assertTrue(scan.is_spam_phrase("test " * 12))
+        self.assertTrue(scan.is_spam_phrase(VALID_12))
+        self.assertTrue(scan.is_spam_phrase("abandon " * 12))
+        self.assertTrue(scan.is_spam_phrase(" ".join(sample[:17])))
+        self.assertTrue(scan.is_spam_phrase(" ".join(sample[:24] + sample[:6])))
+        self.assertFalse(scan.is_spam_phrase(" ".join(sample[:24])))
+        self.assertFalse(
+            scan.is_spam_phrase(
+                "again empty warm hip fat allow broccoli turn finger insane hunt service"
+            )
+        )
+        self.assertFalse(
+            scan.is_spam_phrase(
+                "victory split joke recall detect rather crack fabric immense cotton actor hidden"
+            )
+        )
+
+    def test_html_and_document_noise_is_spam(self):
+        self.assertTrue(scan.is_spam_phrase("style border top width border top style solid"))
+        self.assertTrue(
+            scan.is_spam_phrase(
+                "section main input type time section main input type"
+            )
+        )
+        self.assertTrue(
+            scan.is_spam_phrase(
+                "bedienungsanleitung air beruhrungssensor sekunden mikrofon ladeschale "
+                "ladekontakt led usb sekunden"
+            )
+        )
+
+    def test_numbered_manual_is_not_a_seed_grid(self):
+        words = scan.word_index()
+        text = "\n".join(
+            f"{number + 1}. {word}"
+            for number, word in enumerate(
+                "bedienungsanleitung air beruhrungssensor sekunden mikrofon "
+                "ladeschale ladekontakt led usb".split()
+            )
+        )
+        self.assertEqual(scan._grid_sequences(text, words), [])
+
+    def test_html_style_and_script_are_stripped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "page.html"
+            path.write_text(
+                "<style>.border{top:0;width:100%}</style>"
+                "<script>const width = 'top';</script>"
+                f"<p>{VALID_12}</p>",
+                encoding="utf-8",
+            )
+            text = scan.read_text(path)
+            self.assertNotIn("border", text)
+            self.assertNotIn("const", text)
+            self.assertIn(VALID_12, text)
+
+    def test_findings_carry_the_flag(self):
+        found = scan.find_sequences("test " * 12, scan.word_index())
+        self.assertTrue(found, found)
+        self.assertTrue(found[0]["spam"])
+        good = scan.find_sequences(
+            "again empty warm hip fat allow broccoli turn finger insane hunt service",
+            scan.word_index(),
+        )
+        self.assertFalse(good[0]["spam"])
 
 
 class SequenceTests(unittest.TestCase):
@@ -120,6 +193,86 @@ class SequenceTests(unittest.TestCase):
         found = scan.find_sequences("the quick brown fox jumps over the lazy dog", self.words)
         self.assertTrue(found)
         self.assertTrue(all(item["tier"] == "low" for item in found), found)
+
+
+class CoverageTests(unittest.TestCase):
+    """Files that used to be skipped or truncated before phrase scanning."""
+
+    def setUp(self):
+        self.words = scan.word_index()
+
+    def _scan(self, root: Path):
+        return scan.scan_export(None, root)
+
+    def _phrases(self, root: Path):
+        payload = json.loads((root / "Scan" / "findings.json").read_text())
+        return [item["phrase"] for item in payload["findings"]]
+
+    def test_json_values_beyond_20k_are_scanned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Contacts").mkdir()
+            payload = {
+                "contacts": [
+                    {"firstName": "A", "notes": "x" * 60000 + " " + VALID_12}
+                ]
+            }
+            (root / "Contacts" / "contacts.json").write_text(json.dumps(payload))
+            self._scan(root)
+            self.assertIn(VALID_12, self._phrases(root))
+
+    def test_calendar_ics_and_contact_vcf_are_scanned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Calendar").mkdir()
+            (root / "Contacts").mkdir()
+            (root / "Calendar" / "calendar.ics").write_text(
+                "BEGIN:VEVENT\nDESCRIPTION:" + VALID_12 + "\nEND:VEVENT\n"
+            )
+            (root / "Contacts" / "contact.vcf").write_text(
+                "BEGIN:VCARD\nNOTE:" + VALID_12 + "\nEND:VCARD\n"
+            )
+            self._scan(root)
+            phrases = self._phrases(root)
+            self.assertEqual(phrases.count(VALID_12), 2, phrases)
+
+    def test_docx_xlsx_text_is_scanned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Drive").mkdir()
+            with zipfile.ZipFile(root / "Drive" / "wallet.docx", "w") as package:
+                package.writestr(
+                    "word/document.xml",
+                    f"<w:document><w:body><w:t>{VALID_12}</w:t></w:body></w:document>",
+                )
+            with zipfile.ZipFile(root / "Drive" / "wallet.xlsx", "w") as package:
+                package.writestr(
+                    "xl/sharedStrings.xml",
+                    f"<sst><si><t>{VALID_12}</t></si></sst>",
+                )
+            self._scan(root)
+            self.assertEqual(self._phrases(root).count(VALID_12), 2)
+            self.assertTrue((root / "Scan" / "text" / "Drive" / "wallet.docx.txt").exists())
+            self._scan(root)  # second pass reads the text cache
+
+    def test_text_file_larger_than_5mb_is_scanned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Notes" / "txt").mkdir(parents=True)
+            filler = "lorem ipsum dolor sit amet " * 240000  # ~6.4 MB
+            (root / "Notes" / "txt" / "big.txt").write_text(filler + VALID_12)
+            self._scan(root)
+            self.assertIn(VALID_12, self._phrases(root))
+
+    def test_mbox_tail_is_scanned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Mail").mkdir()
+            (root / "Mail" / "archive.mbox").write_text(
+                ("filler line\n" * 100) + "seed: " + VALID_12 + "\n"
+            )
+            self._scan(root)
+            self.assertIn(VALID_12, self._phrases(root))
 
 
 class WordlistTests(unittest.TestCase):

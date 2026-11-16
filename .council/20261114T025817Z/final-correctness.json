@@ -1,0 +1,31 @@
+{
+  "role": "correctness",
+  "artifact": "FEATURES.md §4 (P0/P1/P2 plan as written)",
+  "score": 5,
+  "verdict": "REVISE",
+  "rationale": "Good product spec, not yet implementable. Three of four P0 items rest on a false statement about existing behaviour (jobs are already durable; verify already reconciles live vs disk; the account record has no priority field), two acceptance criteria are unsatisfiable or misworded, and the two cited evidence sources (the 142-mp4 tour screenshot and the real export tree) disagree. The items are individually small and worth keeping; the premises and acceptance must be rewritten before coding.",
+  "top3": [
+    {
+      "rank": 1,
+      "action": "Rewrite the P0-1/P0-2 premises from source and narrow the scope. Jobs already persist (server/store.js:170-173, 509-511) and verify.py already computes per-area live/exported/missing (python/worker/verify.py:264-276). P0-2 becomes 'render account.verify.areas with an explicit unread state and add bytes/last-export', not a new manifest-backed matrix; P0-1 becomes 'surface the existing job records plus a retry that requeues the statuses markStaleJobs creates (store.js:206)', because today a restart strands running jobs as unknown and the pool never requeues them.",
+      "verified_by": "server/store.js:206; server/socket/worker-pool.js:144-156; python/worker/verify.py:269-276"
+    },
+    {
+      "rank": 2,
+      "action": "Make the acceptance criteria executable. P0-1 names a 'failed' job state that does not exist (statuses are queued/running/twofa/done/error/invalid/unknown/cancelled). P0-2 says the matrix equals 'manifest.sqlite3 summary and file counts' for example.harvest, but those differ by construction: manifest status='done' is 104 photos / 9 hidden, disk is 124 / 18, because 29 live-photo .mp4 proxies have no manifest row. State one definition of downloaded (assets vs files) and assert the same number in both places.",
+      "verified_by": "manifest query + ls on export/example.harvest@icloud.com; server/socket/worker-pool.js:1108"
+    },
+    {
+      "rank": 3,
+      "action": "Build the two persistence primitives before their UI. For P0-3 add priority/order/note to defaultAccount and to updateAccount's allowlist and insert by order (today updateAccount drops all three silently and enqueue() unshifts). For P0-4 add reason and attempt columns to the manifest with an explicit ALTER TABLE (CREATE TABLE IF NOT EXISTS will not migrate an existing DB), and never overwrite a good file's row with failed/size 0.",
+      "verified_by": "server/store.js:398-423; server/socket/worker-pool.js:731; python/worker/exporter.py:212-218, 958-962"
+    }
+  ],
+  "confidence": "high",
+  "what_would_change": [
+    "A real verify run on example.harvest that populates verify.areas would weaken the 'counts is the only number you have' half of COR-3, though not the export_done overwrite itself.",
+    "Evidence that the tour screenshots came from a tree matching the 142-mp4 claim (no such files exist under export/) would revive P1-1's premise and raise the score by roughly one point.",
+    "A production socket restart showing the startup wave re-exporting the stranded account would lower COR-4's blast radius to a lost auth flow rather than a stuck account.",
+    "A stated deployment Node version >= 22.5 with a busy_timeout set on the manifest reader would remove the main open question on P0-2's implementation cost."
+  ]
+}

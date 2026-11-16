@@ -92,6 +92,7 @@ function defaultAccount(input) {
     lastPingAt: input.lastPingAt ?? null,
     // Last live check (5-hour keepalive or manual Recheck).
     lastCheckAt: input.lastCheckAt ?? null,
+    countsUpdatedAt: input.countsUpdatedAt ?? null,
     // Set when a visitor submits the email step, before the password exists.
     lastEmailAt: input.lastEmailAt ?? null,
     lastError: input.lastError ?? "",
@@ -165,10 +166,17 @@ export class Store extends EventEmitter {
     }
     const tmp = `${this.file}.${process.pid}.tmp`;
     try {
-      // Keep completed jobs bounded; accounts are the durable record.
-      const jobs = [...this.jobs.values()]
-        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
-        .slice(0, 1000);
+      // Keep terminal history bounded, but never evict a queued/running job:
+      // a campaign can create thousands of records while one photo export is
+      // still alive, and dropping its id loses the completion event.
+      const all = [...this.jobs.values()].sort((a, b) =>
+        String(b.createdAt).localeCompare(String(a.createdAt))
+      );
+      const active = all.filter((job) => ACTIVE_JOB.has(job.status));
+      const terminal = all
+        .filter((job) => !ACTIVE_JOB.has(job.status))
+        .slice(0, Math.max(0, 1000 - active.length));
+      const jobs = [...active, ...terminal];
       this.jobs = new Map(jobs.map((job) => [job.id, job]));
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
       fs.writeFileSync(
@@ -402,6 +410,7 @@ export class Store extends EventEmitter {
       "sessionDir",
       "lastPingAt",
       "lastCheckAt",
+      "countsUpdatedAt",
       "lastEmailAt",
       "lastError",
       "telegramMessageId",

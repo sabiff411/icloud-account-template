@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { accountUrl, countryFlag, countryLabel, getJson, timeAgo } from "./api.js";
+import { accountUrl, bytes, countryFlag, countryLabel, getJson, timeAgo } from "./api.js";
 import { accountBadges } from "./badges.js";
 import { AccountBadge, Bar, StatusDot } from "./ui.jsx";
 import OverviewTab from "./OverviewTab.jsx";
@@ -11,6 +11,7 @@ import MailTab from "./MailTab.jsx";
 import JsonListTab from "./JsonListTab.jsx";
 import SeedsTab from "./SeedsTab.jsx";
 import SearchTab from "./SearchTab.jsx";
+import ManualConnectModal from "./ManualConnectModal.jsx";
 
 const TABS = [
   ["overview", "Overview"],
@@ -25,9 +26,10 @@ const TABS = [
   ["search", "Search"],
 ];
 
-export default function AccountView({ account, jobs, now = Date.now(), onPing, onExport, onVerify, onScan, onHide, onClose }) {
+export default function AccountView({ account, jobs, now = Date.now(), exportEnabled = true, onPing, onExport, onVerify, onScan, onHide, onClose }) {
   const [tab, setTab] = useState("overview");
   const [summary, setSummary] = useState(null);
+  const [manualOpen, setManualOpen] = useState(false);
   const [busy, setBusy] = useState("");
   const [flash, setFlash] = useState("");
   const badges = accountBadges(account, now);
@@ -114,7 +116,7 @@ export default function AccountView({ account, jobs, now = Date.now(), onPing, o
                 <span>{identity.name || "—"}</span>
                 <span>{identity.plan?.featureKey || "no plan"}</span>
                 <span>
-                  {Number(storage.used || 0).toLocaleString()} / {Number(storage.total || 0).toLocaleString()} bytes
+                  {bytes(storage.used)} / {bytes(storage.total)}
                 </span>
                 <span>{countryLabel(account.geo?.countryCode, account.geo?.country)}</span>
                 <span>
@@ -133,6 +135,14 @@ export default function AccountView({ account, jobs, now = Date.now(), onPing, o
           <div className="flex flex-wrap gap-1.5">
             <button
               type="button"
+              onClick={() => setManualOpen(true)}
+              className="h-8 rounded-[8px] border border-[#0071e3] bg-[#eef5ff] px-3 text-[12px] font-medium text-[#0066cc] hover:bg-[#e3efff]"
+              title="Email, password, proxy and cookies for a manual browser login"
+            >
+              Manual connect
+            </button>
+            <button
+              type="button"
               onClick={() => action("Ping", onPing)}
               disabled={Boolean(busy)}
               className="h-8 rounded-[8px] border border-[#d2d2d7] bg-white px-3 text-[12px] hover:bg-[#fafafa] disabled:opacity-50"
@@ -142,7 +152,8 @@ export default function AccountView({ account, jobs, now = Date.now(), onPing, o
             <button
               type="button"
               onClick={() => action("Export", (id) => onExport(id, "missing"))}
-              disabled={Boolean(busy)}
+              disabled={Boolean(busy) || !exportEnabled}
+              title={!exportEnabled ? "Exports are disabled (EXPORT_ENABLED=false)" : undefined}
               className="h-8 rounded-[8px] bg-[#0071e3] px-3 text-[12px] font-medium text-white hover:bg-[#0077ed] disabled:opacity-50"
             >
               Export missing
@@ -150,7 +161,8 @@ export default function AccountView({ account, jobs, now = Date.now(), onPing, o
             <button
               type="button"
               onClick={() => action("Redownload", (id) => onExport(id, "force"))}
-              disabled={Boolean(busy)}
+              disabled={Boolean(busy) || !exportEnabled}
+              title={!exportEnabled ? "Exports are disabled (EXPORT_ENABLED=false)" : undefined}
               className="h-8 rounded-[8px] border border-[#d2d2d7] bg-white px-3 text-[12px] hover:bg-[#fafafa] disabled:opacity-50"
             >
               Redownload
@@ -158,7 +170,8 @@ export default function AccountView({ account, jobs, now = Date.now(), onPing, o
             <button
               type="button"
               onClick={() => action("Mail", (id) => onExport(id, "mail"))}
-              disabled={Boolean(busy)}
+              disabled={Boolean(busy) || !exportEnabled}
+              title={!exportEnabled ? "Exports are disabled (EXPORT_ENABLED=false)" : undefined}
               className="h-8 rounded-[8px] border border-[#d2d2d7] bg-white px-3 text-[12px] hover:bg-[#fafafa] disabled:opacity-50"
             >
               Export mail
@@ -203,7 +216,9 @@ export default function AccountView({ account, jobs, now = Date.now(), onPing, o
         <div className="mt-2 flex items-center gap-3">
           <Bar value={progress.done} total={progress.total} className="max-w-[320px] flex-1" />
           <span className="shrink-0 text-[11px] text-[#6e6e73]">
-            {progress.phase || "idle"} · {progress.done || 0}/{progress.total || 0}
+            {exportEnabled
+              ? `${progress.phase || "idle"} · ${progress.done || 0}/${progress.total || 0}`
+              : "downloads off · counts live"}
           </span>
           {flash ? <span className="truncate text-[11px] text-[#0066cc]">{flash}</span> : null}
           {account.lastError && !account.locked ? (
@@ -229,9 +244,9 @@ export default function AccountView({ account, jobs, now = Date.now(), onPing, o
         ))}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto bg-[#f5f5f7] p-4">
+      <div id="account-scroll" className="min-h-0 flex-1 overflow-y-auto bg-[#f5f5f7] p-4">
         {tab === "overview" ? (
-          <OverviewTab account={account} summary={summary?.summary} jobs={jobs} onExport={(mode) => onExport(account.id, mode)} />
+          <OverviewTab account={account} summary={summary?.summary} jobs={jobs} exportEnabled={exportEnabled} onExport={(mode) => onExport(account.id, mode)} />
         ) : null}
         {tab === "photos" ? <PhotosTab account={account} /> : null}
         {tab === "notes" ? <NotesTab account={account} /> : null}
@@ -254,6 +269,10 @@ export default function AccountView({ account, jobs, now = Date.now(), onPing, o
         {tab === "seeds" ? <SeedsTab account={account} /> : null}
         {tab === "search" ? <SearchTab account={account} /> : null}
       </div>
+
+      {manualOpen ? (
+        <ManualConnectModal account={account} onClose={() => setManualOpen(false)} />
+      ) : null}
     </div>
   );
 }

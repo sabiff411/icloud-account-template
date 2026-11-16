@@ -1,0 +1,311 @@
+{
+  "role": "correctness",
+  "findings": [
+    {
+      "id": "COR-1",
+      "title": "Node join by private IP reports db-mon-1 red on a 9/9 healthy fleet",
+      "severity": "P1",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 104,
+      "line_end": 105,
+      "quote": "The node table is joined to Prometheus target health by private IP; a target that\nis absent is `red` with `\"no node_exporter target\"`.",
+      "claim": "The plan joins node->target on the private IP, but the evidence shows db-mon-1's only node_exporter target is named `host.docker.internal:9100`, not `10.20.0.30`. The other eight arrive as `<private-ip>:9100`, so a literal IP comparison also misses the port suffix. A healthy fleet therefore produces at least one red node, and possibly nine.",
+      "impact": "The operator opens the page whose only job is to answer 'is the fleet healthy' and sees db-mon-1 red with 'no node_exporter target' (or 9/9 nodes red) while node_exporter is up everywhere. Acceptance step 3 (plan.md:143-144) asserts only 'overall, 9 nodes, 7 workers, gate red, S4 yellow' — it never asserts the node rows are green, so this ships.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '1,13p' .council/20261115T032914Z/evidence-fleet.txt; sed -n '12p;26p' deploy/FLEET.md",
+      "fix": "Match on a normalised host (strip `:port` from labels.instance) and add an explicit alias map `host.docker.internal -> 10.20.0.30`; make 'absent' yellow-with-reason rather than red, and add an acceptance assertion that all 9 rows are green before fault injection.",
+      "citations": [
+        {
+          "file": ".council/20261115T032914Z/evidence-fleet.txt",
+          "line": 9,
+          "quote": "host.docker.internal:9100 up "
+        },
+        {
+          "file": "deploy/FLEET.md",
+          "line": 12,
+          "quote": "| db-mon-1 | 82.221.141.135 | 10.20.0.30 | data+ops | NFS, Postgres 16, Redis 7, Prometheus:9090, Grafana:3000, Uptime:3001 |"
+        },
+        {
+          "file": "deploy/FLEET.md",
+          "line": 26,
+          "quote": "- `node_exporter` on all 9"
+        },
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 143,
+          "quote": "3. `curl -b <admin cookie> http://127.0.0.1:3000/api/admin/health` returns"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "COR-2",
+      "title": "A timed-out statfs keeps one of four libuv threads, so the health page can freeze the whole panel",
+      "severity": "P1",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 62,
+      "line_end": 62,
+      "quote": "- `probeNfs(dir)` — `fs.promises.statfs` (NFSv4), computes used ratio.",
+      "claim": "Statfs runs on the shared libuv threadpool (default 4 threads), not on a per-request thread. A 1200 ms/2500 ms race only abandons the promise; the kernel-blocked statfs keeps its thread until the mount recovers. I demonstrated the mechanism: four blocking fs.promises calls starved an unrelated fs.promises.stat for over 2 s on Node v24.21.0.",
+      "impact": "With the export dir on a hard-mounted NFS, four health requests that outlive their budget (four concurrent cold-cache tabs, or four refreshes at the 5 s cache interval) consume all four threads; every fs.promises call in the web process then stalls — account list, image/preview streaming, catalog — while the probes (loopback IPs, no DNS) keep returning green. The page says 'nfs red' and the rest of the panel hangs, which is the opposite of the scope's 'page can hang or amplify load' guard.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'node:fs/promises' server/admin/api.js; grep -c 'await fs\\.' server/admin/api.js; sed -n '156,157p' .council/20261115T032914Z/plan.md",
+      "fix": "At most one in-flight statfs (single-flight latch) plus a circuit breaker that stops probing NFS for 30 s after a timeout; document UV_THREADPOOL_SIZE or run the statfs in a child process with a kill on timeout.",
+      "citations": [
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 156,
+          "quote": "- `statfs` on a hard-mounted NFS can block in the kernel; the 1200 ms race"
+        },
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 157,
+          "quote": "  returns a red result but the request thread may stay until the mount recovers."
+        },
+        {
+          "file": "server/admin/api.js",
+          "line": 5,
+          "quote": "import fs from \"node:fs/promises\";"
+        },
+        {
+          "file": "server/admin/api.js",
+          "line": 730,
+          "quote": "        stat = await fs.stat(file);"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "COR-3",
+      "title": "Redis check is yellow on a healthy fleet: no REDIS_PASSWORD on session-1 and no location stated",
+      "severity": "P2",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 59,
+      "line_end": 60,
+      "quote": "- `probeRedis(url, password)` — raw RESP `AUTH` (if a password is set) then\n  `PING`; accepts `+PONG`; reads at most 256 bytes.",
+      "claim": "The plan maps NOAUTH to yellow and never says where the password comes from, but the only documented copy of REDIS_PASSWORD is on db-mon-1; session-1's secret list has no Redis entry and the deploy step adds no env var. The probe also leaves the RESP encoding unspecified: inline `AUTH <password>` breaks on any password containing whitespace or quotes, and a single read of at most 256 bytes can see `+OK\\r\\n` and `+PONG\\r\\n` split across two TCP segments over the WireGuard path.",
+      "impact": "On a fully healthy Redis, the operator sees an attention row 'Redis — NOAUTH (password missing)' on every load, and after a password is supplied the checker can still report red on a split read. Neither path is covered by a test, because plan.md:128-134 injects probes and never exercises probeRedis.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '29,30p' deploy/FLEET.md; grep -n -i 'redis' .env.example server/config.js; sed -n '141,142p' .council/20261115T032914Z/plan.md",
+      "fix": "Send RESP arrays (`*2\\r\\n$4\\r\\nAUTH\\r\\n$<len>\\r\\n<pw>\\r\\n`) and accumulate until a full `\\r\\n` line, with a hard byte cap; state the env var in the deploy step and add a probe-level test with a fake TCP server that splits the two replies.",
+      "citations": [
+        {
+          "file": "deploy/FLEET.md",
+          "line": 30,
+          "quote": "- db-mon-1: `/root/fleet-secrets.txt` — DB_PASSWORD, REDIS_PASSWORD, GRAFANA_PASSWORD"
+        },
+        {
+          "file": "deploy/FLEET.md",
+          "line": 29,
+          "quote": "- session-1: `/root/fleet-secrets.txt` — ADMIN_PASSWORD, GATE_TOKEN, WORKER_TOKEN, ADMIN_SESSION_SECRET"
+        },
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 45,
+          "quote": "| redis | `AUTH` + `PING` -> `PONG` | `NOAUTH` (password missing) | refused / timeout / `-ERR` |"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "COR-4",
+      "title": "S4 'heartbeat < 10 min' has no producer, so the card is permanently yellow",
+      "severity": "P2",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 47,
+      "line_end": 47,
+      "quote": "| s4 | configured + heartbeat < 10 min | configured, no/stale heartbeat, or env empty | configured and last run failed |",
+      "claim": "Nothing on session-1 writes an S4 run heartbeat. server/ has no heartbeat/lastRun/s4 status read at all; the only artifact is a per-account marker written by the uploader (`Scan/s4-complete.json`), whose mtime is per-batch, not per-run, and would be far older than 10 minutes for most accounts. The plan treats a non-existent signal as a threshold.",
+      "impact": "Once S4 keys are configured, the Storage card and the 'Needs attention' list report S4 yellow on a working mirror; today the yellow is produced by the empty-env branch instead. Acceptance step 3 expects 'S4 yellow' (plan.md:144), so the wrong state is baked into the pass criteria and no test distinguishes the two reasons.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -rn -i 'heartbeat\\|lastRun\\|last_run' server/ | head; grep -n 's4-complete.json' python/s4_upload.py",
+      "fix": "Either have the uploader write one run marker (e.g. /srv/icloud/state/s4-last-run.json) and probe its mtime, or drop the heartbeat rule and report only configured/unconfigured plus the last marker age, labelled as such.",
+      "citations": [
+        {
+          "file": "python/s4_upload.py",
+          "line": 138,
+          "quote": "    (account / \"Scan\" / \"s4-complete.json\").write_text(json.dumps(data, indent=2))"
+        },
+        {
+          "file": "deploy/FLEET.md",
+          "line": 36,
+          "quote": "- `S4_UPLOAD=0` until the rclone remote exists; then set 1 and start `s4_upload --watch --prune`"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "COR-5",
+      "title": "The 5 s cache does not dedupe concurrent misses, so N tabs still multiply probes",
+      "severity": "P2",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 69,
+      "line_end": 70,
+      "quote": "- Results are cached for 5 s (`HEALTH_CACHE_MS`) so several admin tabs do not\n  multiply probes.",
+      "claim": "A read-through cache only collapses requests that arrive after the first snapshot resolves. Several tabs opened at once all miss the empty cache and each run the full probe set — which is precisely the 'several admin tabs' case the cache claims to fix, and the case that drives COR-2 to four concurrent statfs. The only test (plan.md:134) is sequential and would pass with no dedupe at all.",
+      "impact": "First load of a page left open in three tabs issues three full probe sweeps (three statfs, three Redis TCP connections, three Prometheus queries) inside the same second, and the operator sees three different overall verdicts if one sweep lands during a blip.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '67,70p;134p' .council/20261115T032914Z/plan.md",
+      "fix": "Cache the in-flight promise, not just the resolved value: `if (inflight) return inflight;` before starting probes, so a concurrent miss awaits the same sweep.",
+      "citations": [
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 134,
+          "quote": "  - cache returns the same object within 5 s."
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "COR-6",
+      "title": "The health route is not injectable, so the admin-api test hits the real network and asserts only key presence",
+      "severity": "P2",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 135,
+      "line_end": 136,
+      "quote": "- `server/test/admin-api.test.mjs`: `GET /api/admin/health` without a cookie is\n  401; with a session it is 200 and has `checks` + `nodes`.",
+      "claim": "createAdminRouter receives only file/password/secret options and the planned route calls `collectHealth()` with no arguments, so there is no way to inject probes into the HTTP layer: the test performs real fetch/TCP/statfs against 127.0.0.1:4100, 127.0.0.1:4001 and 10.20.0.30:9090. The assertion checks only that two keys exist, which is also true when every probe is red or every probe module is wired wrong — `checks` and `nodes` are always present by construction.",
+      "impact": "The one integration test for the new endpoint cannot fail for a wrong probe, a wrong Prometheus join (COR-1) or a wrong NFS ratio (the 76%/91% test injects the ratio, so the statfs formula itself is never exercised). It also converts an offline, temp-tree test into one that waits on the 1200-2500 ms budgets and depends on the private mesh.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '183,200p' server/test/admin-api.test.mjs; sed -n '91,94p' .council/20261115T032914Z/plan.md",
+      "fix": "Accept `health` (a prebuilt collector) in createAdminRouter's options and default it in app.js, then assert a fixed payload (`overall`, one red gate row, 9 nodes) in the test with injected probes.",
+      "citations": [
+        {
+          "file": "server/test/admin-api.test.mjs",
+          "line": 187,
+          "quote": "const app = express();"
+        },
+        {
+          "file": ".council/20261115T032914Z/plan.md",
+          "line": 92,
+          "quote": "  res.setHeader(\"cache-control\", \"no-store\");"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "COR-7",
+      "title": "/healthz body nests a count under a key of the same name; nothing tests the handler",
+      "severity": "P3",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 77,
+      "line_end": 77,
+      "quote": "- `GET /healthz` -> `200 {\"ok\":true,\"uptime\":…,\"workers\":{...},\"accounts\":…}`",
+      "claim": "`snapshot()` is specified as `{ workers, auth, export, scan, queued }` (plan.md:80), so the response is `body.workers.workers` — while the threshold table (plan.md:40) and the top row (plan.md:111) talk about '0 workers' and '7 workers'. `slotStats()` does not even return `scan` (worker-pool.js:1545), so 'same numbers already emitted in admin:ready' is not exact. No test in section 5 requests /healthz; server/test/socket.test.mjs contains no HTTP request at all.",
+      "impact": "A frontend written from the plan reads `data.workers` and gets an object; the '0 workers' yellow rule then never fires, or the count renders as [object Object], and the change to server/socket/index.js is untested.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '1538,1546p' server/socket/worker-pool.js; grep -n 'request(' server/test/socket.test.mjs | head",
+      "fix": "Name the nested object `pool` in /healthz, add `scan` to slotStats explicitly, and add one socket test that GETs /healthz and asserts `pool.workers === 7` against a stubbed pool.",
+      "citations": [
+        {
+          "file": "server/socket/admin.js",
+          "line": 108,
+          "quote": "      workers: pool.slotStats(),"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1545,
+          "quote": "    return { workers: this.workers.size, auth, export: exp, queued: this.queue.length };"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "COR-8",
+      "title": "map.md says the socket binds 127.0.0.1; it binds every interface, so /healthz leaks counts off-box",
+      "severity": "P2",
+      "file": "server/socket/index.js",
+      "line": 108,
+      "line_end": 108,
+      "quote": "  httpServer.listen(config.socketPort, () => {",
+      "claim": "listen() is called with no host, so the socket process binds 0.0.0.0:4001 — the log line at index.js:109 says ws://127.0.0.1 and map.md:27 repeats it. The plan adds an unauthenticated `/healthz` on that server returning worker counts, per-role slot totals and the account count, and section 7's weakness list never mentions reachability.",
+      "impact": "Anyone who can reach 82.221.139.233:4001 (the workers reach it from the mesh, so it is not loopback-only) can read live worker counts, slot saturation and the account count without a session — a small but real disclosure on a phishing panel, and a claim the reviewer was told to trust.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'listen(' server/socket/index.js; grep -n 'binds 127.0.0.1' .council/20261115T032914Z/map.md",
+      "fix": "State the exposure in section 7 and either bind the health path check to loopback peers (`req.socket.remoteAddress`) or gate /healthz behind a shared header used by the web probe.",
+      "citations": [
+        {
+          "file": "server/socket/index.js",
+          "line": 110,
+          "quote": "      `[socket] ws://127.0.0.1:${config.socketPort} (/public, /admin, /worker)`"
+        },
+        {
+          "file": ".council/20261115T032914Z/map.md",
+          "line": 27,
+          "quote": "- Web/socket split: web proxies `/socket.io` (`app.js:38-54`, 150-156); socket binds 127.0.0.1 (108)."
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "COR-9",
+      "title": "FLEET_NODES_JSON is parsed on the web process's import path; one typo takes the public capture page down",
+      "severity": "P2",
+      "file": ".council/20261115T032914Z/plan.md",
+      "line": 103,
+      "line_end": 103,
+      "quote": "(`id`, `publicIp`, `privateIp`, `role`). `FLEET_NODES_JSON` overrides it.",
+      "claim": "fleet.js is reachable from health.js, which the router module imports, which app.js imports at module load (app.js:7). If the override is parsed where the plan puts it, an invalid FLEET_NODES_JSON throws during import and `createApp()` never runs — the whole web process, including the gate and the capture page, fails to start rather than degrading one card.",
+      "impact": "A config typo plus `systemctl restart icloud-web` turns 82.221.139.233 into nginx 502 for visitors, and the health page that was meant to explain it is unavailable too. The plan's only stated mitigation for an input override is nothing.",
+      "confidence": "medium",
+      "basis": "inferred",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '7p' server/app.js; sed -n '102,105p' .council/20261115T032914Z/plan.md",
+      "fix": "Parse the override lazily inside a try/catch, fall back to the built-in list and mark the nodes check 'yellow: FLEET_NODES_JSON invalid' instead of throwing at import.",
+      "citations": [
+        {
+          "file": "server/app.js",
+          "line": 7,
+          "quote": "import { createAdminRouter } from \"./admin/api.js\";"
+        },
+        {
+          "file": "server/app.js",
+          "line": 104,
+          "quote": "  app.use(createGate());"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    }
+  ],
+  "not_examined": [
+    "The other seats' challenge-*.json and review-*.json files in the run dir (blind round).",
+    "The live hosts: session-1 .env, UFW rules, nginx config, /proc/mounts for the NFS hard-mount flag, and the real Prometheus /api/v1/targets JSON — all claims about them are doc-based (STATIC-INFERENCE).",
+    "python/watchdog.py, python/s4_manifest*.py and the OCR worker paths, beyond the s4 marker grep.",
+    "server/admin/storage.js, library.js, s4.js internals, and the remaining 700 lines of api.js outside the router head, route tail and error handler.",
+    "src/admin/* components other than Admin.jsx's view/nav block and api.js's getJson; useAdminSocket.js, ServicesTab's eventual styling, and the mobile showList interaction.",
+    "server/test/socket.test.mjs, mock-worker.mjs and the python test suite in detail.",
+    "Whether the gate provider's POST /api/status semantics match the plan's green/yellow mapping (provider is down, 4100=000)."
+  ],
+  "open_questions": [
+    "Does POST /api/status with {ip:'127.0.0.1',dev:''} return ok:true on a healthy provider, or a verdict like ip_block/unknown that the plan's mapping would render yellow (gate.js:537, 626)?",
+    "Is 10.20.0.30:6379 and :5432 actually reachable from session-1 through the mesh/UFW, and does session-1's .env carry REDIS_PASSWORD?",
+    "Is /srv/icloud a hard mount today, and what does a statfs there do when db-mon-1 is unreachable — block, or fail fast with ESTALE?",
+    "Is UFW on session-1 exposing 4001 to the internet (which decides whether /healthz is a public endpoint)?",
+    "Does the plan intend `(blocks-bfree)/blocks` or df's `used/(used+avail)` for the NFS ratio? They differ by 3.6 points on the machine I measured (67.9 vs 71.5), which is enough to move the 75% threshold; the plan's own 5.5% example implies the df formula."
+  ]
+}

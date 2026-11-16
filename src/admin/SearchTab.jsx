@@ -3,7 +3,7 @@ import { accountUrl, fileUrl, getJson } from "./api.js";
 import { Badge, Empty, Spinner, displayName } from "./ui.jsx";
 import Lightbox from "./Lightbox.jsx";
 
-const IMAGE = /\.(jpe?g|png|gif|webp|bmp|tiff?|heic|heif)$/i;
+const IMAGE = /\.(jpe?g|png|gif|webp|bmp|tiff?|heic|heif|avif|dng)$/i;
 
 function Section({ title, count, children }) {
   if (!count) return null;

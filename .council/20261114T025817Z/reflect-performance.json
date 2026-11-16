@@ -1,0 +1,134 @@
+{
+  "role": "performance",
+  "reflection_of": "review-performance.json",
+  "axis": "basis measured = a number in the finding came out of a command I ran on this checkout; basis inferred = the finding rests on an extrapolation to the assumed scale, on an unimplemented design, or on a deployment config that is not set in .env.example",
+  "findings": [
+    {
+      "id": "PERF-1",
+      "confidence": "high",
+      "basis": "measured",
+      "note": "57 ms per 1000-photo account and 15 ms for the 3-account real export were run; the 7.1 s / 500-account figure is linear arithmetic on those, which is the strongest assumption in the finding. The mechanism (inline build + 120 s TTL + 30 s poll) is read straight off the code."
+    },
+    {
+      "id": "PERF-2",
+      "confidence": "medium",
+      "basis": "inferred",
+      "note": "The 3,000 HEADs and 1,956 ms / 31,422 ms per account are measured, but against a local stub, and the finding only bites if S4_* is set - it is absent from .env.example. Downgraded from the file's 'high/read' because the production impact is a config assumption, not an observation."
+    },
+    {
+      "id": "PERF-3",
+      "confidence": "high",
+      "basis": "measured",
+      "note": "284 HEADs for 142 items (2.00/item), 163 ms at 0 ms RTT and 493 ms at 30 ms RTT are real runs; the 1k extrapolation is exact multiples of measured per-item cost. Same S4 conditionality as PERF-2."
+    },
+    {
+      "id": "PERF-4",
+      "confidence": "high",
+      "basis": "measured",
+      "note": "60,461 bytes / 142 items and 6.8 ms / 9.5 ms are measured; 426 KB at 1k and ~40 ms of stats are exact per-item multiples. Confirmed no compression in app.js and no-store on the route."
+    },
+    {
+      "id": "PERF-5",
+      "confidence": "high",
+      "basis": "measured",
+      "note": "62 ms (1.8 MB JPEG), 110 ms and 68,268 kB peak RSS (6.7 MB PNG) were run per thumbnail; 13.75 s wall and 545 MB for 1k follow from the measured unit cost and CONCURRENCY=8. Video thumbs unmeasured (no imageio_ffmpeg here)."
+    },
+    {
+      "id": "PERF-6",
+      "confidence": "high",
+      "basis": "inferred",
+      "note": "The constants (60/10 s, MAX_QUEUE=500, MAX_EXPORT_JOBS=16) are certain from source, but '440 of 500 fail' assumes the not-yet-written client loops N calls instead of adding a batch event - which the plan does not specify. Inferred, not observed."
+    },
+    {
+      "id": "PERF-7",
+      "confidence": "high",
+      "basis": "measured",
+      "note": "2.14 ms per pump at 984 queued / 1,000 jobs (984,000 filter iterations) and 6 ms cold were run against a faithful replica of the loop; the '~1 s per 500 enqueues' is arithmetic over a growing queue."
+    },
+    {
+      "id": "PERF-8",
+      "confidence": "high",
+      "basis": "measured",
+      "note": "3.1 ms and 1,684,171 bytes per flush on a 500-account / 1,000-job store were run. The 8 writes/s ceiling comes from debounceMs and the 1 s exporter progress throttle, both read; it assumes all 16 workers exporting at once."
+    },
+    {
+      "id": "PERF-9",
+      "confidence": "medium",
+      "basis": "inferred",
+      "note": "Payload sizes (1,617 B event, 945 B median, 646 KB for 500 accounts) are measured; 'visible jank' is inferred from a 1,000-row .map per event with no profiler run. This is the most speculative P2 in the file."
+    },
+    {
+      "id": "PERF-10",
+      "confidence": "medium",
+      "basis": "inferred",
+      "note": "The 2.97 ms open+group+close is measured, but on a synthetic 20k-row manifest; the largest real manifest here has 117 rows. The whole cost only exists if P0-2 is implemented per request, which is a plan reading, not code."
+    },
+    {
+      "id": "PERF-11",
+      "confidence": "high",
+      "basis": "measured",
+      "note": "328 / 305 / 289 ms queries were run on a synthetic 500k-photo catalog (466 B/row, 504 MB RSS); the 500 x index.json fan-out figure is arithmetic on the measured 125,626-byte index."
+    },
+    {
+      "id": "PERF-12",
+      "confidence": "high",
+      "basis": "measured",
+      "note": "The sort+slice(0,1000)+reassign in flush() is deterministic source; the 'up to 3,000 jobs' figure is JOB_TYPES x accounts arithmetic, not an observed campaign."
+    },
+    {
+      "id": "PERF-13",
+      "confidence": "high",
+      "basis": "measured",
+      "note": "The three duplicate wait-then-stat calls per item are counted exactly from the code; the '~10 ms at 1k' is an estimate at ~3 us/stat that I did not isolate with syscall timing."
+    },
+    {
+      "id": "PERF-14",
+      "confidence": "high",
+      "basis": "measured",
+      "note": "242 ms global dedupe, 95 ms per-account dedupe and ~0 ms grouping over 45,000 synthetic findings were all run."
+    },
+    {
+      "id": "PERF-15",
+      "confidence": "medium",
+      "basis": "inferred",
+      "note": "No eviction is a source fact; the ~45 MB at 500k files is computed from an assumed ~90 B per cached entry, never measured with a heap snapshot."
+    }
+  ],
+  "top3_by_cost_of_inaction": [
+    {
+      "id": "PERF-6",
+      "rank": 1,
+      "reason": "P0-3 is a blocking plan item and its headline claim is a 500-account campaign. Unfixed, the feature the plan calls blocking returns success for the first 60 and rate-limit errors for the rest, so its own acceptance test ('3 selected accounts produce 3 ordered jobs') passes while the 500-account case silently fails. Cheapest fix in the file - one batch handler and a MAX_QUEUE check - and the only one whose inaction invalidates a P0."
+    },
+    {
+      "id": "PERF-1",
+      "rank": 2,
+      "reason": "Every later library feature rides buildCatalog: P1-3 global search, the Library tab, the crypto view. Unfixed it is a 7 s stall every fourth idle poll today and a rebuild that never completes if S4 is on, so the plan would be layered on a base that already loses to its own 120 s TTL. Fix belongs before P1-3, not after."
+    },
+    {
+      "id": "PERF-5",
+      "rank": 3,
+      "reason": "P2-4 exists precisely to measure 1k-photo thumbnail latency and memory, and the answer is already derivable: 1,000 forks, 13.75 s wall, ~545 MB peak. Inaction means the 1k acceptance tests a mechanism that cannot pass without batch generation, so the P2 item would be a rewrite of the thumb path rather than a measurement."
+    }
+  ],
+  "highest_variance_unranked": {
+    "id": "PERF-2",
+    "reason": "If S4_* is configured in the target deployment this is the worst finding in the file by two orders of magnitude (1.5 M HEADs, 4-65 min per rebuild, permanent rebuild loop). It is not in the top 3 only because .env.example sets no S4 keys, so it may never fire. Worth one config question before ranking it P1."
+  },
+  "would_drop": [
+    {
+      "id": "PERF-13",
+      "reason": "3 redundant fs.stat per tile is ~10 ms at 1k with no user-visible symptom; it is a cleanup that belongs in the same patch as PERF-3/PERF-4, not a standalone finding. It is the clearest candidate for dedup by a judge."
+    },
+    {
+      "id": "PERF-9",
+      "runner_up": true,
+      "reason": "Medium confidence with no profiler evidence: the bytes are measured but the jank is inferred from a 1,000-row .map. If a verifier demands runtime evidence for impact, this is the one that falls over."
+    }
+  ],
+  "honesty_notes": [
+    "Two of the three P1s (PERF-2, PERF-3) are conditional on S4 being enabled and one P2 (PERF-10) is conditional on an unimplemented design; the unconditional findings are PERF-1, PERF-5, PERF-6 (design-dependent), PERF-4.",
+    "Every scale figure is linear extrapolation from a single measured account (57 ms, 1,956 ms) or a synthetic corpus (500k photos, 45k findings). No 500-account store or 1k-photo export exists here to measure directly.",
+    "All source quotes were mechanically verified against the files after writing; no quote in the review is remembered."
+  ]
+}

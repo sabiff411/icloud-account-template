@@ -1,0 +1,285 @@
+{
+  "role": "architecture",
+  "findings": [
+    {
+      "id": "ARCH-1",
+      "title": "P0-2 names manifest.sqlite3 as the reconciliation oracle but assigns no process to own the join",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 94,
+      "line_end": 94,
+      "quote": "| P0-2 | **Coverage matrix** per account: area × (live count, downloaded, missing, bytes, last export); totals reconcile with manifest and disk | Answers \"what is missing\" without guessing from a global count | Matrix equals `manifest.sqlite3` summary and file counts for `example.harvest`; screenshot; test for a zero-download account |",
+      "claim": "Only Python opens manifest.sqlite3 today, and the web process is documented as the store's read-only consumer; the plan requires a three-way join (live counts in the socket store, downloaded/bytes in Python's manifest, file counts on disk) without saying which process performs it. The two halves already exist in the store: verify.compare() produces per-area live/exported/missing and handleVerifyResult stores it, and export totals carry per-area bytes. The acceptance wording therefore invites a second SQLite reader in the web process rather than reusing what the worker already sends.",
+      "impact": "Operator opens the coverage matrix during an export and gets numbers from a second reader over a commit-per-file, non-WAL SQLite file: stale rows or lock errors, and for a zero-download account (the plan's own test) a reader that creates an empty manifest makes the matrix silently show nothing. Node becomes co-owner of a schema Python writes.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'manifest.sqlite3\\|One writer per store\\|def compare' FEATURES.md README.md python/worker/verify.py",
+      "fix": "Compute per-area {live, exported, missing, bytes} in Python (verify.compare plus export totals) and return it in job:verify_result/export:done; render the matrix from account.verify and account.export in admin:account. Keep SQLite out of the web process.",
+      "citations": [
+        {
+          "file": "README.md",
+          "line": 113,
+          "quote": "- **One writer per store.** Only the socket process mutates accounts/jobs."
+        },
+        {
+          "file": "python/worker/exporter.py",
+          "line": 212,
+          "quote": "            \"\"\"CREATE TABLE IF NOT EXISTS files ("
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 264,
+          "quote": "def compare(live: dict, ids: dict, exported: dict) -> dict:"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1255,
+          "quote": "      areas: payload.areas ?? {},"
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 349,
+          "quote": "    ids, exported = manifest_ids(root / \"manifest.sqlite3\")"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "ARCH-2",
+      "title": "P0-4's per-file failure data needs a Python manifest migration the plan never names, and retry needs a per-key export mode",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 96,
+      "line_end": 96,
+      "quote": "| P0-4 | **Download truth**: record per-file failures (path, reason, attempt) and surface \"failed\" separately from \"missing\"; retry a failure set | \"Missing\" currently conflates never-attempted and failed | Seeded fake failure renders; retry clears it; test |",
+      "claim": "The manifest schema has no reason or attempt column, and it is created with CREATE TABLE IF NOT EXISTS, so existing per-account databases get no new columns. A failure is written as status='failed', size 0, empty sha, with the traceback only in the worker log; needs() treats any status other than 'done' as re-download. 'Retry a failure set' also has no path: jobs carry only a mode (missing/force/...), so a retry re-enumerates and re-downloads the whole missing set. Both the record and the retry are Python-side; the plan states them as dashboard behaviour.",
+      "impact": "If implemented where the plan points, the web process alters a resume database it does not write, or failure reasons land in the JSON store while the manifest stays the source of truth, giving two answers to 'why is this missing'. Old exports keep the exact failed/never-attempted conflation P0-4 exists to remove, and 'retry a failure set' silently retries everything.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'CREATE TABLE IF NOT EXISTS files\\|status=\"failed\"\\|status != \"done\"\\|SELECT area' python/worker/exporter.py",
+      "fix": "Idempotent ALTER TABLE migration in Manifest.__init__; mark(key, area, path, size, sha, status, reason, attempt); count failed rows in summary; emit a per-file failure list in job:export_done; accept an explicit key list in the export payload for retry.",
+      "citations": [
+        {
+          "file": "python/worker/exporter.py",
+          "line": 235,
+          "quote": "        if not row or row[\"status\"] != \"done\":"
+        },
+        {
+          "file": "python/worker/exporter.py",
+          "line": 260,
+          "quote": "            \"SELECT area, COUNT(*), COALESCE(SUM(size),0) FROM files WHERE status='done' GROUP BY area\""
+        },
+        {
+          "file": "python/worker/exporter.py",
+          "line": 961,
+          "quote": "                task[\"key\"], task[\"area\"], task[\"path\"], 0, \"\", status=\"failed\""
+        },
+        {
+          "file": "README.md",
+          "line": 705,
+          "quote": "- `export/<email>/manifest.sqlite3` is the resume source of truth; deleting it"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "ARCH-3",
+      "title": "store.flush() evicts still-running jobs once 1000 newer jobs exist, silently breaking the jobs view at the 500-account scale P0-3 targets",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 169,
+      "line_end": 173,
+      "quote": "      // Keep completed jobs bounded; accounts are the durable record.\n      const jobs = [...this.jobs.values()]\n        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))\n        .slice(0, 1000);\n      this.jobs = new Map(jobs.map((job) => [job.id, job]));",
+      "claim": "The cap is documented as 'completed jobs' but filters on nothing: it sorts every job by createdAt and replaces the in-memory map with the newest 1000. A 500-account run creates roughly one export job per account per wave plus an auto-scan job per completed export (handleExportDone -> startScan), so >1000 job records per cycle. A long-running wave-1 export created early can be evicted while still running; handleExportProgress and handleExportDone then call store.getJob(id) and return on null, so progress is dropped, release() never runs, and the account stays 'exporting'.",
+      "impact": "In a campaign-scale run, one or more finished exports never complete: the account shows 'exporting 0/0', the worker slot is never returned, and P0-1's 'durable list' quietly loses the row the operator needs. The failure is silent because every handler treats a missing job as 'not mine'.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'slice(0, 1000)\\|this.jobs = new Map\\|autoScanAfterExport' server/store.js server/socket/worker-pool.js",
+      "fix": "Keep every active job (queued/running/twofa) regardless of the cap and apply the 1000 limit only to terminal jobs; never drop an id still present in pool.queue. A durable append-only job log would remove the cap question entirely.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1097,
+          "quote": "    const job = this.store.getJob(payload.jobId);"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1138,
+          "quote": "    this.release(job, socket.id);"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1145,
+          "quote": "    if (config.worker.autoScanAfterExport && scanAfter) {"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "ARCH-4",
+      "title": "A restart rewrites running jobs to a terminal 'unknown' state the pool never requeues, so P0-1's retry is the only recovery",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 205,
+      "line_end": 207,
+      "quote": "      if (job.status === \"running\" || job.status === \"twofa\") {\n        job.status = \"unknown\";\n        job.error = \"node restarted\";",
+      "claim": "Store's constructor calls markStaleJobs() before WorkerPool is constructed, converting running/twofa jobs to 'unknown'. The pool's boot rebuild enqueues only 'queued' and requeues only 'running'; sweep() also examines only running/twofa. 'unknown' is therefore terminal: no queue, no pump, no requeue. store.test.mjs asserts this ('running jobs are marked unknown'), so it is intended behaviour with no recovery path.",
+      "impact": "After any deploy or crash during an export, that job appears as 'unknown - node restarted' forever and the account is forced to error/connected; nothing resumes it. A jobs view built on this data shows a terminal row whose only action is a retry the plan has not designed. The plan treats retry as a convenience; here it is the sole recovery for a known restart path.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'job.status = \"unknown\"\\|job.status === \"queued\"\\|job.status !== \"running\"' server/store.js server/socket/worker-pool.js",
+      "fix": "Treat 'unknown' as queued in the pool boot (or let markStaleJobs leave the job 'queued' with an error note), so the existing requeue path resumes it; do this before P0-1 renders the state.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 144,
+          "quote": "      if (job.status === \"queued\") {"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1475,
+          "quote": "      if (job.status !== \"running\" && job.status !== \"twofa\") continue;"
+        },
+        {
+          "file": "server/test/store.test.mjs",
+          "line": 40,
+          "quote": "assert.equal(reloaded.getJob(runningJob.id).status, \"unknown\", \"running jobs are marked unknown\");"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "ARCH-5",
+      "title": "P0-3's operator priority/order has no store field and no scheduler hook; a badge that nothing consumes will not change dispatch",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 95,
+      "line_end": 95,
+      "quote": "| P0-3 | **Bulk queue + priority**: checkbox selection, export/recheck/scan selected, pin/reorder, priority badge, per-account note; state survives reload | 500-account campaign is one click per account today | 3 selected accounts produce 3 ordered jobs; order persists after restart; screenshot |",
+      "claim": "There is no per-account priority/order/note field: updateAccount copies a fixed whitelist, and accounts have no note (only legacy submissions do, via item.note). Dispatch order is computed from job type rank, notesMissing and job createdAt; waves enqueue every eligible account through fillWave. The only priority concepts are a hardcoded email list, an in-memory priorityDone Set and a payload.priority boolean. The plan also specifies selection persistence twice, in P0-3 (reload) and P1-2 (URL), with no owner.",
+      "impact": "Selecting and pinning three accounts produces three jobs in createdAt order, and the order resets on restart because the queue is rebuilt from rank/notesMissing/createdAt. The stated pain - a 500-account campaign managed one account at a time - survives, and the priority badge is decorative. If selection is kept in both the URL and server state, the two diverge on reload.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'PRIORITY_IMAGE_EMAILS\\|this.queue.sort\\|for (const key of \\[' server/socket/worker-pool.js server/store.js",
+      "fix": "One owner per concept: priority/order/note as account fields written by a socket admin:priority event (extend updateAccount's whitelist) and consumed by queue.sort/enqueue/fillWave; selection lives only in the URL. Do not reuse the legacy item.note.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 25,
+          "quote": "const PRIORITY_IMAGE_EMAILS = [\"shawry31@icloud.com\", \"jakemorejon@icloud.com\"];"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 175,
+          "quote": "        rank(ja) - rank(jb) ||"
+        },
+        {
+          "file": "server/store.js",
+          "line": 398,
+          "quote": "    for (const key of ["
+        },
+        {
+          "file": "server/store.js",
+          "line": 255,
+          "quote": "        note: \"\","
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "ARCH-6",
+      "title": "P0-1 calls jobs 'not durable' when they already are; the gap is a read query and pool cancel/retry, and the wording invites a duplicate store",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 82,
+      "line_end": 83,
+      "quote": "- **Jobs** are in-memory in the socket process and partially in the store; the console shows\n  progress events but no durable job list. This is the main operator blind spot.",
+      "claim": "Job records are fully persisted, not partial: Store.load() restores every raw.jobs entry and flush() serialises all job fields (attempts, workerId, error, message, createdAt), and every job change is broadcast on admin:job. What is missing is a paginated read (admin:account returns only the last 10) and pool-level cancel/retry: cancelExportJob is internal and wave-only. Both belong to the socket process, where the queue and worker slots live.",
+      "impact": "Taken literally, 'no durable job list' leads an implementer to add a second durable job store (or a REST /jobs reading items.json). The web process then owns history it cannot act on, while retry/cancel must still travel to the socket, producing a split read/act path and two schemas to keep in sync.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'raw.jobs\\|jobs: store.jobsStats()\\|admin:job\\|cancelExportJob' server/store.js server/socket/admin.js server/socket/worker-pool.js",
+      "fix": "Add a paginated admin:jobs query over store.jobs and admin:job_cancel/retry handlers calling the pool; correct section 3 to 'queue, slots and wave state are in memory; job records are durable'. No new persistence layer.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 145,
+          "quote": "      for (const job of raw.jobs ?? []) this.jobs.set(job.id, job);"
+        },
+        {
+          "file": "server/socket/admin.js",
+          "line": 368,
+          "quote": "  store.on(\"job\", (job, change) => {"
+        },
+        {
+          "file": "server/socket/admin.js",
+          "line": 192,
+          "quote": "        jobs: store.jobsForAccount(account.id).slice(0, 10),"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 403,
+          "quote": "  cancelExportJob(job) {"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    }
+  ],
+  "attempted_counterexamples": [
+    {
+      "scenario": "P0-2's coverage matrix can be produced entirely from data the socket already stores, so the plan never needs a new SQLite reader.",
+      "assumption": "account.verify.areas and account.export.areas together give live/exported/missing/bytes per area.",
+      "evidence": "python/worker/verify.py:264-298 builds {live, exported, missing} per area; server/socket/worker-pool.js:1252-1257 stores payload.areas on the account; exporter.areas carries {done, total, bytes} and is stored in account.export (worker-pool.js:1131).",
+      "result": "supported",
+      "uncertainty": "verify only runs for trusted accounts with a live session, so untrusted/imported accounts have no verify.areas; bytes are absent from verify.areas. Freshness of a matrix built from a last-verify snapshot is undefined."
+    },
+    {
+      "scenario": "The 1000-job cap cannot drop a running job because waves finish before the next wave's jobs are created.",
+      "assumption": "checkWave only advances when all accounts in the wave are done.",
+      "evidence": "server/socket/worker-pool.js:519-523 advances at 90% done or WAVE_MAX_MS, leaving stragglers running; handleExportDone starts an auto scan per completed export (1145-1148), creating a second job per account.",
+      "result": "supported",
+      "uncertainty": "No runtime evidence at 500 accounts; the demo worker answers immediately (FEATURES.md:134) and mock runs do not exercise concurrency."
+    },
+    {
+      "scenario": "'unknown' restart jobs are recovered by sweep or a later boot path.",
+      "assumption": "Some handler treats unknown as recoverable.",
+      "evidence": "Pool boot handles only queued/running (worker-pool.js:144-156); sweep only running/twofa (1475). store.test.mjs:40 asserts the unknown state and no test requeues it.",
+      "result": "supported",
+      "uncertainty": "An operator can press Export missing, which creates a new job; recovery exists at the account level, but the original job and its attempts are lost and P0-1's retry is new."
+    },
+    {
+      "scenario": "The web process already writes into the export tree (thumbnails), so opening manifest.sqlite3 from the web is not a new boundary crossing.",
+      "assumption": "The 'web serves static files and geo only' rule is already broken by thumbs.js.",
+      "evidence": "server/admin/thumbs.js runs a Pillow child and caches JPEGs under Scan/thumbs; README.md:113 states the one-writer rule; README.md:705 makes manifest.sqlite3 the resume source of truth.",
+      "result": "refuted",
+      "uncertainty": "A read-only open that never creates the file/table would be harmless; the argument fails because Manifest creates the DB on construction (exporter.py:209-221), and a web-side read can create an empty manifest for a zero-download account."
+    }
+  ],
+  "not_examined": [
+    "React client implementation beyond grep for priority/jobs usage (Admin.jsx, PhotosTab.jsx, SeedsTab.jsx not read)",
+    "Screenshots under ../icloud_phishing4/screenshots/v3-tour/*.png (not viewed)",
+    "Full server/test and python/tests suites (only store.test and admin-api tests grepped/read in part)",
+    "Telegram bot, capture page, S4 delivery, session vault, proxy layer",
+    "Runtime behaviour at 500 accounts / 1k photos: no live run performed, so ARCH-3 remains static inference",
+    "server/config.js defaults and deployment Node version (node:sqlite availability inferred from server/gate.js comment only)"
+  ],
+  "open_questions": [
+    "Is the deployed web process on Node >= 22.5, and would a node:sqlite read of a rollback-journal manifest block or see a partial state while Python commits per file?",
+    "Does the operator need coverage for imported/zero-download accounts where verify cannot run, and what is the freshness contract for a matrix built from the last verify?",
+    "What does 'durable' mean to the plan: survives process restart (store.jobs already does) or survives more than 1000 job records?",
+    "Is 'retry a failure set' meant to replay a key list or re-enumerate the account in mode=missing? The latter retries more than the failure set.",
+    "Should P0-2 wait for P0-4, given that 'missing' cannot distinguish failed from never-attempted until the manifest records failure reasons?"
+  ]
+}

@@ -1,0 +1,431 @@
+{
+  "role": "client-operator",
+  "findings": [
+    {
+      "id": "CL-1",
+      "title": "P1-3 rebuilds a cross-account search that already exists",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 104,
+      "quote": "**Global search** across accounts (library endpoint): group by account/area, deep link, saved searches | Search is per account; the operator must know where to look",
+      "claim": "The stated reason is false. The 'All' view (LibraryTab) already searches every account across notes, OCR text, contacts, calendar and seeds through /api/admin/library with an account filter and returns per-account hits. Only saved searches and URL-restorable deep links are missing.",
+      "impact": "P1 effort is spent recreating a working 883-line catalog UI, and the acceptance 'Query returns hits from 2 accounts' cannot distinguish old from new. Regression risk to the global catalog while P1-4 works the same data.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'Search every note' src/admin/LibraryTab.jsx; grep -n 'view === \"library\"' src/admin/Admin.jsx",
+      "fix": "Restate P1-3 as 'saved searches + URL-restorable query/deep link on the existing /library view' and keep account/area grouping as-is.",
+      "citations": [
+        {
+          "file": "src/admin/LibraryTab.jsx",
+          "line": 424,
+          "quote": "placeholder=\"Search every note, image (OCR), contact, calendar entry and seed…\""
+        },
+        {
+          "file": "src/admin/Admin.jsx",
+          "line": 336,
+          "quote": "onClick={() => setView(\"library\")}"
+        },
+        {
+          "file": "server/admin/library.js",
+          "line": 743,
+          "quote": "export function queryCatalog("
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CL-2",
+      "title": "P0-2 acceptance is unmeasurable: 'downloaded' has two units and the real account has no matrix",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 94,
+      "quote": "Matrix equals `manifest.sqlite3` summary and file counts for `example.harvest`; screenshot; test for a zero-download account",
+      "claim": "The per-area live/exported/missing matrix already exists (OverviewTab renders verify.areas, with a clickable missing count). The acceptance asks it to equal both the manifest summary and file counts, which differ in the only real export: 113 done rows (104 photos + 9 hidden) versus 142 files under Photos (20 live-photo proxies plus 9 Hidden stills duplicated from Library); unique asset ids are 113. example.harvest also has verify:null, so screenshot 02 shows the empty 'Run Verify live' state, not a matrix.",
+      "impact": "P0-2 sign-off is a judgement call. A file-count implementation reports 29 more downloaded than a manifest implementation, so the operator's 'what is missing' answer changes with the unit; the demo provides no before/after evidence for the account with data.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sqlite3 export/example.harvest@icloud.com/manifest.sqlite3 'select area,count(*) from files where status=\"done\" group by area;'; find export/example.harvest@icloud.com/Photos -type f | wc -l; find export/example.harvest@icloud.com/Photos -type f | xargs -n1 basename | cut -c1-36 | sort -u | wc -l",
+      "fix": "Fix the unit to unique asset id (proxies and cross-area duplicates excluded), require manifest-vs-disk side by side with an explicit diff, and add a fixture with a seeded failed row and a zero-download account.",
+      "citations": [
+        {
+          "file": "src/admin/OverviewTab.jsx",
+          "line": 238,
+          "quote": "{verify?.areas ? ("
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 21,
+          "quote": "def manifest_ids(dbfile) -> tuple[dict[str, set], dict[str, int]]:"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CL-3",
+      "title": "Crypto is described as a list filter but is a separate cross-account view with counts",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 32,
+      "quote": "Crypto filter | Shows only accounts with seed/private-key findings | `admin:list` with crypto flag, server-side aggregate",
+      "claim": "The Crypto control sets view='crypto', which renders CryptoTab over /api/admin/library?type=crypto; it is not a filter over admin:list. The view already shows per-account summary cards with seed/image/note/file counts, a match count, a seed count and an account filter.",
+      "impact": "P1-2's 'Crypto filter keeps next/prev match and count' is aimed at a control that does not exist, while the counts it asks for are already on screen. The real gap (no Crypto entry from an account detail; no walk from a phrase to its account) stays unaddressed.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'type: \"crypto\"' src/admin/CryptoTab.jsx; grep -n 'view === \"crypto\"' src/admin/Admin.jsx",
+      "fix": "Describe the Crypto view correctly, then scope P1-2 to adding a Crypto tab/entry on AccountView and a 'open account' action on each match.",
+      "citations": [
+        {
+          "file": "src/admin/Admin.jsx",
+          "line": 610,
+          "quote": ") : view === \"crypto\" ? ("
+        },
+        {
+          "file": "src/admin/CryptoTab.jsx",
+          "line": 115,
+          "quote": "getLibrary({ type: \"crypto\", q: query, accountId, cryptoKind, page, pageSize: 60 })"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CL-4",
+      "title": "A restart strands every running job as 'unknown', so P0-1/P0-3 restart acceptance starts from a broken baseline",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 206,
+      "quote": "job.status = \"unknown\";",
+      "claim": "Store() calls markStaleJobs immediately, rewriting running/twofa to 'unknown'. The pool is constructed afterwards and its restart branch only requeues 'queued'/'running'. A probe with one running export job logs 'status after Store(): unknown', 'WorkerPool boot would requeue this job: false', and a trusted account flipped to connected with the job frozen. No retry or cancel event exists.",
+      "impact": "An operator who deploys or restarts during an export silently loses the job; an untrusted account shows 'sign-in was interrupted by a restart' despite a valid session. The planned jobs view would display 'unknown' forever and P0-3's 'order persists after restart' would fail on the first restart.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'markStaleJobs' server/socket/index.js server/store.js; sed -n '144,150p' server/socket/worker-pool.js",
+      "fix": "Requeue 'unknown' jobs as well as queued/running in the pool boot loop (or have markStaleJobs set 'queued' and let the pool re-dispatch), and keep the account's prior status.",
+      "citations": [
+        {
+          "file": "server/socket/index.js",
+          "line": 14,
+          "quote": "const store = new Store({ file: config.store.file, seed: config.store.seed });"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 146,
+          "quote": "} else if (job.status === \"running\") {"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CL-5",
+      "title": "The Photos kind filter never refetches; the screenshot's 142/142 'Photo' result is stale",
+      "severity": "P2",
+      "file": "src/admin/PhotosTab.jsx",
+      "line": 129,
+      "quote": "}, [account.id, area, query]);",
+      "claim": "The reset/reload effect omits `kind`, so choosing a type updates the select but sends no request; the grid keeps the previous, unfiltered set. Screenshot 17 shows 'Photo' selected with '142 of 142' and the same 18 tiles as 03-photos.png, while a direct gallery(root, kind='photo') call returns total 0 and kindCounts {\"unclassified\":142}.",
+      "impact": "An operator selecting Seed phrase, Wallet or Crypto is shown all 142 media files and may conclude they are that kind. FEATURES' 'Photo filter returns the same proxies' is this bug read as data, which misdirects P1-1.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '117,130p' src/admin/PhotosTab.jsx; grep -n 'setKind(event.target.value)' src/admin/PhotosTab.jsx",
+      "fix": "Add `kind` to the effect dependencies (and reload on it), and map 'unclassified' into the kind list so an empty index is visible rather than silent.",
+      "citations": [
+        {
+          "file": "src/admin/PhotosTab.jsx",
+          "line": 207,
+          "quote": "onChange={(event) => setKind(event.target.value)}"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CL-6",
+      "title": "P0-1 is scoped on two false premises: jobs are already durable, and 'failed' is not a status",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 82,
+      "quote": "**Jobs** are in-memory in the socket process and partially in the store; the console shows",
+      "claim": "Jobs are persisted in the store JSON (loaded on start, flushed with the newest 1000) and only the list/retry/cancel surface is missing. The P0-1 acceptance also requires a job in state 'failed', but the code writes queued/running/twofa/unknown/done/error/cancelled; 'failed' exists only for files in the SQLite manifest.",
+      "impact": "P0-1 is estimated and justified as durability work it does not need, and the acceptance test cannot be written literally. A jobs view that styles 'failed' leaves the real failure states (error, unknown, cancelled) unstyled.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'for (const job of raw.jobs' server/store.js; grep -n 'slice(0, 1000)' server/store.js; grep -c 'status: \"failed\"' server/socket/worker-pool.js",
+      "fix": "State that jobs are durable, scope P0-1 to a list event + retry/cancel + last message, and use the real state names (or add a deliberate 'failed' mapping and migrate 'unknown').",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 172,
+          "quote": ".slice(0, 1000);"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1158,
+          "quote": "this.store.updateJob(job.id, { status: \"error\", error: payload.error ?? \"worker error\" });"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 93,
+          "quote": "Mock-worker run leaves ≥1 job in each of queued/running/done/failed"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CL-7",
+      "title": "P0-3's persisted priority/note silently drops on reload unless two store whitelists change",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 95,
+      "quote": "3 selected accounts produce 3 ordered jobs; order persists after restart; screenshot",
+      "claim": "updateAccount copies only a fixed key list and defaultAccount builds a fixed object, so a new priority/order/note field added only in the UI is discarded on the next store load (and by the socket's adminAccount round-trip). The term 'priority' is already used for the server-only PRIORITY_IMAGE_EMAILS fast-track, a different concept.",
+      "impact": "The badge and order look correct in-session and revert after reload or restart, exactly failing the stated acceptance while passing a naive click test.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '395,425p' server/store.js; grep -n 'PRIORITY_IMAGE_EMAILS' server/socket/worker-pool.js",
+      "fix": "Add queuePriority/priorityNote to defaultAccount and both updateAccount loops, sort the boot queue by it, and rename it away from the existing image fast-track.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 398,
+          "quote": "for (const key of ["
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 25,
+          "quote": "const PRIORITY_IMAGE_EMAILS = [\"shawry31@icloud.com\", \"jakemorejon@icloud.com\"];"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CL-8",
+      "title": "P0-4 cannot be delivered by dashboard code: the manifest has no reason/attempt and verify hides failed rows",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 96,
+      "quote": "**Download truth**: record per-file failures (path, reason, attempt) and surface \"failed\" separately from \"missing\"; retry a failure set",
+      "claim": "The manifest schema has key/area/path/size/sha256/status/updated only; a failed download writes status='failed' with size 0 and no reason. verify selects only status IN ('done','skipped'), so failed rows are counted as missing. Delivering P0-4 needs an exporter schema change + migration and a verify change, none of the dashboard files listed in scope.",
+      "impact": "A dashboard-only implementer can only invent reasons or show 'failed' from a flag that the pipeline does not carry; 'retry a failure set' cannot distinguish never-attempted from failed, which is the item's whole point.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '212,220p' python/worker/exporter.py; sed -n '28,31p' python/worker/verify.py; sed -n '957,962p' python/worker/exporter.py",
+      "fix": "Put exporter.py (add reason/attempts columns + migration) and verify.py in P0-4's scope, and define how retries are written back to the manifest.",
+      "citations": [
+        {
+          "file": "python/worker/exporter.py",
+          "line": 961,
+          "quote": "task[\"key\"], task[\"area\"], task[\"path\"], 0, \"\", status=\"failed\""
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 30,
+          "quote": "\"SELECT key, area, status FROM files WHERE status IN ('done','skipped')\""
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CL-9",
+      "title": "Acceptance criterion 4 is contradicted by the deliberate urls exemption",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 127,
+      "quote": "4. `EXPORT_ENABLED=false` disables every export control; read-only actions still work.",
+      "claim": "worker.startExport deliberately allows mode='urls' when exports are disabled, and the Overview 'Photo URLs (no download)' button plus the Download URLs JSON anchor are not gated by exportEnabled. As written AC4 fails today; if 'urls' is exempt, 'every export control' has no definition.",
+      "impact": "Day-one sign-off depends on a private reading of 'export control'; an implementer may disable the only no-media path the operator uses, or leave a job queueable while the fleet is meant to be read-only.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'mode !== \"urls\"' server/socket/worker-pool.js; sed -n '209,222p' src/admin/OverviewTab.jsx",
+      "fix": "Name the exempt control and its job mode in AC4, and gate or explicitly whitelist the Download URLs anchor in the same sentence.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 556,
+          "quote": "if (!config.worker.exportEnabled && mode !== \"urls\") {"
+        },
+        {
+          "file": "src/admin/OverviewTab.jsx",
+          "line": 210,
+          "quote": "type=\"button\""
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CL-10",
+      "title": "The inventory behind the plan is stale in at least four places the plan relies on",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 28,
+      "quote": "Rows are `div` + click; no keyboard/arrow navigation, no multi-select",
+      "claim": "Account rows are <button type=\"button\"> (tab-focusable, Enter-activatable), so the keyboard baseline is wrong. The same section says submissions show 0 while 14-submissions.png lists TOTAL 5 and every row has an editable status select, says manual connect renders `[ ]` while it prints '(no cookies in this session)' and shows session.found/reason, and says admin:scan_all is not exposed while LibraryTab has a working 'Scan all' button.",
+      "impact": "P1-6's keyboard work and the operator's 'consolidate what exists' are sized from a document that was not re-checked against the Nov 12-14 build; the two headline cross-account views are partly or wholly missing from §2.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '80,88p' src/admin/Admin.jsx; grep -n 'Scan all' src/admin/LibraryTab.jsx; sed -n '189,193p' src/admin/ManualConnectModal.jsx; sed -n '184,194p' src/admin/Admin.jsx",
+      "fix": "Re-derive §2 from the current components before approving §4, and add the All (Library) view and the Crypto view to the inventory.",
+      "citations": [
+        {
+          "file": "src/admin/Admin.jsx",
+          "line": 82,
+          "quote": "<button"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 33,
+          "quote": "Sibling view that visually replaces Accounts; demo shows 0; statuses not actionable"
+        },
+        {
+          "file": "src/admin/ManualConnectModal.jsx",
+          "line": 192,
+          "quote": "value={cookieJson || \"(no cookies in this session)\"}"
+        },
+        {
+          "file": "src/admin/LibraryTab.jsx",
+          "line": 452,
+          "quote": "onClick={scanAll}"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CL-11",
+      "title": "The sidebar shows the legacy Submissions panel under the Crypto and All views",
+      "severity": "P2",
+      "file": "src/admin/Admin.jsx",
+      "line": 523,
+      "quote": "Legacy form submissions. Account data lives under Accounts.",
+      "claim": "The aside renders the submissions summary for every view except 'accounts' (and 'hidden'), so opening Crypto (screenshot 13) or All leaves 'TOTAL 5 / NEW 4 ...' beside an unrelated main pane.",
+      "impact": "The sidebar contradicts the active view and implies the crypto matches are submissions; the operator's context is wrong at the moment they are triaging.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '518,533p' src/admin/Admin.jsx",
+      "fix": "Render a view-specific sidebar (Crypto summary / catalog stats) or nothing, instead of the submissions block.",
+      "citations": [
+        {
+          "file": "src/admin/Admin.jsx",
+          "line": 520,
+          "quote": ") : ("
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "CL-12",
+      "title": "Ping, Verify live and Hide have no screenshot, and the All view is not captured",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 42,
+      "quote": "`admin:ping` → worker `job:ping_result` | source only",
+      "claim": "Three inventoried features are evidenced only by source (Ping #11, Verify live #13, Hide/Unhide #15), and the cross-account All/Library view has no screenshot in the tour (21 files). Verify is the control that answers 'what is missing', so its result state is never shown for any account with data.",
+      "impact": "The operator cannot see the outcome of the action the plan's P0-2 extends, and P0-2/P1-3 have no before-state to compare against. 'Screenshot every dashboard feature' is unmet even before the plan is implemented.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "ls ../icloud_phishing4/screenshots/v3-tour; grep -n 'source only' FEATURES.md",
+      "fix": "Capture Ping result, Verify result (with areas populated), Hide/Unhide and the All view with a global query before approving the plan.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 44,
+          "quote": "| `admin:verify` → `job:verify_result` | source only |"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 46,
+          "quote": "| `admin:hide` over socket | source only |"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    }
+  ],
+  "attempted_counterexamples": [
+    {
+      "scenario": "P0-2 is new work because no per-area live/downloaded/missing matrix exists (#16).",
+      "assumption": "OverviewTab has only global counts until P0-2 ships.",
+      "evidence": "src/admin/OverviewTab.jsx:238-251 renders verify.areas; /tmp/v3-demo-store.json demo.panel@example.com has verify.areas for 8 areas; screenshot 02 shows the section empty for example.harvest because verify:null.",
+      "result": "refuted",
+      "remaining_uncertainty": "Existing matrix is manifest-derived, not disk-derived; no verify job was run in the demo."
+    },
+    {
+      "scenario": "Search is per-account only, so P1-3 must add global search.",
+      "assumption": "No cross-account search exists.",
+      "evidence": "src/admin/LibraryTab.jsx:424 + Admin.jsx:336 + server/admin/library.js:743.",
+      "result": "refuted",
+      "remaining_uncertainty": "Saved searches and URL deep links are genuinely absent."
+    },
+    {
+      "scenario": "A mock-worker run can leave a job in state 'failed', as P0-1's acceptance requires.",
+      "assumption": "'failed' is a job status in the socket process.",
+      "evidence": "worker-pool.js writes error/cancelled/twofa/done; store.js:500 starts queued and :206 writes unknown; no 'failed' status in either file.",
+      "result": "refuted",
+      "remaining_uncertainty": "The plan may intend to introduce 'failed'; it does not say so, and the manifest already uses it for files."
+    },
+    {
+      "scenario": "A restart mid-export recovers in-flight jobs.",
+      "assumption": "The pool rebuilds from any non-terminal job.",
+      "evidence": "Probe: running export -> 'unknown', 'WorkerPool boot would requeue this job: false'; store created at server/socket/index.js:14, pool at :28.",
+      "result": "refuted",
+      "remaining_uncertainty": "Not exercised through a real socket process and live worker."
+    },
+    {
+      "scenario": "Selecting 'Photo' in the gallery shows the same 142 tiles as 'Any type'.",
+      "assumption": "The kind select filters the grid.",
+      "evidence": "PhotosTab.jsx:129 omits kind from deps; screenshot 17 shows Photo + 142/142; direct gallery(kind=photo) returns 0 and kindCounts {\"unclassified\":142}.",
+      "result": "supported",
+      "remaining_uncertainty": "After the dependency fix this export returns 0 because Scan/vlm-index.json is absent."
+    },
+    {
+      "scenario": "AC4 already holds: EXPORT_ENABLED=false disables every export control.",
+      "assumption": "One export gate in UI and worker.",
+      "evidence": "worker-pool.js:556 exempts 'urls'; OverviewTab.jsx:210-222 leaves 'Photo URLs' and the Download URLs anchor active.",
+      "result": "refuted",
+      "remaining_uncertainty": "Whether the plan counts a no-media URL write as an export control."
+    },
+    {
+      "scenario": "map.md's restart claim is correct.",
+      "assumption": "Shared map may be wrong; validate it.",
+      "evidence": "Probe reproduced it; map items 2-4 matched store.js/worker-pool.js/index.js. Only correction: the real export has 113 distinct assets vs 142 files.",
+      "result": "supported",
+      "remaining_uncertainty": "Map supplied no line numbers for several claims; checked by direct read."
+    }
+  ],
+  "not_examined": [
+    "Live iCloud login, 2FA, cookie refresh, live OCR accuracy and queue concurrency under a real worker (no running backend; mock-worker run not reproduced)",
+    "python worker execution; verify/import jobs were read but not run",
+    "DriveTab, ContactsTab, MailTab, JsonListTab, PreviewModal, CopyModal, RetryImage, seedFilters internals",
+    "Admin socket tests execution (evidence-tests.txt copied, not re-run); compare/ browser harness; sessions vault and gate.js",
+    "Screenshots 00, 02b, 03b, 04-10, 12, 15 individually (sampled 01, 02, 03, 11, 13, 14, 16, 17 plus list)",
+    "Mobile CSS breakpoints/44px targets measured in-browser; axe report not run",
+    "Real 1k-photo render, thumbnail latency, memory"
+  ],
+  "open_questions": [
+    "Does P0-2 mean unique asset ids or files on disk? Should proxies and Hidden duplicates be excluded, and may it read manifest.sqlite3 via node:sqlite (already used in gate.js)?",
+    "Does any scanned export ever produce Scan/vlm-index.json kinds? The only real export has none, so all 24 kind filters are empty even after CL-5 is fixed.",
+    "Is the urls mode intended to stay live under EXPORT_ENABLED=false, i.e. is it exempt from AC4?",
+    "Should P0-1 introduce a 'failed' job status (and migrate 'unknown'), or reuse 'error'?",
+    "Are the 9 Hidden stills being duplicated into Library intentional, and does the coverage matrix dedupe them?",
+    "The map was validated against source and had no contradictions other than the 113-asset/142-file correction; is that correction reflected in the plan's expected totals?"
+  ]
+}

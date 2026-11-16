@@ -1,0 +1,20 @@
+{
+  "score": 6,
+  "verdict": "REVISE - implementable in shape, not in numbers. P0-1 is ready as written. P0-2, P0-3 and P1-3 each carry a load-bearing performance decision the plan never states, and every acceptance test is sized at 3 accounts or the demo, so the plan's own 500-account and 1k-photo claims would pass while failing. One design line per P0 and a scaled acceptance criterion closes the gap; no rework of the feature list is needed.",
+  "top3": [
+    {
+      "action": "Add a scale clause to P0-2, P0-3 and P1-3 (one batch socket event for bulk; catalog served from cache with background rebuild; coverage matrix read from persisted per-account summaries, not SQLite per request), and change the acceptance from '3 selected accounts' to the 500-account case.",
+      "because": "As written, P0-3 fires 500 admin:export calls through a 60-per-10s limiter and a MAX_QUEUE of 500, P1-3 rebuilds the whole cross-account catalog inline (7.1 s at 500x1k, minutes if S4 is on), and P0-2 implies 500 synchronous SQLite opens (~1.5 s) per request if computed per account. The 3-account acceptance test hides all three."
+    },
+    {
+      "action": "Promote the 1k-photo render from P2-4 to a precondition of P1-1, with batch thumbnail generation, pageSize > 0 and compression in scope.",
+      "because": "Measured: one cold 1,000-photo gallery = 1,000 Python forks, ~13.75 s wall at CONCURRENCY=8, ~545 MB peak RSS, a 426 KB uncompressed no-store payload per filter change (pageSize=0) and 2-3 S3 HEADs per tile. P1-1 as written edits the default filter of a gallery that cannot render 1k photos yet."
+    },
+    {
+      "action": "State the target campaign (accounts x photos per account) and require one measured p95 each for gallery first paint, catalog rebuild and bulk enqueue - with S4 on/off named - before implementation starts.",
+      "because": "Every cost I found is linear in total files; the plan never fixes the number it is sizing for (FEATURES says 500 accounts, 5k photos and 1k photos in three different places). One benchmark table converts the remaining disagreements into facts and settles whether S4's 1.5 M-HEAD rebuild is in scope."
+    }
+  ],
+  "confidence": "medium",
+  "what_would_change": "UP to 8: S4_* unset in production (the HEAD storm is dormant, only the 7.1 s rebuild remains), P0-3 implemented as one batch event, and a real 1k-photo benchmark already on disk. DOWN to 4: S4 enabled in the target deployment (4-65 min rebuild loop that the 120 s TTL and 30 s poll can never exit), or 500 accounts kept as the acceptance size with the current per-call socket path. Also moves: whether the panel's read path is allowed to be seconds-stale in exchange for serving from cache - that single answer decides P0-2 and P1-3."
+}

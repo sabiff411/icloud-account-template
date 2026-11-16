@@ -1,0 +1,12 @@
+{
+  "score": 5,
+  "verdict": "REVISE",
+  "top3": [
+    "Make the job state machine explicit in the plan: requeue 'unknown' on boot, exempt non-terminal jobs from the 1000-job trim and release slots when a record is gone, define error/unknown/cancelled -> 'failed', and add restart plus >1000-job acceptance tests.",
+    "Define the coverage matrix's state source: carry a success/unavailable flag from enumerate_live, compute missing as live minus done+skipped+failed, render unknown and last-verified per area, and make P0-2's test inject a failed album read.",
+    "Specify the bulk/scheduling contract: one server-side bulk command returning queued/rejected ids at MAX_QUEUE=500, persisted priority read by the boot sort, and a 500-account acceptance with a partly full queue."
+  ],
+  "confidence": "high",
+  "what_would_change": "Score rises if the acceptance criteria above include restart, >1000 jobs, a failed live read and a 500-account bulk reject case; falls if P0 is accepted on the current mock-worker screenshots alone.",
+  "basis": "source read; no live iCloud, no screenshots, no runtime"
+}

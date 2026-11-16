@@ -1,0 +1,45 @@
+# Fleet evidence — 20261115T032914Z (UTC)
+
+## Prometheus targets
+10.20.0.21:9100 up 
+10.20.0.41:9100 up 
+10.20.0.45:9100 up 
+10.20.0.10:9100 up 
+10.20.0.22:9100 up 
+host.docker.internal:9100 up 
+10.20.0.42:9100 up 
+10.20.0.43:9100 up 
+10.20.0.44:9100 up 
+
+## service units
+82.221.139.233 session-1 icloud-web=up icloud-socket=up prometheus-node-exporter=up nginx=up 
+nfs_used=6.2G avail=106G
+82.221.141.4 download-1 icloud-worker=up prometheus-node-exporter=up 
+nfs_used=6.2G avail=106G
+82.221.141.30 download-2 icloud-worker=up prometheus-node-exporter=up 
+nfs_used=6.2G avail=106G
+82.221.141.135 db-mon-1 prometheus-node-exporter=up 
+nfs_used=6.2G avail=106G
+82.221.141.157 ocr-1 icloud-worker=up prometheus-node-exporter=up 
+nfs_used=6.2G avail=106G
+82.221.141.162 ocr-2 icloud-worker=up prometheus-node-exporter=up 
+nfs_used=6.2G avail=106G
+82.221.141.170 ocr-3 icloud-worker=up prometheus-node-exporter=up 
+nfs_used=6.2G avail=106G
+82.221.141.190 ocr-4 icloud-worker=up prometheus-node-exporter=up 
+nfs_used=6.2G avail=106G
+82.221.141.208 ocr-5 icloud-worker=up prometheus-node-exporter=up 
+nfs_used=6.2G avail=106G
+
+## gate provider
+4100=000
+GATE_MODE=http
+GATE_REDEEM_URL=http://127.0.0.1:4100/api/redeem
+GATE_STATUS_URL=http://127.0.0.1:4100/api/status
+
+## admin socket workers
+{"workers":{"workers":7,"auth":25,"export":13,"queued":0},"accounts":1}
+
+## repo versions
+node v24.21.0 pkg 1.0.0
+

@@ -1,0 +1,47 @@
+{
+  "role": "correctness",
+  "attempted_counterexamples": [
+    {
+      "scenario": "Add a `GET /healthz` branch to the plain http.createServer callback and assume it can coexist with Engine.IO without touching /socket.io.",
+      "assumption": "plan.md:74-78 — the plain handler sees every request, so a branch there serves /healthz and 'anything else' keeps the existing text for Engine.IO paths.",
+      "evidence": "node_modules/engine.io/build/server.js:674-686 (attach caches and removes the existing 'request' listeners, then re-dispatches only non-matching paths to them); local run of the plan's exact handler shape returned [\"/healthz\",200,\"{\\\"ok\\\":true,\\\"workers\\\":7}\"],[\"/socket.io/?EIO=4&transport=polling\",200,\"0{\\\"sid\\\"...\"], handler order [\"plain:/healthz\"] — the plain handler was never called for /socket.io.",
+      "result": "supported",
+      "observed": "The /healthz branch works and Engine.IO polling is unaffected; the plain handler is in fact only ever reached for non-/socket.io paths, which also means the existing 'socket.io server' text is already dead code for Engine.IO.",
+      "uncertainty": "Verified on the installed socket.io 4.8.4 / engine.io build only; an upgrade could change the listener-replay behaviour."
+    },
+    {
+      "scenario": "Join the 9 fleet nodes to Prometheus target health by private IP, on a fleet the evidence says is 9/9 up.",
+      "assumption": "plan.md:104-105 + deploy/FLEET.md:26 ('node_exporter on all 9') — every node has a target whose identity is its private IP, so a healthy fleet yields 9 green rows.",
+      "evidence": "evidence-fleet.txt:9 'host.docker.internal:9100 up' is the only target for db-mon-1 (deploy/FLEET.md:12 says db-mon-1 is 10.20.0.30); the other eight targets are rendered as '<private-ip>:9100'. Nothing in the plan strips ':9100' before matching.",
+      "result": "refuted",
+      "observed": "db-mon-1 (10.20.0.30) has no target whose name is an IP, so the plan's 'absent -> red \"no node_exporter target\"' fires on a fully healthy fleet. If the comparison is literal equality against '10.20.0.41:9100', all 9 rows go red.",
+      "uncertainty": "The exact label used is /api/v1/targets' labels.instance (inferred from the evidence rendering, not read from the live API); if the join instead uses a scrape-config label or stripped instance, only the host.docker.internal case survives."
+    },
+    {
+      "scenario": "Bound a hung-NFS statfs with a 1200 ms race so that GET /api/admin/health has bounded latency and the page cannot hang or amplify load.",
+      "assumption": "plan.md:62,67,69,156-157 — 'the request thread may stay until the mount recovers' implies one stuck thread and a request that returns red, i.e. contained damage.",
+      "evidence": "4 blocking fs.promises calls (FIFO reads) starved an unrelated fs.promises.stat for >2 s on Node v24.21.0 with UV_THREADPOOL_SIZE unset (default 4): output 'STAT-BLOCKED-2s at 2305'. server/admin/api.js:5 imports node:fs/promises and calls await fs.stat/fs.readFile/fs.open throughout (e.g. api.js:160, api.js:730).",
+      "result": "refuted",
+      "observed": "Node has no per-request thread: a timed-out statfs keeps one of the 4 shared libuv threads until the mount recovers. Four statfs that outlive their 1200 ms budget (4 concurrent cold-cache tabs, or 4 refreshes at the 5 s cache interval) stall every fs operation in the web process — account list, image streaming, catalog — while the health probes (loopback IPs, no DNS) keep answering green.",
+      "uncertainty": "The FIFO test proves threadpool sharing, not that statfs itself blocks; the blocking behaviour is the plan's own claim (plan.md:156) and untested against the real hard mount."
+    },
+    {
+      "scenario": "Report S4 health as 'configured + heartbeat < 10 min' from the web process on session-1.",
+      "assumption": "plan.md:47 — an S4 run heartbeat of some kind is readable by the panel, so a working mirror can reach green.",
+      "evidence": "grep of server/ for heartbeat/lastRun/s4 status returns nothing; the only S4 artifact is a per-account marker python/s4_upload.py:138 (account / 'Scan' / 's4-complete.json'); FLEET.md:34-36 puts S4 config on session/download nodes, and FLEET.md:29 lists no S4 key for session-1.",
+      "result": "refuted",
+      "observed": "No producer of a <10 min S4 heartbeat exists. With S4 configured the check is permanently yellow (stale heartbeat), and with S4 unconfigured it is yellow by the plan's own rule — so 'S4 yellow' in acceptance step 3 (plan.md:144) is guaranteed regardless of mirror health.",
+      "uncertainty": "A cron on a download node could write a marker outside the repo; I did not inspect the live hosts."
+    },
+    {
+      "scenario": "Place GET /health immediately after router.use(requireSession) in server/admin/api.js so unauthenticated callers get 401 and errors keep the JSON shape.",
+      "assumption": "map.md:11 and plan.md:88-98 — placement after line 217 and before the error handler at 743 is required for both behaviours.",
+      "evidence": "server/admin/api.js:177 requireSession returns res.status(401).json({ok:false,error:'unauthorized'}); :217 applies it; :743 router.use((error,_req,res,_next)=>{...res.status(500).json(...)}). api.js:37-39 asyncRoute forwards rejections to next.",
+      "result": "supported",
+      "observed": "Both behaviours hold at that placement: 401 shape for anon, 500 JSON for a rejection. A route registered after 743 would fall through to Express's default HTML error handler.",
+      "uncertainty": "None material; Express 5 middleware ordering is as documented."
+    }
+  ],
+  "verdict": "REVISE",
+  "reason": "Architecture and route placement are sound; the /healthz branch was verified against engine.io. But the node join is wrong for the fleet it must describe (db-mon-1 is host.docker.internal), so a healthy fleet shows a red node; statfs is not bounded by a race, it leaks one of four libuv threads per refresh and can freeze the panel; S4 and Redis have no data source/credential path, so both sit yellow forever."
+}

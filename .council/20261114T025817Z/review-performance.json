@@ -1,0 +1,567 @@
+{
+  "role": "performance",
+  "scope": "Cost of FEATURES.md §4 (P0-1..P0-4, P1-1..P1-7, P2-4) against the current code in icloud_phishing3. Every millisecond/byte below was measured on this checkout unless the claim says extrapolated; source quotes copied from the file at the cited line.",
+  "findings": [
+    {
+      "id": "PERF-1",
+      "title": "Cross-account /library rebuilds the whole catalog synchronously on the request path, and a 30 s client poll keeps re-triggering it",
+      "severity": "P1",
+      "file": "server/admin/library.js",
+      "line": 717,
+      "line_end": 721,
+      "quote": "if (!force && cache.data && cache.key === key && now - cache.at < TTL_MS) {",
+      "claim": "buildCatalog is called inline by the /library handler (api.js:407) and only skips a rebuild when the cache is under 120 s old. Measured on this machine: 57 ms to build one account with 1,000 photos (1,000 OCR files, 1,000 thumbs; catalog JSON 940,298 bytes), i.e. 500 accounts at CONCURRENCY=4 = ~7.1 s per rebuild with S4 off, linear in total files, with no incremental path and no resumability. LibraryTab polls /library every 30 s (LibraryTab.jsx:264), so every 4th poll of an idle tab pays a full 7 s rebuild on the web process, and every poll during a scan forces one (`refresh: '1'`, capped at once per 60 s per client, LibraryTab.jsx:280).",
+      "impact": "An operator leaves the Library tab open and roughly every two minutes the next poll blocks for seconds (7 s at 500 accounts; minutes with S4 on, PERF-2), serving stale counts and saturating the export tree's FS while other /api/admin requests queue behind it. P1-3 (global search) rides this same call, so its cost is the rebuild, not the query (query is 1 ms/165 rows, 328 ms/500k rows, PERF-11).",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'TTL_MS\\|buildCatalog' server/admin/library.js server/admin/api.js && grep -n 'setInterval' src/admin/LibraryTab.jsx",
+      "fix": "Serve the last good catalog and rebuild off the request path (invalidate -> background build, swap on resolve), raise TTL_MS above the measured rebuild time, and persist the catalog to a file the scanner updates so a restart does not pay a cold build.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 104,
+          "quote": "| P1-3 | **Global search** across accounts (library endpoint): group by account/area, deep link, saved searches | Search is per account; the operator must know where to look | Query returns hits from 2 accounts; deep link opens the file; screenshot |"
+        },
+        {
+          "file": "server/admin/library.js",
+          "line": 31,
+          "quote": "const TTL_MS = 120_000;"
+        },
+        {
+          "file": "server/admin/api.js",
+          "line": 407,
+          "quote": "const catalog = await buildCatalog({"
+        },
+        {
+          "file": "src/admin/LibraryTab.jsx",
+          "line": 264,
+          "quote": "const timer = setInterval(() => setTick((value) => value + 1), 30_000);"
+        },
+        {
+          "file": "server/admin/library.js",
+          "line": 35,
+          "quote": "const CONCURRENCY = 4;"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "PERF-2",
+      "title": "With S4 configured, one catalog rebuild issues 3 S3 HEADs per photo: 1.5 M HEADs and 4-65 minutes per 500-account rebuild",
+      "severity": "P1",
+      "file": "server/admin/library.js",
+      "line": 398,
+      "line_end": 403,
+      "quote": "...(await s4Links(account.email, [",
+      "claim": "buildAccount calls s4Links per photo with src+thumbSrc+previewSrc(HEIC)+playSrc(video), and each entry is a serial-ish HEAD through a global 24-slot limiter (s4.js:90). Measured against a local S4 stub: 3,000 HEADs and 1,956 ms for one 1,000-HEIC account at 0 ms RTT, 31,422 ms at 30 ms RTT. Extrapolated to 500 accounts at CONCURRENCY=4: 1,500,000 HEADs, ~244 s per rebuild at 0 ms RTT, ~3,928 s (65 min) at 30 ms RTT. A missed key is cached for only 30 s (s4.js:118), so an unmirrored corpus re-issues every HEAD on every rebuild, and the 120 s TTL (PERF-1) means the rebuild never completes before the next trigger.",
+      "impact": "In an S4-mirrored deployment the Library tab never gets a cached answer again: each poll joins an in-flight build that outlives the TTL, so /library returns after 4-65 min or times out, and 1.5 M HEADs hit the bucket per cycle. With the documented .env.example (no S4_* keys) s4Enabled is false and this is dormant - the same rebuild is 7.1 s (PERF-1).",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'S4_\\|s4Enabled\\|LIMIT\\|MISS_MS' server/admin/s4.js .env.example",
+      "fix": "Do not probe S4 per item during a build: list the bucket once per prefix (or trust a persisted mirror manifest), and cache the result with the catalog instead of 5 min/30 s. At minimum, probe only `src` for the paged rows, not every file of the corpus.",
+      "citations": [
+        {
+          "file": "server/admin/s4.js",
+          "line": 122,
+          "quote": "const response = await fetch(s4url(key, 300, \"HEAD\"), {"
+        },
+        {
+          "file": "server/admin/s4.js",
+          "line": 90,
+          "quote": "const LIMIT = 24;"
+        },
+        {
+          "file": "server/admin/s4.js",
+          "line": 118,
+          "quote": "if (hit && Date.now() - hit.at < (hit.ok ? HIT_MS : MISS_MS)) return hit.ok;"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "PERF-3",
+      "title": "Gallery performs per-item S3 HEADs inside the request: 2-3 per photo, ~2,000 for a 1k page",
+      "severity": "P2",
+      "file": "server/admin/export.js",
+      "line": 373,
+      "line_end": 373,
+      "quote": "...(await s4Links(path.basename(root), item.path, cached, await previewFor(root, item.path), await playFor(root, item.path))),",
+      "claim": "Every gallery row calls s4Links, which issues one HEAD per existing artefact (src + thumb, plus preview for HEIC, plus play for video). Measured on the real 142-item export against a local S4 stub: exactly 284 HEADs (2.00/item for PNG/JPG), 163 ms at 0 ms RTT and 493 ms at 30 ms RTT for one gallery response, with all misses re-issued after 30 s. At 1,000 HEIC photos that is ~3,000 HEADs = ~2.5 s added to first paint at 30 ms RTT; if the bucket is unreachable each HEAD costs the 4 s AbortSignal timeout, i.e. 3,000/24 x 4 s = 500 s.",
+      "impact": "With S4 enabled, the Photos tab's first paint at 1k photos waits on thousands of serialised HEADs before the JSON is even sent; a dead bucket turns the tab into a multi-minute hang rather than a fallback to local files.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 's4Links\\|s4exists' server/admin/export.js server/admin/s4.js",
+      "fix": "Do not sign/probe URLs in the listing. Emit deterministic S4 URLs (existing object or 404 is the browser's problem) or probe only the page's `src` on demand via a separate /s4 route; keep the 24-slot limiter off the render path.",
+      "citations": [
+        {
+          "file": "server/admin/export.js",
+          "line": 199,
+          "quote": "async function s4Links(email, rel, thumb, preview, play) {"
+        },
+        {
+          "file": "server/admin/s4.js",
+          "line": 124,
+          "quote": "signal: AbortSignal.timeout(4_000),"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "PERF-4",
+      "title": "Photos tab asks for pageSize=0 (whole library), and the response is 426 B/item with no-store and no compression",
+      "severity": "P2",
+      "file": "src/admin/PhotosTab.jsx",
+      "line": 33,
+      "line_end": 33,
+      "quote": "const PAGE_SIZE = 0; // 0 = all images in one response, no pages, no infinite scroll",
+      "claim": "The client always requests the whole area in one response, and the server honours it (`everything` -> slice = all, export.js:350-357) after doing per-item fs.stat work for every row. Measured: 142 items = 60,461 bytes (426 B/item), 6.8 ms warm / 9.5 ms cold of server work; 1,000 items = ~426 KB, ~35-45 ms of stats. Every response carries `cache-control: no-store` (api.js:376), and there is no compression middleware in server/app.js and no nginx gzip config in the repo, so each area switch, filter keystroke (250 ms debounce) and 30 s export tick re-transfers the full payload.",
+      "impact": "At 1k photos the operator pays ~426 KB per filter change over the wire (0.7 s on a 5 Mbit link) plus a 1,000-tile React render; at 5k - the size FEATURES itself names - it is ~2.1 MB per keystroke pause.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'PAGE_SIZE\\|pageSize' src/admin/PhotosTab.jsx && grep -rn 'compression\\|gzip' server/app.js package.json",
+      "fix": "Set PAGE_SIZE to 120-200 and use the existing page/pages response (the server already paginates), send a slim item (drop src/previewSrc/playSrc from the list), and add `compression()` or a per-account ETag with a short max-age.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 117,
+          "quote": "| P2-4 | Real 1k-photo render test: p95 thumb latency, lazy-load budget, memory | Demo has not exercised the gallery at scale |"
+        },
+        {
+          "file": "server/admin/export.js",
+          "line": 354,
+          "quote": "const size = everything ? Math.max(all.length, 1) : Math.min(requestedSize, 500);"
+        },
+        {
+          "file": "server/admin/api.js",
+          "line": 376,
+          "quote": "res.setHeader(\"cache-control\", \"no-store\");"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "PERF-5",
+      "title": "Thumbnails spawn one Python process per tile, awaited on the HTTP request: 1,000 cold thumbs = 1,000 spawns, ~14 s wall, ~545 MB peak",
+      "severity": "P1",
+      "file": "server/admin/thumbs.js",
+      "line": 66,
+      "line_end": 79,
+      "quote": "const child = spawn(PYTHON, [SCRIPT, source, target, String(size)], {",
+      "claim": "ensureThumb is awaited inside GET /accounts/:id/thumb (api.js:566) and each miss forks a Python interpreter with Pillow (thumb.py imports PIL per run). Measured: 62 ms and 54 MB RSS-equivalent for a 1.8 MB JPEG, 110 ms and 68,268 kB peak RSS for a 6.7 MB PNG. With THUMB_CONCURRENCY=8 (thumbs.js:24) a cold 1,000-photo library costs 1,000 process spawns, ~1000 x 0.08 s = 80 s of CPU and ~10-14 s wall to fill the grid, with ~545 MB of transient RSS and a /thumb request blocked for each tile's decode.",
+      "impact": "First visit to a freshly exported 1k library: tiles fill over 10-14 s, 8 python processes at 68 MB each sit on the host alongside the 16-slot export fleet, and every /thumb that misses holds an HTTP connection for the decode. This is the single largest unmeasured first-load cost the plan defers to P2-4.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '24p;50,79p' server/admin/thumbs.js && /usr/bin/time -v python3 server/admin/thumb.py export/example.harvest@icloud.com/Photos/Library/053270E2-871E-4C36-AC48-DF7CB0EC31A7_original_IMG_2071.PNG /tmp/opencode/t.jpg 512",
+      "fix": "Generate thumbs in the existing scan pass (batch, one interpreter for N files) or with a long-lived worker pool; on miss, return 202 + the original file so the tile is not blocked on a fork.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 117,
+          "quote": "| P2-4 | Real 1k-photo render test: p95 thumb latency, lazy-load budget, memory | Demo has not exercised the gallery at scale |"
+        },
+        {
+          "file": "server/admin/api.js",
+          "line": 566,
+          "quote": "const thumb = await ensureThumb(found.root, rel);"
+        },
+        {
+          "file": "server/admin/thumbs.js",
+          "line": 24,
+          "quote": "const CONCURRENCY = Math.max(1, Number(process.env.THUMB_CONCURRENCY) || 8);"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "PERF-6",
+      "title": "P0-3 bulk action over 500 accounts collides with the 60-per-10 s socket rate limit and MAX_QUEUE=500",
+      "severity": "P1",
+      "file": "server/socket/admin.js",
+      "line": 69,
+      "line_end": 79,
+      "quote": "function guard(socket, event, ack, limit = 60) {",
+      "claim": "The per-socket limiter allows 60 admin:export calls per 10 s window (admin.js:74). A client that loops P0-3's selection over 500 accounts needs >= 8 windows, i.e. >= 84 s, and the 61st call inside the first window is acked `{ok:false,error:'rate limited'}` - 440 of 500 calls fail if fired in parallel. Server-side, `startExport` throws the moment `this.queue.length >= 500` (worker-pool.js:559-561, config.js:118), and only 16 export jobs can be running (MAX_EXPORT_JOBS=16), so a 500-account bulk queue with nothing dispatching rejects the last request.",
+      "impact": "Accepted as written ('3 selected accounts produce 3 ordered jobs'), the bulk feature silently queues part of a 500-account selection and reports a rate-limit error for the rest; the operator sees 'queued 60, failed 440' and must retry in waves.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'limit = 60\\|windowMs' server/socket/admin.js server/socket/rate-limit.js && grep -n 'maxQueue' server/config.js server/socket/worker-pool.js",
+      "fix": "Add one `admin:exportMany` handler (own limit, e.g. 1/10 s) that loops ids server-side, returns a per-id result, and check/raise MAX_QUEUE for the intended campaign size; make the client send one call, not N.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 95,
+          "quote": "| P0-3 | **Bulk queue + priority**: checkbox selection, export/recheck/scan selected, pin/reorder, priority badge, per-account note; state survives reload | 500-account campaign is one click per account today | 3 selected accounts produce 3 ordered jobs; order persists after restart; screenshot |"
+        },
+        {
+          "file": "server/socket/admin.js",
+          "line": 74,
+          "quote": "if (!allow(socket, event, { limit, windowMs: 10_000 })) {"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 559,
+          "quote": "if (this.queue.length >= config.worker.maxQueue) {"
+        },
+        {
+          "file": "server/config.js",
+          "line": 118,
+          "quote": "maxQueue: int(process.env.MAX_QUEUE, 500),"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "PERF-7",
+      "title": "pump() recounts running exports inside the queue loop: O(queue x jobs) per call, 2-6 ms each, ~1 s per 500-account enqueue storm",
+      "severity": "P2",
+      "file": "server/socket/worker-pool.js",
+      "line": 784,
+      "line_end": 787,
+      "quote": "const running = [...this.store.jobs.values()].filter(",
+      "claim": "For every queued export/import entry the pump rebuilds an array of all jobs to count the running ones, so one pass over the queue costs queue_length x jobs_map_size. Measured with 984 queued exports and 1,000 jobs: 984,000 filter iterations, 6 ms on the first call and 2.14 ms steady state per pump. pump() runs on every enqueue and every release (worker-pool.js:751, 890), so queueing 500 accounts adds ~500 x ~0.5-1 ms of synchronous work, and pump also calls sweep() (a full 1,000-job scan) first.",
+      "impact": "A 500-account bulk queue blocks the socket event loop for roughly a second across the enqueues - the same loop that broadcasts admin:account and answers every dashboard ack, so the panel stutters exactly when the operator bulk-queues.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '764,805p' server/socket/worker-pool.js",
+      "fix": "Count running exports once before the for-loop (and once before sweep), and keep a running counter maintained on dispatch/release instead of recomputing from the map.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 787,
+          "quote": "if (running >= config.worker.maxExportJobs) continue;"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 766,
+          "quote": "this.sweep(false);"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "PERF-8",
+      "title": "Every store mutation rewrites the entire store file synchronously: 3.1 ms and 1.68 MB per flush at 500 accounts + 1,000 jobs",
+      "severity": "P2",
+      "file": "server/store.js",
+      "line": 175,
+      "line_end": 188,
+      "quote": "fs.writeFileSync(",
+      "claim": "scheduleSave() coalesces to one write per 120 ms, and each flush JSON.stringifies and writeFileSyncs items+accounts+jobs in full. Measured with 500 synthetic accounts (real field shape and sizes) and 1,000 jobs: 3.1 ms per flush and a 1,684,171-byte file. During parallel exports the account updates arrive up to 16/s (one per exporting worker, exporter.py progress throttle 1.0 s), i.e. the 8 writes/s ceiling = ~25 ms/s of synchronous stringify+write (~13 MB/s of disk) on the socket event loop, growing linearly with account count.",
+      "impact": "At 500 accounts the dashboard's own data source costs ~2.5% of the socket loop continuously while exporting; at 5,000 accounts the same code writes ~17 MB eight times a second and the store file becomes the write-amplification tail of the whole panel.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'scheduleSave\\|writeFileSync\\|debounceMs' server/store.js",
+      "fix": "Persist per-account files (or append-only journal) and flush only dirty records; keep the full rewrite on a longer cadence (e.g. 5 s) or on shutdown.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 170,
+          "quote": "const jobs = [...this.jobs.values()]"
+        },
+        {
+          "file": "server/store.js",
+          "line": 173,
+          "quote": "this.jobs = new Map(jobs.map((job) => [job.id, job]));"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "PERF-9",
+      "title": "admin:account pushes the full account object (945 B median, 3.3 KB max) and the client maps a 1,000-row array on each event",
+      "severity": "P2",
+      "file": "server/socket/admin.js",
+      "line": 361,
+      "line_end": 365,
+      "quote": "nsp.emit(\"admin:account\", {",
+      "claim": "Every store 'account' mutation - and each exporting worker produces one per second - broadcasts the whole account (adminAccount returns `{...account}`, store.js:482, including password, sessionDir, identity, counts, export.areas) to every admin socket. Measured event payload: 1,617 bytes including stats; accounts are 945 B median, 3,296 B max. The client replaces the row by `.map()` over the entire account array (up to accountPageSize 1000, useAdminSocket.js:26/204) and re-renders the list. 16 exporting workers = 16 events/s = 16 full-list reconciliations/s of up to 1,000 rows.",
+      "impact": "While exports run, the accounts list repaints ~16x/s over up to 1,000 rows (a full array copy plus React diff each time) and receives ~26 KB/s of mostly-irrelevant account bodies per open panel - visible jank on the list the operator is trying to click.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '356,366p' server/socket/admin.js && sed -n '193,223p' src/admin/useAdminSocket.js",
+      "fix": "Push a compact row ({id,status,export:{done,total,phase},badges,countsUpdatedAt}); keep the full object behind admin:account (on-demand). On the client, keep accounts in a Map keyed by id and patch one entry.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 482,
+          "quote": "return account ? { ...account } : null;"
+        },
+        {
+          "file": "src/admin/useAdminSocket.js",
+          "line": 26,
+          "quote": "accountPageSize: 1000,"
+        },
+        {
+          "file": "src/admin/useAdminSocket.js",
+          "line": 204,
+          "quote": "accounts = prev.accounts.map((item) =>"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "PERF-10",
+      "title": "P0-2 as written means opening SQLite per account per request: 3 ms each, 1.5 s of blocked event loop at 500 accounts",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 94,
+      "line_end": 94,
+      "quote": "| P0-2 | **Coverage matrix** per account: area × (live count, downloaded, missing, bytes, last export); totals reconcile with manifest and disk |",
+      "claim": "No Node code opens manifest.sqlite3 today (map.md §2, confirmed: no sqlite import in server/). If the matrix is computed per request the only sync API available - node:sqlite DatabaseSync - blocks the loop: measured 2.97 ms to open + `select area,status,count(*),sum(size) ... group by` + close on a synthetic 20,000-row / 3.3 MB manifest, so 500 accounts = 1,485 ms of solid block per matrix load and 500 file opens; on the real 24-row manifest 500 open+count+close = 10 ms. On the real 117-row example.harvest manifest the group-by already disagrees with disk (117 rows vs 142 media files), so a per-request reconcile also cannot be satisfied by the manifest alone.",
+      "impact": "A coverage matrix added naively turns a page load into 500 synchronous SQLite opens - a 1.5 s stall for every REST caller on the web process at 500 accounts, and 500 handles per view rather than one cached snapshot.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -rn 'sqlite' server --include=*.js | grep -v node_modules; node -e \"const {DatabaseSync}=require('node:sqlite');console.log(typeof DatabaseSync)\"",
+      "fix": "Persist the per-account summary into the store when export/verify finishes (the worker already computes it), and read that; if SQLite is read, cache by manifest mtime+size and open once per rebuild, not per request.",
+      "citations": [
+        {
+          "file": ".council/20261114T025817Z/map.md",
+          "line": 7,
+          "quote": "Export files, manifest.sqlite3, Scan/{findings,index,summary,vlm-index}.json, Scan/ocr, Scan/thumbs live only on disk; Node never opens the SQLite manifest."
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "PERF-11",
+      "title": "Global search must ride the catalog: each catalog query is 300 ms at 500k photos, and the per-account fan-out would read 500 index.json files",
+      "severity": "P2",
+      "file": "server/admin/library.js",
+      "line": 766,
+      "line_end": 786,
+      "quote": "const counts = {",
+      "claim": "queryCatalog recomputes the counts block with three extra full passes over catalog.photos (ocrDone, ocrPending, photoKinds) plus a filter+map that copies every match, on every request. Measured on a synthetic 500,000-photo catalog (466 B/row, 210 MB as JSON, 504 MB RSS): a page-1 photo query takes 328 ms, a 3-word all-type query 305 ms, a name query 289 ms. The alternative - fanning out to /search per account - reads and JSON.parses each account's Scan/index.json (measured 125,626 bytes for 146 entries, ~860 B/entry) plus findings.json per account: 500 accounts = 500 round-trips and ~62 MB of index reads per query.",
+      "impact": "P1-3 as-you-type global search on a 500k-photo catalog costs ~300 ms of web-process CPU per debounced keystroke (plus a possible 7 s rebuild, PERF-1), and a naive per-account fan-out costs 500 requests per query. Both are invisible in the plan's acceptance criterion ('returns hits from 2 accounts').",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '766,790p' server/admin/library.js && ls -la export/example.harvest@icloud.com/Scan/index.json",
+      "fix": "Compute the counts block once per catalog build (store it on the catalog) and page from the filtered arrays without the per-request map copy; search the in-memory catalog, never fan out per account.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 104,
+          "quote": "| P1-3 | **Global search** across accounts (library endpoint): group by account/area, deep link, saved searches | Search is per account; the operator must know where to look | Query returns hits from 2 accounts; deep link opens the file; screenshot |"
+        },
+        {
+          "file": "server/admin/library.js",
+          "line": 778,
+          "quote": "ocrDone: scopedPhotos.filter((photo) => photo.ocr).length,"
+        },
+        {
+          "file": "server/admin/library.js",
+          "line": 818,
+          "quote": "return { ...item, snippet: needle ? snippet(body, needle) : \"\" };"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "PERF-12",
+      "title": "The jobs the plan calls 'durable' are silently truncated to the newest 1,000 on every flush",
+      "severity": "P2",
+      "file": "server/store.js",
+      "line": 170,
+      "line_end": 173,
+      "quote": "const jobs = [...this.jobs.values()]",
+      "claim": "flush() sorts all jobs, slices the newest 1,000 and reassigns this.jobs, so older jobs vanish from memory and from disk. A 500-account campaign with the six job types in JOB_TYPES creates up to 3,000 job rows (500 auth + 500 export + 500 scan + verify + ping + import), so up to two thirds of them are dropped, and jobsForAccount then returns [] for the account whose history fell off. FEATURES §3's premise ('no durable job list', and §4 P0-1 'durable list ... retry/cancel') is therefore only partly true: jobs are already persisted, but bounded at 1,000.",
+      "impact": "P0-1's own acceptance test ('a failed export is invisible') stays true for any failed job older than the 1,000th write: the retry button has nothing to retry, and the loss is silent (slice, no tombstone, no counter).",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '161,196p' server/store.js && sed -n '490,512p' server/store.js",
+      "fix": "Cap by terminal state (keep all failed/unknown jobs, trim only done ones) or move jobs to an append-only log / SQLite table; surface the trim in jobsStats so the panel can say 'history starts at ...'.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 93,
+          "quote": "| P0-1 | **Jobs view**: durable list of export/verify/scan/import jobs with account, mode, state, attempts, age, worker, last message; retry/cancel; click-through to account | The strip says `queue 3` but nothing shows what those are; a failed export is invisible | Mock-worker run leaves ≥1 job in each of queued/running/done/failed; screenshot; state transitions asserted in a test |"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 83,
+          "quote": "progress events but no durable job list. This is the main operator blind spot."
+        },
+        {
+          "file": "server/store.js",
+          "line": 541,
+          "quote": "jobsForAccount(accountId) {"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "PERF-13",
+      "title": "Gallery stats each item's thumb/preview/play twice: 3 redundant fs.stat per tile, 3,000 extra syscalls per 1k page",
+      "severity": "P3",
+      "file": "server/admin/export.js",
+      "line": 367,
+      "line_end": 373,
+      "quote": "preview: await previewFor(root, item.path),",
+      "claim": "The object literal already resolves thumbFor/previewFor/playFor (lines 361-368), then line 373 calls previewFor and playFor again inside the s4Links argument list, and s4Links itself stats nothing but receives the already-known `cached` thumb. Per item that is 3 extra fs.stat calls (2 in the literal, 3 repeated) plus one fileExists for OCR, so a 1,000-item page issues ~3,000 avoidable stat syscalls (~10 ms) and doubles the syscall count of the listing itself.",
+      "impact": "Small but pure waste on the hottest listing path, and it hides the real per-item cost (7-8 syscalls/tile) from anyone profiling the 1k case.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '358,377p' server/admin/export.js",
+      "fix": "Hoist the three results into consts (thumb/preview/play) before the object literal and pass those into s4Links.",
+      "citations": [
+        {
+          "file": "server/admin/export.js",
+          "line": 361,
+          "quote": "const cached = await thumbFor(root, item.path);"
+        },
+        {
+          "file": "server/admin/export.js",
+          "line": 373,
+          "quote": "...(await s4Links(path.basename(root), item.path, cached, await previewFor(root, item.path), await playFor(root, item.path))),"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "PERF-14",
+      "title": "P1-4 clustering is cheap only if done per account first: a global dedupeSeeds over raw findings is 242 ms at 45k rows",
+      "severity": "P3",
+      "file": "server/admin/seeds.js",
+      "line": 110,
+      "line_end": 111,
+      "quote": "if (file && !current.files.includes(file)) current.files.push(file);",
+      "claim": "dedupeSeeds checks `files.includes` per duplicate, so a phrase present in every account costs O(n) per merge: measured 242 ms to dedupe 45,000 synthetic findings (500 accounts x 90) and 54 ms of that is isSpamPhrase. Deduping per account first (95 ms measured for 500 calls) and then grouping by normalizePhrase is ~0 ms (84 clusters), i.e. the cross-account step the plan asks for is free and the O(n^2) merge is avoidable.",
+      "impact": "A naive implementation rebuilds the 242 ms dedupe on every seed view; the catalog path (per-account dedupe at build time + a Map group) is 3x cheaper and constant per request.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'includes(file)' server/admin/seeds.js && grep -n 'dedupeSeeds' server/admin/library.js server/admin/export.js",
+      "fix": "Cluster over catalog.seeds (already deduped per account at build time); use a Set for `files` if dedupeSeeds itself must handle cross-account input.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 105,
+          "quote": "| P1-4 | Seeds across accounts: cluster identical phrases, show accounts, CSV/JSON export, operator \"checked\" flag | Same phrase in 5 accounts is 5 rows today | Cluster count, export file, checked state persists; screenshot |"
+        },
+        {
+          "file": "server/admin/library.js",
+          "line": 500,
+          "quote": "const seeds = dedupeSeeds(seedRows);"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "PERF-15",
+      "title": "Listing caches are per-path and never evict: memory grows with total files, ~45 MB at 500 x 1k photos",
+      "severity": "P3",
+      "file": "server/admin/export.js",
+      "line": 266,
+      "line_end": 266,
+      "quote": "dirCache.set(real, { at: Date.now(), mtimeMs: stat.mtimeMs, entries });",
+      "claim": "dirCache/driveCache/jsonCache are module-level Maps keyed by absolute path with no size bound and no eviction (the 60 s check is only on read, so a stale entry lives forever). Each cached listing holds one object per file ({name,size,mtime} ~90 B). At 500 accounts x 1,000 photos that is ~500,000 retained entries (~45 MB) plus one array per directory, never released, in the web process that also runs the catalog (504 MB RSS at 500k catalog rows, PERF-11).",
+      "impact": "Memory grows with the campaign's total file count, not with visitors, and no restart happens mid-campaign: the panel's resident set creeps to hundreds of MB and then holds, on a host also running 16 export workers.",
+      "confidence": "medium",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'dirCache\\|driveCache\\|jsonCache\\|seen.size' server/admin/export.js server/admin/s4.js",
+      "fix": "Bound dirCache with a small LRU (e.g. 256 dirs) or key it by account and drop on invalidation; same for s4.js `seen` (which clears at 20k, PERF-2).",
+      "citations": [
+        {
+          "file": "server/admin/export.js",
+          "line": 236,
+          "quote": "const dirCache = new Map();"
+        },
+        {
+          "file": "server/admin/s4.js",
+          "line": 132,
+          "quote": "if (seen.size > 20_000) seen.clear();"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    }
+  ],
+  "attempted_counterexamples": [
+    {
+      "scenario": "Every gallery view re-issues 4 S3 HEADs per photo, so a 1k page costs 4,000 HEADs every time.",
+      "assumption": "s4Links probes src+thumb+preview+play with no cache.",
+      "evidence": "Measured 284 HEADs for 142 items (2.00/item) and a second gallery call inside 30 s issued 0 new HEADs: s4.js:118 caches a miss for MISS_MS=30_000. Preview/play probes only exist for HEIC/video.",
+      "result": "refuted",
+      "uncertainty": "The 30 s window matches the client's 30 s export tick, so during an export the cost repeats; the per-item multiplier is 2-3, not 4."
+    },
+    {
+      "scenario": "The admin:accounts payload for 500 accounts can exceed Socket.IO's default 1 MB frame buffer.",
+      "assumption": "maxHttpBufferSize is the 1e6 default.",
+      "evidence": "socket/index.js:27 sets maxHttpBufferSize: 10_000_000. Measured 500 synthetic accounts in the real field shape = 646,480 bytes.",
+      "result": "refuted",
+      "uncertainty": "At ~5,000 accounts (6.5 MB) it approaches the configured 10 MB ceiling; I did not test a frame that large."
+    },
+    {
+      "scenario": "A coverage matrix opening SQLite per account per request is the main cost of P0-2.",
+      "assumption": "500 opens x per-open cost dominates.",
+      "evidence": "Measured 500 open+count+close on the real 24-row manifest = 10 ms total; on a synthetic 20k-row manifest a group-by is 2.97 ms, so 500 accounts = 1.49 s. node:sqlite is synchronous.",
+      "result": "supported",
+      "uncertainty": "A real 20k-photo manifest per account is an assumption; the largest real manifest here is 117 rows."
+    },
+    {
+      "scenario": "P1-1's premise (142/142 tiles are .mp4 proxies) makes video-thumbnail cost the dominant first-load item.",
+      "assumption": "Gallery is video-dominated.",
+      "evidence": "Real export: 124 Library + 18 Hidden = 142 media, of which 20 are .mp4 (11 + 9); 93 PNG, 20 JPG. Gallery area=All returned 142 items.",
+      "result": "refuted",
+      "uncertainty": "FEATURES:53 describes the demo screenshot, which may have been a different store than export/example.harvest."
+    },
+    {
+      "scenario": "The filesystem walk is the dominant cost of a 500-account catalog rebuild.",
+      "assumption": "Walking 500k files dominates.",
+      "evidence": "Measured 57 ms/account (1,000 photos + OCR + thumbs) with S4 off = 7.1 s per rebuild at CONCURRENCY=4; with S4 configured the same account took 1,956 ms at 0 ms RTT (3,000 HEADs) = 244 s — 34x the walk.",
+      "result": "refuted",
+      "uncertainty": "S4 is optional and absent from .env.example, so in the documented deployment the walk does dominate."
+    },
+    {
+      "scenario": "Cross-account seed clustering (P1-4) is the expensive part of the seed view.",
+      "assumption": "Grouping 45k findings is slow.",
+      "evidence": "Measured: global dedupeSeeds over 45k raw findings 242 ms; per-account dedupe 95 ms then normalizePhrase grouping ~0 ms (84 clusters).",
+      "result": "refuted",
+      "uncertainty": "Scales quadratically with duplicates per phrase if dedupe is run globally at 10x this corpus."
+    }
+  ],
+  "not_examined": [
+    "Live iCloud, live OCR accuracy, and real 1k-photo render on a browser (no live account, no headless run) - the P2-4 acceptance remains unmeasured.",
+    "Real S4 RTT: the HEAD storm was measured against a local stub with 0/30 ms artificial delay, not the actual eu-amsterdam endpoint.",
+    "Video thumbnail generation: imageio_ffmpeg is absent from the system Python here, so thumb.py returned a frame-less error for .mp4; only image thumbs were timed.",
+    "server/socket/worker-pool.js lines 1-540 and 1150-1440 (wave scheduler, reconnect, OCR scheduling, scan handlers) - read only the queue/export/verify paths cited.",
+    "React render cost: measured by inspection (map over 1,000 rows, 16 events/s), not with a profiler.",
+    "The scan/OCR/VLM pipeline (python/worker/scan.py, ocr_vlm.py) and its write amplification into Scan/.",
+    "Telegram bot, gate.js, geo lookup, and the capture page (out of scope per scope.md).",
+    "Whether a 500-account x 1k-photo campaign is the real target; FEATURES:95 names 500 accounts, the demo store has 21 and the real export has 142 media."
+  ],
+  "open_questions": [
+    "Is S4_* configured in the deployment this plan ships to? With no S4 the /library rebuild is 7.1 s and the gallery HEAD storm vanishes; with S4 on the rebuild is 4-65 min and the TTL/poll loop (PERF-1) never recovers.",
+    "How many accounts and photos per account is the campaign actually sizing for? Every number here scales linearly with total files, and 1k/500 is an assumption from FEATURES:95.",
+    "Which Python interpreter runs thumb.py in production (/opt/icloud3-venv per thumbs.js:21)? Fork cost and Pillow import time change the 62-110 ms figure.",
+    "Does the operator accept a catalog that can be up to TTL-stale (i.e. is a 10-minute rebuild acceptable if served from disk), or is per-request freshness required?",
+    "Will P0-3's bulk selection be one socket call or N? The rate-limit finding disappears entirely if the implementation adds a batch event."
+  ]
+}

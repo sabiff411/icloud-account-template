@@ -18,7 +18,7 @@ from pathlib import Path
 
 import socketio
 
-from . import auth, exporter, import_out, scan, verify
+from . import auth, exporter, import_out, inventory, scan, session_vault, verify
 from .config import Config
 from .events import Emitter
 
@@ -86,6 +86,33 @@ class Manager:
             except RuntimeError:
                 pass
 
+    def finish_auth(self, job_id: str) -> None:
+        if self.jobs.pop(job_id, None) is None:
+            return
+        self.running["auth"] = max(0, self.running["auth"] - 1)
+        self.ready()
+
+    def watch_auth(self, job_id: str, ctx, timeout_s: int) -> None:
+        """Free the slot even if the login never answers.
+
+        Apple can leave a request open for a very long time; the account then
+        looks "auth" for ever and the panel spins.  After the deadline the job
+        is failed cleanly, so the operator sees an error and can retry.
+        """
+        def hit():
+            if job_id not in self.jobs:
+                return
+            log.warning("auth %s exceeded %ss; failing the job", job_id[:8], timeout_s)
+            self.finish_auth(job_id)
+            try:
+                ctx.emit("job:error", {"error": "timeout", "message": f"no answer in {timeout_s}s"})
+            except Exception:
+                pass
+
+        timer = threading.Timer(max(30, timeout_s), hit)
+        timer.daemon = True
+        timer.start()
+
     def start_auth(self, payload: dict) -> None:
         job_id = payload.get("jobId")
         if not job_id:
@@ -99,18 +126,20 @@ class Manager:
         self.ready()
 
         def work():
+            lock, acquired = self._hold(key, f"auth {key}", 120)
             try:
-                with self._lock_for(key):
-                    auth.run_auth(ctx)
+                auth.run_auth(ctx)
             except Exception as error:
                 log.warning("auth job crashed: %s\n%s", type(error).__name__, traceback.format_exc())
                 ctx.emit("job:error", {"error": type(error).__name__})
             finally:
-                self.jobs.pop(job_id, None)
-                self.running["auth"] = max(0, self.running["auth"] - 1)
-                self.ready()
+                self._release(lock, acquired)
+                self.finish_auth(job_id)
 
-        self.auth_pool.submit(work)
+        # One dedicated thread per login, not a shared pool: a wedged pyicloud
+        # call must never consume a slot that another account is waiting for.
+        threading.Thread(target=work, name=f"auth-{job_id[:8]}", daemon=True).start()
+        self.watch_auth(job_id, ctx, self.config.auth_timeout_s)
 
     def start_export(self, payload: dict) -> None:
         job_id = payload.get("jobId")
@@ -232,26 +261,47 @@ class Manager:
         ctx = auth.JobContext(job_id, payload, self.emitter)
         key = ctx.account.get("email", "")
         self.jobs[job_id] = {"type": "ping", "ctx": ctx}
+        # A ping shares the auth slots, so it must count against them or the
+        # server keeps seeing free slots and dispatches an unbounded burst.
+        self.running["auth"] += 1
 
         def work():
+            lock = None
+            held = False
             try:
-                with self._lock_for(key):
-                    api, _ = auth._service(ctx, ctx.account.get("password", ""))
-                    auth._apply_proxy(api, ctx)
-                    status = api.get_auth_status() or {}
-                    ok = bool(status.get("authenticated"))
-                    ctx.emit(
-                        "job:ping_result",
-                        {
-                            "ok": ok,
-                            "trusted": bool(status.get("trusted_session")),
-                            "error": "" if ok else "session invalid",
-                        },
-                    )
+                # Never block an auth slot on another job's per-account lock:
+                # a verify that is walking a huge library holds it for minutes,
+                # and ten blocked pings starve the whole queue (slots read 0).
+                lock, held = self._hold(key, "ping", 45.0)
+                api, _ = auth._service(ctx, ctx.account.get("password", ""))
+                auth._apply_proxy(api, ctx)
+                ok, trusted, limited = auth.check_alive(api, ctx)
+                result = {
+                    "ok": ok,
+                    "trusted": trusted,
+                    "limited": limited,
+                    "error": "" if ok else "session invalid",
+                }
+                if limited:
+                    result["error"] = "limited: web token missing (browser refresh needed)"
+                if ok:
+                    # A ping is also the cheap way to refresh the counters the
+                    # panel shows (album lengths, contacts, mail, ...); the
+                    # full verify stays for the diff.
+                    try:
+                        counts = inventory.quick_counts(api)
+                        if counts:
+                            result["counts"] = counts
+                    except Exception as error:
+                        log.info("ping counts skipped: %s", type(error).__name__)
+                ctx.emit("job:ping_result", result)
             except Exception as error:
                 ctx.emit("job:ping_result", {"ok": False, "error": type(error).__name__})
             finally:
+                if lock is not None:
+                    self._release(lock, held)
                 self.jobs.pop(job_id, None)
+                self.running["auth"] = max(0, self.running["auth"] - 1)
                 self.ready()
 
         # A ping is cheap; share the auth pool, it must not block a full login.
@@ -312,8 +362,10 @@ async def run(config: Config) -> None:
         log.warning("connection error: %s", data)
 
     @sio.event(namespace="/worker")
-    async def disconnect():
-        log.info("disconnected")
+    async def disconnect(reason=None):
+        # The reason (ping timeout, transport error, server disconnect) is
+        # what tells an operator why an export job was requeued.
+        log.info("disconnected: %s", reason)
 
     @sio.on("worker:welcome", namespace="/worker")
     async def welcome(data):
@@ -364,8 +416,22 @@ async def run(config: Config) -> None:
         )
 
     stop_event = asyncio.Event()
+    vault_stop = threading.Event()
+
+    def vault_loop() -> None:
+        """Snapshot every session every 10 minutes; the immediate snapshot
+        after a login still happens in auth._finish."""
+        while not vault_stop.is_set():
+            try:
+                session_vault.snapshot_all(config.sessions_dir)
+            except Exception as error:
+                log.info("vault pass skipped: %s", error)
+            vault_stop.wait(600)
+
+    threading.Thread(target=vault_loop, name="session-vault", daemon=True).start()
 
     def stop(*_args):
+        vault_stop.set()
         manager.shutdown()
         stop_event.set()
 

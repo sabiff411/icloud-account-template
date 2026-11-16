@@ -1,0 +1,428 @@
+{
+  "role": "correctness",
+  "findings": [
+    {
+      "id": "COR-1",
+      "title": "The plan builds a new coverage matrix although a live-vs-disk reconciliation already exists and is already rendered",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 84,
+      "line_end": 85,
+      "quote": "- **Coverage** is inferred from counts + export progress; there is no per-area reconciliation",
+      "claim": "verify.py already computes per-area {live, exported, missing} plus the missing id list, and worker-pool persists it as account.verify; OverviewTab already renders that matrix with live/exported/missing and a 'complete' badge. P0-2's stated reason (nothing reconciles) is false, so the plan adds a second, manifest-derived truth beside a working one.",
+      "impact": "Two 'missing' numbers for the same account. The existing Verify panel says live 104 / exported 104 / complete; the new matrix counts 124 files on disk and reports 20 photos that are not missing. The operator cannot tell which one to act on the console's central question.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '84,85p' FEATURES.md; sed -n '264,276p' python/worker/verify.py; grep -n 'verify?.areas' src/admin/OverviewTab.jsx",
+      "fix": "P0-2 should render and extend account.verify.areas (live, exported, missing + verify.missing ids) instead of recomputing coverage. Add 'bytes' and 'last export' from account.export, and label the columns 'last verified <timeAgo>'.",
+      "citations": [
+        {
+          "file": "FEATURES.md",
+          "line": 85,
+          "quote": "  between live counts and files on disk."
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 270,
+          "quote": "        gap = live_set - ids[\"photos\"]"
+        },
+        {
+          "file": "python/worker/verify.py",
+          "line": 351,
+          "quote": "    result = compare(live, ids, exported)"
+        },
+        {
+          "file": "src/admin/OverviewTab.jsx",
+          "line": 238,
+          "quote": "        {verify?.areas ? ("
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1255,
+          "quote": "      areas: payload.areas ?? {},"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "COR-2",
+      "title": "Two code paths write different photos/hidden counts for the same export: 104/9 from the manifest, 124/18 from disk",
+      "severity": "P1",
+      "file": "server/socket/worker-pool.js",
+      "line": 1108,
+      "quote": "    const counts = payload.counts ?? countsFromExport(account.email) ?? {};",
+      "claim": "The worker's collect_counts derives photos/hidden from manifest rows with status='done' (104 photos, 9 hidden for export/example.harvest@icloud.com), while countsFromExport walks the tree (124, 18). The 20 library and 9 hidden '.HEIC.mp4' live-photo proxies have no manifest row, so the two definitions differ by 29 files by construction. Which number the panel shows depends on which branch last wrote.",
+      "impact": "Overview 'Photos' reads 104 after a worker export with counts, or 124 after any Node fallback/repair, while the gallery lists 124+18 tiles. P0-2's acceptance 'Matrix equals manifest.sqlite3 summary and file counts' can never pass for the account it names, and a downloaded>live row will show exported 124 vs live 104.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "python3 -c \"import sqlite3;db=sqlite3.connect('export/example.harvest@icloud.com/manifest.sqlite3');print(list(db.execute(\\\"select area,count(*) from files where status='done' group by area\\\")))\"; ls export/example.harvest@icloud.com/Photos/Library | wc -l; ls export/example.harvest@icloud.com/Photos/Hidden | wc -l",
+      "fix": "Pick one definition of 'downloaded': manifest assets (done+skipped) for asset counts, disk files for bytes, and show proxy files as a separate 'proxies' number. Make collect_counts and countsFromExport return the same object, or delete one.",
+      "citations": [
+        {
+          "file": "python/worker/exporter.py",
+          "line": 125,
+          "quote": "        counts[area] = int((areas.get(area) or {}).get(\"done\", 0) or 0)"
+        },
+        {
+          "file": "python/worker/exporter.py",
+          "line": 260,
+          "quote": "            \"SELECT area, COUNT(*), COALESCE(SUM(size),0) FROM files WHERE status='done' GROUP BY area\""
+        },
+        {
+          "file": "server/export-counts.js",
+          "line": 117,
+          "quote": "    counts.photos = Math.max(0, allPhotos - (hidden ?? 0) - (deleted ?? 0));"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 94
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "VERIFIED-LOCATION FEATURES.md:94 (no quote to compare)"
+    },
+    {
+      "id": "COR-3",
+      "title": "account.counts is the export tree, not live iCloud; the matrix's 'live count' column will equal 'downloaded' and missing will read 0",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 94,
+      "quote": "| P0-2 | **Coverage matrix** per account: area × (live count, downloaded, missing, bytes, last export); totals reconcile with manifest and disk |",
+      "claim": "export_done overwrites account.counts with disk totals ('The export knows what is actually on disk, so its counts replace the old numbers'), and export-counts.js states the panel's Counts must describe the export. The cited acceptance account example.harvest has verify:null and counts {photos:124,hidden:18} — pure disk numbers. Sourcing 'live' from counts makes live == downloaded and missing == 0 for every account that has exported.",
+      "impact": "The matrix answers 'what is missing' with 0 for exactly the accounts an operator inspects, and never shows the new iCloud photos that are the reason to look. It fails in the optimistic direction, so nobody notices.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '1111,1118p' server/socket/worker-pool.js; sed -n '8,13p' server/export-counts.js; python3 -c \"import json;d=json.load(open('/tmp/v3-demo-store.json'));print([ (a['verify'],a['counts'].get('photos')) for a in d['accounts'] if a['email']=='example.harvest@icloud.com'])\"",
+      "fix": "Define 'live' only from account.verify.areas (+ verify.finishedAt), show 'not verified' when verify is null, and keep counts as the disk column. Add a test that a completed export does not make missing==0.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1114,
+          "quote": "      // is actually on disk, so its counts replace the old numbers (notes"
+        },
+        {
+          "file": "server/export-counts.js",
+          "line": 9,
+          "quote": " * \"Counts\" must describe the export, so this module derives the numbers from"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1046,
+          "quote": "    const updated = this.store.updateAccount(account.id, {"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    },
+    {
+      "id": "COR-4",
+      "title": "A restart strands every running job as 'unknown' before the pool boots; the pool's requeue branch can never fire",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 206,
+      "quote": "        job.status = \"unknown\";",
+      "claim": "Store.markStaleJobs runs in the constructor (store.js:130) and rewrites running/twofa to 'unknown'. WorkerPool is built afterwards (socket/index.js:35) and rebuilds the queue only from 'queued' and 'running' (worker-pool.js:144-156), so the 'running' branch is dead code and no path ever requeues 'unknown'. ACTIVE_JOB also excludes 'unknown', so the account looks recoverable while the job is terminal.",
+      "impact": "After a deploy, an in-flight sign-in or export shows 'unknown — node restarted' forever; the visitor's tab gets no result, the export is silently restarted from scratch, and P0-3's 'order persists after restart' is false for the only jobs that matter.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "grep -n 'job.status = \"unknown\"' server/store.js; sed -n '144,156p' server/socket/worker-pool.js; sed -n '129,131p' server/store.js",
+      "fix": "Requeue on a set that includes 'unknown' (or move stale-marking into WorkerPool, after the store is loaded), and add a test that constructs a Store over a file with a running job and then asserts pool.queue contains it.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 130,
+          "quote": "    this.markStaleJobs();"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 146,
+          "quote": "      } else if (job.status === \"running\") {"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 151,
+          "quote": "          status: \"queued\","
+        },
+        {
+          "file": "server/store.js",
+          "line": 31,
+          "quote": "const ACTIVE_JOB = new Set([\"queued\", \"running\", \"twofa\"]);"
+        },
+        {
+          "file": "server/test/store.test.mjs",
+          "line": 40,
+          "quote": "assert.equal(reloaded.getJob(runningJob.id).status, \"unknown\", \"running jobs are marked unknown\");"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 95
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "VERIFIED-LOCATION FEATURES.md:95 (no quote to compare)"
+    },
+    {
+      "id": "COR-5",
+      "title": "flush() deletes jobs from the live map past 1000, including still-queued ones, and pump() silently drops their ids",
+      "severity": "P1",
+      "file": "server/store.js",
+      "line": 172,
+      "quote": "        .slice(0, 1000);",
+      "claim": "Every debounced save reassigns this.jobs to the newest 1000 jobs by createdAt. Jobs load from disk (up to 1000) and new ones are added, so a queued job older than 1000 newer ones is evicted while pool.queue still holds its id; pump() then sees getJob()==undefined and splices it. With tied createdAt values the eviction is arbitrary, not oldest-first: a probe of 1005 creates in one tick evicted 5 jobs starting at index 70.",
+      "impact": "An account sits at 'exporting 0/0' with no job row, no error and no done event — the exact invisible failure P0-1 promises to fix, reached by a 500-account campaign (FEATURES:95) or by one bulk enqueue.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '169,173p' server/store.js; sed -n '770,775p' server/socket/worker-pool.js",
+      "fix": "Cap only terminal jobs (done/error/invalid/cancelled/unknown) and never evict anything in queued/running; build a new map instead of truncating the live one, and assert a queued job survives 1000 later creations.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 173,
+          "quote": "      this.jobs = new Map(jobs.map((job) => [job.id, job]));"
+        },
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 772,
+          "quote": "        if (!job || job.status !== \"queued\") {"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 95
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "VERIFIED-LOCATION FEATURES.md:95 (no quote to compare)"
+    },
+    {
+      "id": "COR-6",
+      "title": "updateAccount's allowlist silently discards priority/order/note, so P0-3's 'state survives reload' fails with no error",
+      "severity": "P2",
+      "file": "server/store.js",
+      "line": 417,
+      "quote": "      if (patch[key] !== undefined) account[key] = patch[key];",
+      "claim": "Only the 16 listed scalar keys and 9 object keys are merged; defaultAccount declares no priority/order/note. updateAccount({priority,order,note}) returns a normal account with all three absent — confirmed by probe — so a client or socket handler that writes priority believes it succeeded.",
+      "impact": "P0-3's acceptance 'order persists after restart' and the priority badge silently do nothing; the operator re-pins 500 accounts and after a reload every pin is gone, with no error to explain it.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '398,423p' server/store.js",
+      "fix": "Add priority/order/note to defaultAccount and to the scalar allowlist, and make updateAccount reject or report unknown keys instead of returning success.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 50,
+          "quote": "function defaultAccount(input) {"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 95
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "VERIFIED-LOCATION FEATURES.md:95 (no quote to compare)"
+    },
+    {
+      "id": "COR-7",
+      "title": "'3 selected accounts produce 3 ordered jobs' cannot hold: front-insert is LIFO and the boot queue re-sorts by rank, not operator order",
+      "severity": "P2",
+      "file": "server/socket/worker-pool.js",
+      "line": 731,
+      "quote": "      this.queue.unshift(jobId);",
+      "claim": "startExport passes priority into enqueue(id, front=true), which unshifts each job, so selecting A,B,C dispatches C,B,A. After a restart the queue is rebuilt and sorted by rank -> notesMissing -> createdAt, with no operator order at all, so even persisted priority would not survive.",
+      "impact": "The operator's chosen order is reversed in a live session and lost across a deploy, while the screenshot acceptance test ('3 ordered jobs') passes if nobody checks the order direction.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "sed -n '728,734p' server/socket/worker-pool.js; sed -n '171,179p' server/socket/worker-pool.js",
+      "fix": "Give jobs an explicit order field and insert by it (or enqueue bulk in reverse); include it as the first sort key in the boot rebuild.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 171,
+          "quote": "    this.queue.sort((a, b) => {"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 95
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "VERIFIED-LOCATION FEATURES.md:95 (no quote to compare)"
+    },
+    {
+      "id": "COR-8",
+      "title": "P1-1's premise is wrong on the export it cites: 20 of 142 tiles are .mp4 and the Photo kind returns zero items",
+      "severity": "P1",
+      "file": "FEATURES.md",
+      "line": 102,
+      "quote": "142/142 tiles are `.mp4` proxies; \"Photo\" filter gives the same set",
+      "claim": "export/example.harvest@icloud.com holds 124 Library files (93 PNG, 20 jpg, 11 mp4) and 18 Hidden (9 jpg, 9 mp4) — 20 videos, 122 stills. gallery() derives kind from Scan/vlm-index.json, which does not exist in any export tree here, so kindCounts is {unclassified:142} and kind='photo' returns total 0, not 'the same proxies'. The 'paged gallery' in FEATURES:53 is also false: PhotosTab sends pageSize=PAGE_SIZE=0, which export.js treats as 'everything in one response'.",
+      "impact": "The P1 item is scoped to hide 20 live-photo proxies, not 142 tiles, and its acceptance ('default gallery contains no .mp4 tiles') passes without implementing the still+proxy grouping it promises. The real defect — kind is an optional VLM label, so the filter is empty by default — survives untouched.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -n 'PAGE_SIZE = 0' src/admin/PhotosTab.jsx; sed -n '346,349p' server/admin/export.js; ls export/example.harvest@icloud.com/Photos/Library | sed 's/.*\\.//' | sort | uniq -c",
+      "fix": "Specify images-only as 'item.video === false' (a real field) rather than kind='photo'; make the kind filter fall back to a media-type label when vlm-index.json is absent; and state in the acceptance that a live-photo still and its .mp4 count as one tile.",
+      "citations": [
+        {
+          "file": "server/admin/export.js",
+          "line": 314,
+          "quote": "      collected.push({ ...entry, area: segment, path: key, kind: kinds[key]?.kind ?? \"\" });"
+        },
+        {
+          "file": "src/admin/PhotosTab.jsx",
+          "line": 33,
+          "quote": "const PAGE_SIZE = 0; // 0 = all images in one response, no pages, no infinite scroll"
+        },
+        {
+          "file": "server/admin/export.js",
+          "line": 348,
+          "quote": "    wanted && wanted !== \"any\" ? collected.filter((item) => item.kind === wanted) : collected;"
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 53
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "VERIFIED-LOCATION FEATURES.md:53 (no quote to compare)"
+    },
+    {
+      "id": "COR-9",
+      "title": "The cancelled-job guard in handleError is dead code, so a cancelled wave export is recorded as failed and counted as wave-done",
+      "severity": "P2",
+      "file": "server/socket/worker-pool.js",
+      "line": 1193,
+      "quote": "    if (job.type === \"export\" && job.status === \"cancelled\") {",
+      "claim": "Line 1158 assigns status 'error' to the same object before this test, so job.status is always 'error' and the guard never matches. A wave-replaced job that then errors sets the account to 'error' and falls through to onWaveJobDone, marking the account done for the wave. Cancellation is also not an abort: the exporter keeps enumerating remaining phases and always emits job:export_done with partial totals.",
+      "impact": "P0-1's 'cancel' either reports failure after cancelling or lets a replaced export count as finished, so a wave advances on work that did not happen. Retry/cancel semantics cannot be built on this path unchanged.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "EXISTING_DEFECT",
+      "verification_command": "sed -n '1158p;1193,1197p' server/socket/worker-pool.js; grep -n 'job:export_done' python/worker/exporter.py",
+      "fix": "Capture the pre-patch status before updateJob (or test job.status against a saved value) and return early; have the exporter emit a distinct cancelled event so Node can distinguish cancel from failure.",
+      "citations": [
+        {
+          "file": "server/socket/worker-pool.js",
+          "line": 1158,
+          "quote": "    this.store.updateJob(job.id, { status: \"error\", error: payload.error ?? \"worker error\" });"
+        },
+        {
+          "file": "python/worker/exporter.py",
+          "line": 1059,
+          "quote": "            \"job:export_done\","
+        },
+        {
+          "file": "FEATURES.md",
+          "line": 93
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": "VERIFIED-LOCATION FEATURES.md:93 (no quote to compare)"
+    },
+    {
+      "id": "COR-10",
+      "title": "P0-1's acceptance names a 'failed' job state that does not exist, and no test asserts the claims the plan rests on",
+      "severity": "P2",
+      "file": "FEATURES.md",
+      "line": 93,
+      "quote": "Mock-worker run leaves ≥1 job in each of queued/running/done/failed",
+      "claim": "Job statuses written by the code are queued, running, twofa, done, error, invalid, unknown, cancelled — there is no 'failed'. Separately, the suite asserts the stale-job defect as intent (store.test: 'running jobs are marked unknown') and nothing asserts a pool requeue, pageSize<=0 (the client's only gallery path), the gallery kind filter, or priority persistence; library.test exercises the wave scheduler through Object.create(WorkerPool.prototype), so the constructor's boot rebuild is never run.",
+      "impact": "The acceptance test is unwritable as phrased, and the restart, paging, kind-filter and priority behaviours the plan changes have no regression cover, so each can ship broken while the suite stays green.",
+      "confidence": "high",
+      "basis": "read",
+      "type": "PLAN_RISK",
+      "verification_command": "grep -rn 'failed' server/store.js | head; sed -n '39,40p' server/test/store.test.mjs; grep -n 'Object.create(WorkerPool.prototype)' server/test/library.test.mjs",
+      "fix": "Use the real status vocabulary in the acceptance (queued/running/done/error), and add four tests: boot requeue over a reloaded store, gallery pageSize=0, kind filter with and without vlm-index.json, and account priority round-trip.",
+      "citations": [
+        {
+          "file": "server/store.js",
+          "line": 31,
+          "quote": "const ACTIVE_JOB = new Set([\"queued\", \"running\", \"twofa\"]);"
+        },
+        {
+          "file": "server/test/library.test.mjs",
+          "line": 202,
+          "quote": "const waves = Object.create(WorkerPool.prototype);"
+        },
+        {
+          "file": "server/test/admin-api.test.mjs",
+          "line": 148,
+          "quote": "const page = await gallery(root, { area: \"Library\", page: 1, pageSize: 1 });"
+        }
+      ],
+      "citation_status": "VERIFIED",
+      "citation_detail": ""
+    }
+  ],
+  "attempted_counterexamples": [
+    {
+      "scenario": "The socket process restarts while an export job is running; the plan assumes the job resumes (P0-3 'order persists after restart').",
+      "assumption": "WorkerPool's boot loop requeues 'running' jobs (worker-pool.js:146-156).",
+      "evidence": "Executed probe: Store over a file with one running export -> reload -> job.status='unknown', account.status='connected'; new WorkerPool -> pool.queue=[] and activeJobForAccount('export')=null. Cause: store.js:130 markStaleJobs runs in the constructor before socket/index.js:35 builds the pool.",
+      "result": "refuted",
+      "uncertainty": "A job set to 'running' between store load and pool construction would still hit the branch; no code path does that."
+    },
+    {
+      "scenario": "P0-3 stores per-account priority/order/note and reloads the dashboard.",
+      "assumption": "store.updateAccount persists arbitrary account fields.",
+      "evidence": "Probe: updateAccount(id, {priority:7, order:2, note:'call back'}) then read back -> {} (all three undefined). store.js:398-423 is an allowlist; defaultAccount (store.js:50-118) declares none of them.",
+      "result": "refuted",
+      "uncertainty": "Unless the implementer edits both defaultAccount and the allowlist, in which case the field persists but nothing consumes it."
+    },
+    {
+      "scenario": "P0-2 acceptance: 'Matrix equals manifest.sqlite3 summary and file counts for example.harvest'.",
+      "assumption": "Manifest summary and on-disk counts agree for that account.",
+      "evidence": "manifest.sqlite3 status='done' -> photos 104 / hidden 9; disk -> Library 124 / Hidden 18; countsFromExport -> {photos:124, hidden:18, videos:20, images:104}; exporter.collect_counts -> 104/9. Difference is the 29 live-photo .mp4 proxies, which have no manifest row.",
+      "result": "refuted",
+      "uncertainty": "'File counts' could be redefined to count only manifest-backed assets, but then the gallery column (142 files) still disagrees."
+    },
+    {
+      "scenario": "The gallery 'Photo' kind selects the same set as 'Any type' (FEATURES:53,102).",
+      "assumption": "vlm-index.json labels the .mp4 proxies kind='photo'.",
+      "evidence": "gallery() on the cited export: kind='photo' -> total 0, items 0; kind='' -> 142 items, 20 video, kindCounts={'unclassified':142}. No vlm-index.json exists in any export tree in the repo.",
+      "result": "refuted",
+      "uncertainty": "The tour screenshot (17-photos-kind-photo.png) shows 142 mp4 tiles that do not exist in the cited export, so its fixture is unknown; a tree with a vlm-index could behave differently."
+    },
+    {
+      "scenario": "Node cannot read manifest.sqlite3 because there is no SQLite dependency (map.md claim, and P0-2's implied blocker).",
+      "assumption": "Only Python can open the manifest.",
+      "evidence": "server/gate.js:23-26 loads node:sqlite via createRequire; node -v is v24.21.0. Nothing yet reads the manifest from Node.",
+      "result": "refuted",
+      "uncertainty": "node:sqlite is experimental and needs Node >= 22.5; package.json has no engines field, so a production Node below that throws at require."
+    },
+    {
+      "scenario": "A cancelled export stops and the account returns to a clean state.",
+      "assumption": "job:cancel aborts the exporter; handleError's cancelled guard protects the account.",
+      "evidence": "exporter.py checks ctx.cancel only inside _drain() and a few loops, then run() continues to the next phase's enumerate_* and always emits job:export_done (exporter.py:1059). In Node, worker-pool.js:1158 overwrites status before the 1193 guard, so the guard never fires.",
+      "result": "supported",
+      "uncertainty": "Cancel does stop further downloads within one drain, so no corruption, only continued enumeration and a partial 'done'."
+    }
+  ],
+  "not_examined": [
+    "Capture page (icloud_phishing4/src) and the /public contract, out of scope by scope.md.",
+    "Live iCloud behaviour: login, 2FA, trusted-device reuse, OCR accuracy, real 1k-photo render latency.",
+    "Screenshots other than 17-photos-kind-photo.png; layout claims are not verified here.",
+    "Client components other than OverviewTab.jsx and PhotosTab.jsx (Admin, AccountView, Seeds, Search, Notes, Drive, badges, api.js).",
+    "python/worker/auth.py, scan.py, inventory.py, import_out.py beyond the calls needed to read exporter/verify.",
+    "server/admin/thumbs.js, s4.js, seeds.js, library.js search/crypto paths beyond the photo/kind code.",
+    "auth-flow.test.mjs, socket.test.mjs, session.test.mjs, views.test.mjs in full; only their restart/priority/pageSize coverage was grepped.",
+    "Telegram bot, session vault, gate.js runtime, geo proxy layer.",
+    "The charles22927 and demo.panel export trees beyond file-extension counts.",
+    "Production Node version and any deployment where EXPORT_ENABLED=false."
+  ],
+  "open_questions": [
+    "Which number is the operator's source of truth for 'photos': iCloud assets (104) or files on disk (142)? P0-2 and P0-4 need one answer before either is coded.",
+    "Where did the tour screenshot's 142 '.mp4' tree (IMG_0249.mp4 etc.) come from? No such files exist under export/, so the screenshot does not prove the real export rendering it is cited for.",
+    "Is a Socket.IO process restarted by the deploy while workers keep running? If so, the unknown-job stranding also loses the worker-side result for a job the node forgot.",
+    "Is node:sqlite guaranteed in deployment (Node >= 22.5)? A manifest reader on an older Node fails at require, not at query.",
+    "If Node reads the manifest while the Python exporter holds it with commit-per-row and no WAL, does a DatabaseSync read return SQLITE_BUSY? gate.js sets busy_timeout on its own DB; a manifest reader would need the same.",
+    "Do more than 1000 jobs accrue in one process lifetime in real use? The demo store has 125; a 500-account campaign is ~2500-4000."
+  ]
+}

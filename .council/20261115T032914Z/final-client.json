@@ -1,0 +1,12 @@
+{
+  "role": "client",
+  "score": 8,
+  "verdict": "SHIP",
+  "top3": [
+    "Worker strip has no threshold between 0 and 7: ServicesTab.jsx:90,97 only reds on workers===0, so one dead OCR or download worker (6 of 7, half the download fleet) still reads green with '7 workers' in the header; the operator's 'is download/OCR healthy' question is only answered in the extreme.",
+    "Acceptance 6 ('no statfs in the web process', plan-v2.md:110) is false: server/admin/storage.js:78 still calls fsp.statfs and walkCounts uses fs.statSync (storage.js:68), reached from /api/admin/storage and polled every 60 s by Admin.jsx:289. The health path itself is df-based and safe; the claim, not the page, is wrong.",
+    "Capture evidence is inconsistent and one branch is log-exposed: evidence-acceptance.txt:7/20/31/44 records 'capture path HTTP 200' while screenshots/fleet-services-final.png shows 'capture path HTTP 302'; health.js:231-250 prefers GATE_ADMIN_IPS (no secret in the URL) but falls back to sending GATE_ADMIN_TOKEN in a cleartext query every 15 s, which verification.json U-3 saw in nginx's access log."
+  ],
+  "what_would_change": "A fault-injection run that stops one worker process (e.g. icloud-worker on ocr-1) with a screenshot showing the page still green and '6 workers' would confirm the worker-threshold blind spot as the top shipping caveat.",
+  "bias": "same base model"
+}

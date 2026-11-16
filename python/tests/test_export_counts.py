@@ -84,6 +84,7 @@ class CollectCountsTests(unittest.TestCase):
             self.assertEqual(counts["mailFolders"], 2)
             self.assertEqual(counts["mailMessages"], 7)
             self.assertEqual(counts["videos"], 1)
+            self.assertEqual(counts["images"], 1)
 
 
 if __name__ == "__main__":

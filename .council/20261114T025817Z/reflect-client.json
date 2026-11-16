@@ -1,0 +1,99 @@
+{
+  "role": "client-operator",
+  "run": "2026-11-14T02:58:17Z",
+  "findings": [
+    {
+      "id": "CL-1",
+      "confidence": "high",
+      "basis": "checked",
+      "why": "LibraryTab/Admin/library.js read; existing search verified by source, not run in a browser."
+    },
+    {
+      "id": "CL-2",
+      "confidence": "high",
+      "basis": "checked",
+      "why": "Counts reproduced with sqlite3 and find; the only unrun part is a live verify."
+    },
+    {
+      "id": "CL-3",
+      "confidence": "high",
+      "basis": "checked",
+      "why": "Admin and CryptoTab read; view wiring and counts are explicit in source."
+    },
+    {
+      "id": "CL-4",
+      "confidence": "high",
+      "basis": "checked",
+      "why": "Reproduced with the production Store class; store/pool construction order read."
+    },
+    {
+      "id": "CL-5",
+      "confidence": "high",
+      "basis": "checked",
+      "why": "Missing dependency, probe result and screenshot all agree; no runtime React test."
+    },
+    {
+      "id": "CL-6",
+      "confidence": "high",
+      "basis": "checked",
+      "why": "Durability and status vocabulary read; no mock-worker run, but the code paths are unambiguous."
+    },
+    {
+      "id": "CL-7",
+      "confidence": "medium",
+      "basis": "checked",
+      "why": "Whitelist mechanism is certain from store.js; that an implementer adds the field UI-only is a prediction."
+    },
+    {
+      "id": "CL-8",
+      "confidence": "high",
+      "basis": "checked",
+      "why": "Schema, failed-row write and verify query all read; exporter not executed."
+    },
+    {
+      "id": "CL-9",
+      "confidence": "medium",
+      "basis": "checked",
+      "why": "Exemption read in worker and UI; whether 'urls' should count as export is a definitional call."
+    },
+    {
+      "id": "CL-10",
+      "confidence": "high",
+      "basis": "checked",
+      "why": "Every corrected claim checked against source or the 14-submissions screenshot."
+    },
+    {
+      "id": "CL-11",
+      "confidence": "high",
+      "basis": "checked",
+      "why": "Source branch and screenshot 13 both show the submissions panel."
+    },
+    {
+      "id": "CL-12",
+      "confidence": "medium",
+      "basis": "checked",
+      "why": "Screenshot list and 'source only' labels checked; that this is a plan defect rather than an accepted evidence gap is judgement."
+    }
+  ],
+  "top3_by_cost_of_inaction": [
+    {
+      "rank": 1,
+      "id": "CL-4",
+      "cost": "Every deploy during an export silently loses the job and can mislabel a valid session as interrupted; no retry exists, so the operator's download truth decays without a signal."
+    },
+    {
+      "rank": 2,
+      "id": "CL-2",
+      "cost": "The P0 gate cannot be signed off. With files as the unit the matrix overstates downloaded by 29 for the only real account, so the answer to 'what is missing' changes with the implementation."
+    },
+    {
+      "rank": 3,
+      "id": "CL-1",
+      "cost": "A full P1 item rebuilds shipped cross-account search and risks regressing the catalog while touching the same data as P1-4."
+    }
+  ],
+  "drop_if_forced": {
+    "id": "CL-11",
+    "reason": "Cosmetic context error with the lowest cost of inaction; it is not load-bearing for any P0/P1 acceptance, and P1-2's 'sidebar lies about context' already covers the fix."
+  }
+}

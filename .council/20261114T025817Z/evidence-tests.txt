@@ -1,0 +1,28 @@
+## Test evidence (last runs)
+
+### python
+----------------------------------------------------------------------
+Ran 67 tests in 4.298s
+
+OK
+
+### store
+> node server/test/store.test.mjs
+
+store test ok
+
+### socket
+PASS  admin:delete 
+
+11/11 passed
+
+### admin build
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 357ms
+
+### 2026-11-14 post-review run
+- admin-api: RED — admin-api.test.mjs:225 expected 401, got 200; :310 All=3 vs Drive=4
+- session: OK
+- verify-counts: OK
+- views: OK
+- py: 67/67; store: OK; socket: 11/11; capture backend: OK

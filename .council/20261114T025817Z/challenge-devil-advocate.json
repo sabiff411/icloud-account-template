@@ -1,0 +1,76 @@
+{
+  "role": "devil-advocate",
+  "artifact": "FEATURES.md \u00a74 (P0-1..P0-4)",
+  "scenarios": [
+    {
+      "id": "C1",
+      "scenario": "Restart (deploy/crash) while an export, verify, scan or auth job is running; operator returns and expects the durable Jobs view to show and recover it.",
+      "assumption": "The plan's 'durable list ... state, attempts ... retry/cancel' and P0-3's 'order persists after restart' imply in-flight jobs survive a restart in a dispatchable state.",
+      "evidence": "server/store.js:205-207 marks running/twofa jobs 'unknown'; server/socket/worker-pool.js:144-156 rebuilds the queue only for status 'queued' and 'running'; server/store.js:31 ACTIVE_JOB excludes 'unknown'; server/test/store.test.mjs:40 asserts the unknown status. Store is constructed at server/socket/index.js:18 before WorkerPool at :35.",
+      "result": "supported",
+      "outcome": "A job running at restart becomes terminal 'unknown' and is dispatched by nothing (boot, sweep at worker-pool.js:1475, or retry-as-active). The plan names no unknown state and its acceptance matrix (queued/running/done/failed) never exercises it.",
+      "uncertainty": "A manual 'Export missing' creates a new job (unknown is not active), so work can be resumed by an operator who notices; the plan does not require the Jobs view to surface or retry unknown.",
+      "counterexample": "socket process restarts while account A's export job is 'running'; after boot the job is 'unknown' and never appears in the pool queue."
+    },
+    {
+      "id": "C2",
+      "scenario": "500-account campaign (P0-3's stated use case) runs long enough that the store holds more than 1000 jobs while an early photo export is still running.",
+      "assumption": "A 'durable list of jobs' is complete and a running job's record survives until completion.",
+      "evidence": "server/store.js:170-173 keeps only the 1000 newest jobs by createdAt on every flush, with no status filter (comment says 'completed jobs bounded'). Demo store: 125 jobs for 21 accounts (node -e on /tmp/v3-demo-store.json), i.e. ~5.9 jobs/account, projecting ~3000 jobs at 500 accounts. server/socket/worker-pool.js:1096-1098 returns without release when getJob is null.",
+      "result": "supported",
+      "outcome": "An older still-running job is evicted from the map; its completion event is dropped, release() never runs, the worker export slot is not returned, and the job disappears from the durable list instead of failing.",
+      "uncertainty": "Whether a given campaign reaches 1000 jobs before the oldest long export completes depends on wave timing and photo counts; the mechanism is unconditional once it does.",
+      "counterexample": "500 accounts x ~6 jobs = ~3000 records; account #1's multi-hour photo export is older than the 1000 newest jobs when it finishes."
+    },
+    {
+      "id": "C3",
+      "scenario": "One iCloud service (e.g. Hidden or Recently Deleted album) is unreadable or times out during Verify, while the export is complete.",
+      "assumption": "P0-2: the coverage matrix 'answers what is missing without guessing' and its acceptance (manifest summary + file counts) proves correctness.",
+      "evidence": "python/worker/verify.py:90-99 initializes each area to an empty set; :212-219 leaves it empty on exception; :269-273 computes live/missing from that empty set; src/admin/OverviewTab.jsx:34-43 renders missing 0 as 'complete'. FEATURES.md:94 acceptance has no unavailable-read case.",
+      "result": "supported",
+      "outcome": "The matrix reports live 0 / missing 0 / 'complete' for the area that could not be read. At 3 a.m. that is indistinguishable from a fully downloaded area, including Hidden photos where seed screenshots live.",
+      "uncertainty": "If the plan re-enumerates live data independently rather than reusing verify.areas, it can still hit the same exception path unless it adds an unavailable marker.",
+      "counterexample": "api.photos.albums['Hidden'] raises; verify emits hidden {live:0, exported:18, missing:0}; the panel shows 'complete'."
+    },
+    {
+      "id": "C4",
+      "scenario": "Manifest is absent, corrupt, or at a stale absolute path when the matrix or failure list reads it.",
+      "assumption": "P0-2/P0-4 can derive downloaded/missing/failed from manifest.sqlite3 for every account in the store.",
+      "evidence": "server/data/items.json:650 stores a manifestPath of /tmp/manifest.sqlite3 and :456 stores /opt/icloud3/export/... (a different deployment root). python/worker/verify.py:27-34 returns empty ids/counts on missing or unreadable manifest. FEATURES.md:94 only adds a zero-download test.",
+      "result": "supported",
+      "outcome": "A moved export tree or corrupt DB yields downloaded 0 / missing = live (or an empty matrix), and the plan's acceptance cannot distinguish 'unreadable' from 'nothing downloaded'.",
+      "uncertainty": "Implementation could resolve the manifest from the account root (server/admin/api.js accountFor) instead of account.export.manifestPath; the plan does not say which, and the stored paths are already stale in the committed store.",
+      "counterexample": "export tree moved from /opt/icloud3 to the current root; account.export.manifestPath still points at /opt/icloud3/... or /tmp/manifest.sqlite3."
+    },
+    {
+      "id": "C5",
+      "scenario": "Operator selects 500 accounts and clicks Export/Recheck/Scan once (P0-3).",
+      "assumption": "A bulk action on 500 accounts enqueues 500 jobs reliably with partial-failure reporting.",
+      "evidence": "server/config.js:118 maxQueue default is 500; server/socket/worker-pool.js:559 throws when the queue length is at the cap; server/socket/admin.js:69 default guard is 60 events/10 s; the client currently calls one admin:export per account (src/admin/useAdminSocket.js:312-315).",
+      "result": "supported",
+      "outcome": "A per-account replay hits the 60/10 s guard after 60 selections; even a server-side loop can exceed the 500 queue cap as soon as any other job is queued. The plan's acceptance uses 3 accounts and does not define rejects.",
+      "uncertainty": "A new single server-side bulk command can avoid the per-event guard but not the queue cap unless it reports or queues overflow.",
+      "counterexample": "select 500, click Export; the 61st per-account admin:export in 10 s gets 'rate limited', and a 500-item queue is already at MAX_QUEUE."
+    },
+    {
+      "id": "C6",
+      "scenario": "3 a.m. operator filters the new Jobs view for 'failed' after an export died with a worker error.",
+      "assumption": "The backend has job states queued/running/done/failed as the acceptance requires.",
+      "evidence": "FEATURES.md:93 requires one job in each of queued/running/done/failed. A grep for status: \"failed\" in server/socket and server/store.js returns no writer; terminal failures are written status: \"error\" at server/socket/worker-pool.js:1158, and restart writes unknown at server/store.js:206.",
+      "result": "supported",
+      "outcome": "The failed filter is empty while the failed export is under error (or unknown). The acceptance test cannot pass as written, and the plan never defines how error/unknown map to the UI's 'failed'.",
+      "uncertainty": "The UI layer could map error/unknown to a 'failed' group; then the plan's wording must change and the restart case must be included.",
+      "counterexample": "an export dies with a worker error; the job is status 'error'; the operator's Failed filter (expecting 'failed') shows nothing."
+    },
+    {
+      "id": "C7",
+      "scenario": "P0-2 is blocked because the Node admin web process has no SQLite driver.",
+      "assumption": "The matrix needs a new npm dependency to read manifest.sqlite3.",
+      "evidence": "package.json dependencies contain no sqlite package, but server/gate.js:24 uses require(\"node:sqlite\").DatabaseSync and the host runs Node v24.21.0.",
+      "result": "refuted",
+      "outcome": "node:sqlite is available in-process, so the dependency itself is not a blocker; the open issue is which process owns the read and how it handles locks/stale paths.",
+      "uncertainty": "Concurrent worker writes could produce SQLITE_BUSY if the read is not retried; the plan does not specify the read path.",
+      "counterexample": "the reviewer expects a sqlite npm dependency; node:sqlite is already used by gate.js on Node 24."
+    }
+  ]
+}

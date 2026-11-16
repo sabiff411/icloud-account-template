@@ -1,0 +1,11 @@
+{
+  "score": 4,
+  "verdict": "REVISE before implementation: P0 intent is right, but no P0 names its owning process or data model, and two existing store defects undermine P0-1/P0-3 at campaign scale.",
+  "top3": [
+    "Assign every P0 a side: P0-1/P0-3 socket-side (store.jobs + pool cancel/retry/priority); P0-2/P0-4 Python-side (verify/export emit live/exported/missing/bytes/failures); web renders only. Ban node:sqlite in the web process.",
+    "Define P0-4's manifest migration and per-key retry together with P0-2: idempotent ALTER for reason/attempt, one definition of 'missing', per-area ok tri-state, so failed and never-attempted are distinguishable.",
+    "Fix the two store defects before the jobs view ships: requeue 'unknown' jobs on boot, and never evict active jobs from the 1000-job cap."
+  ],
+  "confidence": "high",
+  "what_would_change": "A P0 ownership/data-model table plus those two store fixes would raise this to 8; merging P0-2 and P0-4 into one Python-owned 'download truth' item would raise it to 7."
+}

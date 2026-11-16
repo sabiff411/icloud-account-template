@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { accountUrl, bytes, fileUrl, getJson, getText } from "./api.js";
 import { Empty, Spinner, displayName } from "./ui.jsx";
+import NoteImages from "./NoteImages.jsx";
 
 export default function NotesTab({ account }) {
   const [files, setFiles] = useState([]);
@@ -11,6 +12,7 @@ export default function NotesTab({ account }) {
   const [reading, setReading] = useState(false);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
+  const [noteIndex, setNoteIndex] = useState({});
 
   // Notes are the first items the exporter writes.  Refresh while the export
   // runs so they show up immediately, without resetting the open note.
@@ -27,6 +29,11 @@ export default function NotesTab({ account }) {
     getJson(accountUrl(account.id, "tree", { path: "Notes/txt" }))
       .then((result) => {
         if (!alive) return;
+        if (result.missing) {
+          setError("path not found");
+          setLoading(false);
+          return;
+        }
         setFiles(result.files || []);
         setSelected((current) =>
           result.files?.some((file) => file.path === current)
@@ -44,6 +51,19 @@ export default function NotesTab({ account }) {
       alive = false;
     };
   }, [account.id, tick, account.export?.phase]);
+
+  // Which notes carry images, so they can be spotted in the list.
+  useEffect(() => {
+    let alive = true;
+    getJson(fileUrl(account.id, "Notes/index.json"))
+      .then((data) => {
+        if (alive && data) setNoteIndex(data);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [account.id, tick]);
 
   useEffect(() => {
     if (!selected) return;
@@ -74,7 +94,7 @@ export default function NotesTab({ account }) {
   }, [files, filter]);
 
   if (loading) return <Spinner label="Loading notes" />;
-  if (error) return <Empty title="Notes are not exported yet">{error}</Empty>;
+  if (error) return <Empty title="Notes are not exported yet">{/path not found/i.test(error) ? `${(Number(account.counts?.notes) || 0).toLocaleString()} in iCloud · 0 downloaded. Run Export missing to fetch notes.` : error}</Empty>;
 
   return (
     <div className="grid gap-3 lg:grid-cols-[320px_1fr]">
@@ -98,7 +118,18 @@ export default function NotesTab({ account }) {
               }`}
             >
               <div className="truncate text-[12px] font-medium text-[#1d1d1f]">{displayName(file.name)}</div>
-              <div className="text-[10px] text-[#6e6e73]">{bytes(file.size)}</div>
+              <div className="flex items-center gap-1.5 text-[10px] text-[#6e6e73]">
+                <span>{bytes(file.size)}</span>
+                {(() => {
+                  const id = file.name.split("_")[0];
+                  const count = noteIndex[id]?.images?.length ?? 0;
+                  return count ? (
+                    <span className="rounded-full bg-[#eef5ff] px-1.5 text-[9px] font-semibold text-[#0058b0]">
+                      {count} image{count > 1 ? "s" : ""}
+                    </span>
+                  ) : null;
+                })()}
+              </div>
             </button>
           ))}
           {!visible.length ? <p className="px-3 py-6 text-center text-[12px] text-[#6e6e73]">No notes.</p> : null}
@@ -119,9 +150,12 @@ export default function NotesTab({ account }) {
             </a>
           ) : null}
         </div>
-        <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words p-4 text-[13px] leading-6 text-[#1d1d1f]">
-          {reading ? "Loading…" : body || "This note has no text."}
-        </pre>
+        <div className="max-h-[520px] overflow-auto p-4">
+          <pre className="whitespace-pre-wrap break-words text-[13px] leading-6 text-[#1d1d1f]">
+            {reading ? "Loading…" : body || "This note has no text."}
+          </pre>
+          {selected ? <NoteImages accountId={account.id} txtPath={selected} /> : null}
+        </div>
       </div>
     </div>
   );

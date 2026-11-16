@@ -1,0 +1,12 @@
+{
+  "role": "correctness",
+  "score": 7,
+  "verdict": "SHIP",
+  "top3": [
+    "`overall` never includes the node rows: server/admin/health.js:424 ranks only `checks`, and src/admin/ServicesTab.jsx:112 then merges just `workerStatus`, so with a healthy gate one dead exporter reads overall=yellow while its row is red — masked today because gate red already forces overall=red.",
+    "probeS4 (server/admin/health.js:280-311) walks the NFS export tree with fs.readdir + one fs.stat per account inside the 1200 ms race; the COR-2 threadpool leak returns on the health path the moment S4 keys exist, and probeDf has no 30 s breaker although plan-v2:12-14 promises one.",
+    "The Prometheus three-way join (server/admin/health.js:327-329) has no fixture test; only live 9/9 and one down target are proven, so the absent-target and duplicate-label branches that broke v1 are still unasserted by health.test.mjs."
+  ],
+  "what_would_change": "One test file: fixture /api/v1/targets JSON asserting node rows for host.docker.internal, a stripped :9100 instance, a missing target, and overall=red with a healthy gate plus one dead exporter.",
+  "bias": "same base model"
+}

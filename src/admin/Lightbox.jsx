@@ -1,5 +1,6 @@
-import { useEffect } from "react";
-import { fileUrl, bytes } from "./api.js";
+import { useEffect, useState } from "react";
+import RetryImage from "./RetryImage.jsx";
+import { fileUrl, bytes, thumbUrl, previewUrl } from "./api.js";
 import { displayName } from "./ui.jsx";
 
 /* Full-size viewer. Arrows at the edges are deliberately large; arrows keys
@@ -15,6 +16,8 @@ export default function Lightbox({
   pageLabel = "",
 }) {
   const item = items[index];
+  const [videoFallback, setVideoFallback] = useState(false);
+  useEffect(() => setVideoFallback(false), [item?.path]);
   const count = items.length;
   const prev =
     onPrev ?? (() => setIndex?.((index - 1 + count) % count));
@@ -59,6 +62,25 @@ export default function Lightbox({
           </div>
         </div>
         <div className="flex shrink-0 gap-2">
+          {(() => {
+            const direct = item.video
+              ? item.playSrc || item.src
+              : /\.(heic|heif)$/i.test(item.name)
+                ? item.previewSrc || item.src
+                : item.src;
+            return direct && direct.startsWith("http") ? (
+              <a
+                href={direct}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(event) => event.stopPropagation()}
+                className="rounded-full bg-white/20 px-3 py-1.5 hover:bg-white/25"
+                title="Open the signed S4 object"
+              >
+                S3
+              </a>
+            ) : null;
+          })()}
           <a
             href={fileUrl(owner, item.path, true)}
             onClick={(event) => event.stopPropagation()}
@@ -91,8 +113,13 @@ export default function Lightbox({
         {item.video ? (
           <video
             key={item.path}
-            src={fileUrl(owner, item.play || item.path)}
-            poster={item.thumb ? fileUrl(owner, item.thumb) : undefined}
+            src={
+              videoFallback
+                ? fileUrl(owner, item.play || item.path, false, item.mtime)
+                : item.playSrc || fileUrl(owner, item.play || item.path, false, item.mtime)
+            }
+            onError={() => setVideoFallback(true)}
+            poster={item.thumbSrc || thumbUrl(owner, item.path)}
             controls
             autoPlay
             muted
@@ -102,8 +129,24 @@ export default function Lightbox({
           />
         ) : (
           (() => {
-            const heic = /\.(heic|heif)$/i.test(item.name);
-            const src = heic ? item.preview || item.thumb || "" : item.path;
+            // Formats the browser cannot draw: HEIC and the print/scan
+            // formats (TIFF, BMP, camera raw) all go through the JPEG
+            // preview route instead of the original bytes.
+            const heic = /\.(heic|heif|tiff?|bmp|dng|nef|cr2|cr3|arw|orf|rw2|raf|srw|psd)$/i.test(
+              item.name
+            );
+            // HEIC/HEIF cannot be decoded by Chrome/Safari-on-macOS-image-tags,
+            // so ask the server for (or generate once) a large JPEG.  The
+            // 512 px grid thumbnail was the only fallback before, which made
+            // phone photos unreadable in this viewer.
+            // Prefer the direct S4 object.  The URL is stable for five
+            // minutes (s4.js rounds the signing time), so the browser can
+            // cache the object; the local route is the fallback after a
+            // prune or an expired signature.
+            const localSrc = heic
+              ? previewUrl(owner, item.path, item.mtime)
+              : fileUrl(owner, item.path, false, item.mtime);
+            const src = (heic ? item.previewSrc : item.src) || localSrc;
             if (!src) {
               return (
                 <div className="rounded-[10px] bg-white/10 px-6 py-10 text-center text-[13px] text-white/70">
@@ -111,10 +154,15 @@ export default function Lightbox({
                 </div>
               );
             }
+            const url =
+              src.startsWith("http") || src.startsWith("/api/")
+                ? src
+                : fileUrl(owner, src);
             return (
-              <img
+              <RetryImage
                 key={item.path}
-                src={fileUrl(owner, src)}
+                src={url}
+                fallbackSrc={localSrc}
                 alt={displayName(item.name)}
                 onClick={(event) => event.stopPropagation()}
                 className="max-h-full max-w-full rounded-[10px] object-contain shadow-2xl"

