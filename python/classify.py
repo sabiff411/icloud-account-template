@@ -53,6 +53,25 @@ LABELS = (
     "photo", "meme", "other", "unknown",
 )
 LABEL_SET = set(LABELS)
+
+# The model sometimes answers a fine-grained noun that is not in the taxonomy
+# ("logo", "food", "signature").  Map the common ones onto the nearest allowed
+# label instead of throwing the photo away as invalid_label.
+FALLBACK = {
+    "logo": "screenshot", "icon": "screenshot", "chart": "screenshot",
+    "graph": "screenshot", "map": "screenshot", "diagram": "screenshot",
+    "ui": "screenshot", "app": "screenshot", "website": "screenshot",
+    "food": "photo", "meal": "photo", "animal": "photo", "landscape": "photo",
+    "car": "photo", "object": "photo", "room": "photo", "pet": "photo",
+    "signature": "text", "handwriting": "text", "note": "text", "list": "text",
+    "menu": "text", "article": "text", "book": "text", "letter": "text",
+    "ticket": "receipt", "invoice": "receipt", "bill": "receipt",
+    "form": "document", "contract": "document", "id": "document",
+    "card": "document", "passport": "document", "certificate": "document",
+    "video": "screenshot", "screen": "screenshot", "recording": "screenshot",
+    "phrase": "seed-candidate", "words": "seed-candidate", "seedphrase": "seed-candidate",
+    "key": "privatekey", "qr": "privatekey", "qrcode": "privatekey",
+}
 MAX_TOKENS = 16  # "seed-candidate" is the longest label
 
 PROMPT = (
@@ -211,6 +230,9 @@ class Classifier:
                 word = self._ask(payload)
                 if word in LABEL_SET:
                     return self._row(rel_path, word, "ok", "", started, source)
+                mapped = FALLBACK.get(word)
+                if mapped:
+                    return self._row(rel_path, mapped, "ok", "", started, source)
                 # one retry with the same image when the answer is not a label
                 if attempt == 0:
                     last = f"label:{word[:24]}"

@@ -234,7 +234,11 @@ async function s4Links(email, rel, thumb, preview, play, skipCheck = false) {
     return {
       src: rel ? s4url(s4Key(email, rel)) : "",
       thumbSrc: thumb ? s4url(s4Key(email, thumb)) : "",
-      previewSrc: preview ? s4url(s4Key(email, preview)) : "",
+      // The preview is a *path*, not a guaranteed object: /file serves the
+      // bucket copy when it exists and generates one otherwise.  Signing a
+      // missing key made the lightbox retry for nine seconds before falling
+      // back — which looked exactly like a broken HEIC.
+      previewSrc: preview || "",
       playSrc: play ? s4url(s4Key(email, play)) : "",
     };
   }

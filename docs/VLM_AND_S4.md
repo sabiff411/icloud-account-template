@@ -117,3 +117,44 @@ and `HEAD` from the panel origin and exposing `content-length`,
   (`download=1` still returns the original bytes).
 * The `seed` label is triage, not proof: measured precision ~2 % on one
   account. Only a checksum-valid transcription counts as a phrase.
+
+## 6. HEIC (and every other format a browser cannot draw)
+
+The rule: **the panel never receives raw HEIC**. `server/admin/api.js` serves
+JPEG for `heic heif tif tiff bmp dng nef cr2 cr3 arw orf rw2 raf srw psd` on
+`/file` and `/preview`; `?download=1` is the only way to get the original.
+
+Ordering inside `/file` matters and is the thing that used to break:
+
+```text
+1. ?preview=1        JSON metadata, from the extension when no local bytes
+2. RAW_FORMAT        JPEG preview (local original, or the signed S4 object)
+3. local missing     stream the S4 object (video/range/serving)
+4. local file        range stream
+```
+
+Before this order the transcode sat *after* the S4 branch, so the moment a
+prune deleted the local original, `/file` streamed `image/heic` and the
+lightbox stayed black. That is why "it worked, then new downloads broke it":
+the downloader prunes as it goes.
+
+Caching:
+
+* generated preview → `cache-control: private, no-cache` + ETag, so a browser
+  that cached the old raw HEIC revalidates and gets pixels at once;
+* raw S4 fallback for a raw format → `private, no-cache` (retry next time);
+* thumbnails and ordinary files → `private, max-age=...`.
+
+A cached preview is regenerated when the original is newer than the JPEG, so a
+re-downloaded photo never keeps an old frame. Generation failures (a DNG
+Pillow cannot read) are remembered for 120 s so a broken photo cannot spawn a
+Python process on every tile, and `/preview` falls back to the 640 px tile.
+
+`previewSrc` in the gallery JSON is a **relative** path
+(`Scan/previews/<rel>.jpg`), not a signed S4 URL: `/file` serves the bucket
+copy when it exists and builds one otherwise. Signing a preview that was never
+generated 404s and made the lightbox retry for nine seconds.
+
+Upkeep: `python/warm_previews.py` pre-builds local previews and a cron runs it
+every 15 minutes (`--limit 600 --workers 6`, flock on
+`classify/warm.lock`). Pruned accounts are covered on demand from S4.

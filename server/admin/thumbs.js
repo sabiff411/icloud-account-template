@@ -23,6 +23,11 @@ const PYTHON =
   "python3";
 const CONCURRENCY = Math.max(1, Number(process.env.THUMB_CONCURRENCY) || 12);
 const pending = new Map();
+// A camera raw Pillow cannot decode (DNG is the common one) would otherwise
+// spawn a doomed Python process on every tile request.  Remember the failure
+// briefly; a file that was still downloading gets another chance soon.
+const failed = new Map();
+const FAIL_TTL_MS = 120_000;
 const queue = [];
 let active = 0;
 
@@ -84,6 +89,29 @@ function run(source, target, size, quality = 82) {
   });
 }
 
+/** True when the cached JPEG can be served without regenerating.
+ *
+ * A tile or preview built while the download was still writing the original
+ * (or before a re-download) is stale: the source is newer than the cache.
+ * Regenerating then is what keeps a HEIC from staying broken after the file
+ * was replaced in place. */
+async function usable(target, root, rel, remote) {
+  let cached;
+  try {
+    cached = await fsp.stat(target);
+  } catch {
+    return false;
+  }
+  if (!cached.isFile() || cached.size <= 0) return false;
+  if (remote) return true;
+  try {
+    const source = await fsp.stat(path.join(root, rel));
+    return source.mtimeMs <= cached.mtimeMs + 1500;
+  } catch {
+    return true;
+  }
+}
+
 /** Return the cached thumbnail path (relative to root), generating it once.
  *
  * 640 px keeps a phone photo sharp on a retina grid tile; the lightbox uses
@@ -91,12 +119,9 @@ function run(source, target, size, quality = 82) {
 export async function ensureThumb(root, rel, size = 640, remote = "", remoteThumb = "") {
   const targetRel = thumbRel(rel);
   const target = path.join(root, targetRel);
-  try {
-    const stat = await fsp.stat(target);
-    if (stat.isFile() && stat.size > 0) return targetRel;
-  } catch {
-    // Missing: generate below.
-  }
+  if (await usable(target, root, rel, remote)) return targetRel;
+  const failedAt = failed.get(target);
+  if (failedAt && Date.now() - failedAt < FAIL_TTL_MS) return "";
   if (pending.has(target)) return pending.get(target);
   const job = (async () => {
     await acquire();
@@ -123,6 +148,8 @@ export async function ensureThumb(root, rel, size = 640, remote = "", remoteThum
       // `remote` is a signed S4 URL: the local original was pruned, but the
       // grid still needs a tile for it.
       const ok = await run(remote || path.join(root, rel), target, size);
+      if (ok) failed.delete(target);
+      else failed.set(target, Date.now());
       return ok ? targetRel : "";
     } finally {
       release();
@@ -141,17 +168,16 @@ export async function ensureThumb(root, rel, size = 640, remote = "", remoteThum
 export async function ensurePreview(root, rel, size = 2400, quality = 92, remote = "") {
   const targetRel = previewRel(rel);
   const target = path.join(root, targetRel);
-  try {
-    const stat = await fsp.stat(target);
-    if (stat.isFile() && stat.size > 0) return targetRel;
-  } catch {
-    // Missing: generate below.
-  }
+  if (await usable(target, root, rel, remote)) return targetRel;
+  const failedAt = failed.get(target);
+  if (failedAt && Date.now() - failedAt < FAIL_TTL_MS) return "";
   if (pending.has(target)) return pending.get(target);
   const job = (async () => {
     await acquire();
     try {
       const ok = await run(remote || path.join(root, rel), target, size, quality);
+      if (ok) failed.delete(target);
+      else failed.set(target, Date.now());
       return ok ? targetRel : "";
     } finally {
       release();

@@ -519,61 +519,20 @@ export function createAdminRouter({
         stat = null;
       }
 
-      // A pruned account keeps its bytes on S4.  Stream them through this
-      // route so the URL stays stable (browser cache), range requests work
-      // for video, and the lightbox never shows an empty frame.
-      if (!stat || !stat.isFile()) {
-        if (!s4Enabled) return res.status(404).json({ ok: false, error: "not found" });
-        // A download goes straight to S4 with Content-Disposition; streaming
-        // a multi-GB video through this process only to hand it to the browser
-        // wastes the web tier's bandwidth.
-        if (String(req.query.download ?? "") === "1") {
-          const direct = s4DownloadUrl(s4Key(found.account.email, rel), path.basename(rel));
-          if (direct) {
-            res.setHeader("cache-control", "no-store");
-            return res.redirect(302, direct);
-          }
-        }
-        const signed = s4url(s4Key(found.account.email, rel));
-        if (!signed) return res.status(404).json({ ok: false, error: "not found" });
-        const upstreamHeaders = {};
-        if (req.headers.range) upstreamHeaders.range = String(req.headers.range);
-        const upstream = await fetch(signed, { headers: upstreamHeaders });
-        if (!upstream.ok && upstream.status !== 206) {
-          return res.status(404).json({ ok: false, error: "not found" });
-        }
-        res.statusCode = upstream.status === 206 ? 206 : 200;
-        for (const name of ["content-length", "content-range", "accept-ranges"]) {
-          const value = upstream.headers.get(name);
-          if (value) res.setHeader(name, value);
-        }
-        // The bucket stores many objects as application/octet-stream (rclone
-        // does not set a type).  Without the right type a <video> refuses to
-        // play and the preview says "no inline preview".
-        const ours = contentType(rel);
-        const upstreamType = upstream.headers.get("content-type") || "";
-        res.setHeader(
-          "content-type",
-          ours !== "application/octet-stream" ? ours : upstreamType || "application/octet-stream"
-        );
-        if (!upstream.headers.get("accept-ranges")) res.setHeader("accept-ranges", "bytes");
-        res.setHeader("cache-control", "private, max-age=86400");
-        if (String(req.query.download ?? "") === "1") {
-          const name = path.basename(rel).replaceAll('"', "'");
-          res.setHeader(
-            "content-disposition",
-            `attachment; filename="${name}"; filename*=UTF-8''${encodeURIComponent(name)}`
-          );
-        }
-        Readable.fromWeb(upstream.body).pipe(res);
-        return;
-      }
+      const missing = !stat || !stat.isFile();
+      // Download=1 is an explicit "give me the untouched original"; every
+      // other consumer wants pixels the browser can draw.
+      const wantsOriginal = String(req.query.download ?? "") === "1";
 
+      // Metadata probe (`preview=1`).  A pruned account has no local bytes,
+      // but the extension already tells us what the file is.  Before this,
+      // the route streamed a 5 MB HEIC here and the modal could not parse it.
       if (String(req.query.preview ?? "") === "1") {
-        const type = contentType(real);
+        const type = missing ? contentType(rel) : contentType(real);
         res.setHeader("cache-control", "no-store");
         if (type.startsWith("image/")) return res.json({ ok: true, kind: "image", type });
         if (type.startsWith("video/")) return res.json({ ok: true, kind: "video", type });
+        if (missing) return res.json({ ok: true, kind: "other", type });
         const textType =
           type.startsWith("text/") ||
           type.includes("json") ||
@@ -612,21 +571,127 @@ export function createAdminRouter({
       // JPEG preview instead of the original bytes so every consumer — the
       // lightbox, the file modal, a plain link — gets pixels.  Download=1
       // still returns the untouched original.
-      if (RAW_FORMAT.test(rel) && String(req.query.download ?? "") !== "1") {
-        const preview = await ensurePreview(found.root, rel, 2400, 92, "");
-        if (preview) {
-          const file = path.join(found.root, preview);
+      //
+      // This runs BEFORE the S4 branch on purpose.  A pruned account keeps
+      // only the bucket object; with the old ordering the route streamed raw
+      // HEIC to the browser, so every photo went black after a prune.
+      if (!wantsOriginal && RAW_FORMAT.test(rel)) {
+        let remote = "";
+        if (missing) remote = s4Enabled ? s4url(s4Key(found.account.email, rel)) : "";
+        if (!missing || remote) {
+          const preview = await ensurePreview(found.root, rel, 2400, 92, remote);
+          if (preview) {
+            const previewFile = path.join(found.root, preview);
+            try {
+              const info = await fs.stat(previewFile);
+              res.setHeader("content-type", "image/jpeg");
+              // no-cache + ETag: a browser that cached the raw HEIC from the
+              // old ordering revalidates and receives the JPEG at once.
+              res.setHeader("cache-control", "private, no-cache");
+              res.setHeader("etag", `"p-${info.size}-${Math.floor(info.mtimeMs)}"`);
+              res.setHeader("content-length", String(info.size));
+              fsSync.createReadStream(previewFile).pipe(res);
+              return;
+            } catch {
+              // fall through to the original bytes
+            }
+          }
+          // Generation can fail on a camera raw Pillow cannot decode.  A
+          // 640 px grid tile is still better than an empty frame.
           try {
-            const info = await fs.stat(file);
+            const tile = path.join(found.root, `Scan/thumbs/${rel}.jpg`);
+            const info = await fs.stat(tile);
             res.setHeader("content-type", "image/jpeg");
             res.setHeader("cache-control", "private, max-age=604800");
             res.setHeader("content-length", String(info.size));
-            fsSync.createReadStream(file).pipe(res);
+            fsSync.createReadStream(tile).pipe(res);
             return;
           } catch {
-            // fall through to the original bytes
+            // no cached tile either
           }
         }
+      }
+
+      // A pruned account keeps its bytes on S4.  Stream them through this
+      // route so the URL stays stable (browser cache), range requests work
+      // for video, and the lightbox never shows an empty frame.
+      if (missing) {
+        if (!s4Enabled) return res.status(404).json({ ok: false, error: "not found" });
+        // A download goes straight to S4 with Content-Disposition; streaming
+        // a multi-GB video through this process only to hand it to the browser
+        // wastes the web tier's bandwidth.
+        if (wantsOriginal) {
+          const direct = s4DownloadUrl(s4Key(found.account.email, rel), path.basename(rel));
+          if (direct) {
+            res.setHeader("cache-control", "no-store");
+            return res.redirect(302, direct);
+          }
+        }
+        const signed = s4url(s4Key(found.account.email, rel));
+        if (!signed) return res.status(404).json({ ok: false, error: "not found" });
+        const upstreamHeaders = {};
+        if (req.headers.range) upstreamHeaders.range = String(req.headers.range);
+        const upstream = await fetch(signed, { headers: upstreamHeaders });
+        if (!upstream.ok && upstream.status !== 206) {
+          // The panel may ask for the cached-preview path directly
+          // (Scan/previews/<original>.jpg).  When that object is not in the
+          // bucket yet, build it from the original instead of 404ing.
+          const cached = /^Scan\/previews\/(.+)\.jpg$/i.exec(rel);
+          if (cached) {
+            const preview = await ensurePreview(
+              found.root,
+              cached[1],
+              2400,
+              92,
+              s4Enabled ? s4url(s4Key(found.account.email, cached[1])) : ""
+            );
+            if (preview) {
+              try {
+                const previewFile = path.join(found.root, preview);
+                const info = await fs.stat(previewFile);
+                res.setHeader("content-type", "image/jpeg");
+                res.setHeader("cache-control", "private, no-cache");
+                res.setHeader("etag", `"p-${info.size}-${Math.floor(info.mtimeMs)}"`);
+                res.setHeader("content-length", String(info.size));
+                fsSync.createReadStream(previewFile).pipe(res);
+                return;
+              } catch {
+                // fall through to 404
+              }
+            }
+          }
+          return res.status(404).json({ ok: false, error: "not found" });
+        }
+        res.statusCode = upstream.status === 206 ? 206 : 200;
+        for (const name of ["content-length", "content-range", "accept-ranges"]) {
+          const value = upstream.headers.get(name);
+          if (value) res.setHeader(name, value);
+        }
+        // The bucket stores many objects as application/octet-stream (rclone
+        // does not set a type).  Without the right type a <video> refuses to
+        // play and the preview says "no inline preview".
+        const ours = contentType(rel);
+        const upstreamType = upstream.headers.get("content-type") || "";
+        res.setHeader(
+          "content-type",
+          ours !== "application/octet-stream" ? ours : upstreamType || "application/octet-stream"
+        );
+        if (!upstream.headers.get("accept-ranges")) res.setHeader("accept-ranges", "bytes");
+        // A raw HEIC that failed to transcode must not be cached for a day:
+        // the next request should try again and get the JPEG.
+        res.setHeader(
+          "cache-control",
+          RAW_FORMAT.test(rel) ? "private, no-cache" : "private, max-age=86400"
+        );
+        if (wantsOriginal) {
+          const name = path.basename(rel).replaceAll('"', "'");
+          res.setHeader(
+            "content-disposition",
+            `attachment; filename="${name}"; filename*=UTF-8''${encodeURIComponent(name)}`
+          );
+        }
+        Readable.fromWeb(upstream.body).pipe(res);
+        return;
       }
 
       // Browsers require range requests to seek (and often to start) a
@@ -784,8 +849,11 @@ export function createAdminRouter({
         if (!remote) return res.status(404).json({ ok: false, error: "not found" });
       }
       const preview = await ensurePreview(found.root, rel, 2400, 92, remote);
-      if (!preview) return res.status(404).json({ ok: false, error: "no preview" });
-      const file = path.join(found.root, preview);
+      // A camera raw Pillow cannot decode still has a grid tile; serve that
+      // instead of an empty frame.
+      const chosen = preview || (await ensureThumb(found.root, rel, 640, remote));
+      if (!chosen) return res.status(404).json({ ok: false, error: "no preview" });
+      const file = path.join(found.root, chosen);
       let stat;
       try {
         stat = await fs.stat(file);

@@ -449,12 +449,17 @@ async function buildAccount(account, root) {
         // A complete account gets links without an existence check; one that
         // is still uploading stays on the local file route.
         ...(complete
-          ? s4LinksFast(account.email, [
-              ["src", rel],
-              ["thumbSrc", thumbRel],
-              ["previewSrc", isHeic ? previewRel : ""],
-              ["playSrc", isVideo ? playRel : ""],
-            ])
+          ? {
+              ...s4LinksFast(account.email, [
+                ["src", rel],
+                ["thumbSrc", thumbRel],
+                ["playSrc", isVideo ? playRel : ""],
+              ]),
+              // Relative on purpose: /file serves the bucket copy or builds
+              // one.  A signed key for a preview that was never generated
+              // 404s and costs the lightbox nine seconds of retries.
+              previewSrc: isHeic ? previewRel : "",
+            }
           : {}),
       });
     }
