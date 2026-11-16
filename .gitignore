@@ -21,3 +21,19 @@ session-export/
 bench/**/.venv/
 bench/ocr/tess/
 *.deb
+
+# no data or images in git: code and notes only
+screenshots/
+compare/shots/
+compare/width_shots/
+artifacts/
+bench/ocr/samples/
+bench/ocr/eval/
+bench/ocr/results/
+bench/**/*.png
+bench/**/*.jpg
+bench/**/*.jpeg
+bench/**/*.webp
+bench/**/*.pdf
+*.csv
+*.log
