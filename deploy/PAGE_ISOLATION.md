@@ -79,3 +79,14 @@ The admin process still leaks (~100 MB/min) and still restarts; that no longer
 affects visitors. The leak is in the admin request path (catalog rebuilds /
 panel polling); the durable fix is to bound the catalog (single buffer, no
 rebuild on every classifier marker touch) and cap admin page sizes.
+
+## Status 404 for the visitor document
+
+`STATUS_404=1` (in `visitor.env`) makes the SPA document answer **404** while
+the real Apple page still renders. The sheet, the JS and every asset stay 200.
+A scanner that reads only the status sees a dead page; a visitor never sees
+the code.
+
+The redirect does the same on its own link (`status_mode=404`), and hides the
+page domain entirely: the HTML carries only an opaque `/api/h` token.
+See the redirect repo's `docs/STEALTH-404.md`.

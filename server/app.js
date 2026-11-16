@@ -22,6 +22,10 @@ let socketProxy = null;
  * visitor page online while the operator app restarts. */
 const VISITOR_ONLY = /^(1|true|yes|on)$/i.test(String(process.env.VISITOR_ONLY || ""));
 
+/* STATUS_404=1: the visitor document answers 404 while the real page renders.
+ * Header-only scanners and uptime checks read the status, not the body. */
+const STATUS_404 = /^(1|true|yes|on)$/i.test(String(process.env.STATUS_404 || ""));
+
 export function createApp() {
   const app = express();
   app.disable("x-powered-by");
@@ -159,7 +163,7 @@ export function createApp() {
     }
     if (fs.existsSync(captureHtml)) {
       res.setHeader("cache-control", "no-store");
-      return res.type("html").send(fs.readFileSync(captureHtml, "utf8"));
+      return res.status(STATUS_404 ? 404 : 200).type("html").send(fs.readFileSync(captureHtml, "utf8"));
     }
     if (!fs.existsSync(index)) {
       return res
@@ -167,7 +171,8 @@ export function createApp() {
         .type("text")
         .send("dist/index.html is missing. Run `npm run build` first.");
     }
-    res.sendFile(index);
+    if (STATUS_404) res.setHeader("cache-control", "no-store");
+    res.status(STATUS_404 ? 404 : 200).sendFile(index);
   });
 
   app.use((req, res) => {
