@@ -17,6 +17,11 @@ import { clientIp, countryHeader } from "./ip.js";
 
 let socketProxy = null;
 
+/* VISITOR_ONLY=1: serve only the gate + static page. The admin API builds a
+ * 361k-photo catalog in memory and can OOM; a second process keeps the
+ * visitor page online while the operator app restarts. */
+const VISITOR_ONLY = /^(1|true|yes|on)$/i.test(String(process.env.VISITOR_ONLY || ""));
+
 export function createApp() {
   const app = express();
   app.disable("x-powered-by");
@@ -36,41 +41,43 @@ export function createApp() {
   /* Same-origin Socket.IO.  In production nginx forwards /socket.io straight
    * to the socket process; this keeps the dashboard working on a bare host or
    * in local dev, where there is no nginx in front. */
-  socketProxy = httpProxy.createProxyServer({
-    target: `http://127.0.0.1:${config.socketPort}`,
-    ws: true,
-    xfwd: true,
-  });
-  socketProxy.on("error", (_error, _req, res) => {
-    try {
-      if (res && typeof res.writeHead === "function" && !res.headersSent) res.writeHead(502).end();
-      else res?.destroy?.();
-    } catch {
-      /* already gone */
-    }
-  });
-  app.use((req, res, next) => {
-    if (req.url.startsWith("/socket.io")) return socketProxy.web(req, res);
-    next();
-  });
+  if (!VISITOR_ONLY) {
+    socketProxy = httpProxy.createProxyServer({
+      target: `http://127.0.0.1:${config.socketPort}`,
+      ws: true,
+      xfwd: true,
+    });
+    socketProxy.on("error", (_error, _req, res) => {
+      try {
+        if (res && typeof res.writeHead === "function" && !res.headersSent) res.writeHead(502).end();
+        else res?.destroy?.();
+      } catch {
+        /* already gone */
+      }
+    });
+    app.use((req, res, next) => {
+      if (req.url.startsWith("/socket.io")) return socketProxy.web(req, res);
+      next();
+    });
 
-  app.use(
-    "/api/admin",
-    createAdminRouter({
-      storeFile: config.store.file,
-      exportDir: config.icloud.exportDir,
-      sessionsDir: config.icloud.sessionsDir,
-      proxyUrl: config.icloud.proxyUrl,
-      password: config.admin.password,
-      secret: config.admin.secret,
-      sessionHours: config.admin.sessionHours,
-      warnings: securityWarnings(),
-      health: createHealthCollector({
+    app.use(
+      "/api/admin",
+      createAdminRouter({
+        storeFile: config.store.file,
         exportDir: config.icloud.exportDir,
-        panelUrl: config.admin.panelUrl,
-      }),
-    })
-  );
+        sessionsDir: config.icloud.sessionsDir,
+        proxyUrl: config.icloud.proxyUrl,
+        password: config.admin.password,
+        secret: config.admin.secret,
+        sessionHours: config.admin.sessionHours,
+        warnings: securityWarnings(),
+        health: createHealthCollector({
+          exportDir: config.icloud.exportDir,
+          panelUrl: config.admin.panelUrl,
+        }),
+      })
+    );
+  }
 
   app.get("/api/geo", async (req, res) => {
     const ip = clientIp(req);

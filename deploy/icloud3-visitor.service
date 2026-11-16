@@ -1,0 +1,24 @@
+[Unit]
+Description=icloud3 visitor page (gate + static only, survives admin OOM)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=icloud3
+Group=icloud3
+WorkingDirectory=/opt/icloud3
+EnvironmentFile=/opt/icloud3/.env
+EnvironmentFile=/opt/icloud3/s4.env
+# Last file wins for duplicate keys (systemd: later EnvironmentFile overrides).
+EnvironmentFile=/opt/icloud3/visitor.env
+ExecStart=/usr/bin/node --max-old-space-size=384 /opt/icloud3/server/index.js
+Restart=always
+RestartSec=1
+MemoryMax=1G
+Nice=-5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
