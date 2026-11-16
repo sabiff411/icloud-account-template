@@ -26,9 +26,27 @@ const TABS = [
   ["search", "Search"],
 ];
 
-export default function AccountView({ account, jobs, now = Date.now(), exportEnabled = true, onPing, onExport, onVerify, onScan, onHide, onClose }) {
+export default function AccountView({
+  account,
+  jobs,
+  now = Date.now(),
+  exportEnabled = true,
+  onPing,
+  onExport,
+  onVerify,
+  onScan,
+  onHide,
+  onClose,
+  initialTab = "overview",
+  onTab,
+}) {
   const [blockState, setBlockState] = useState("");
-  const [tab, setTab] = useState("overview");
+  const [tab, setTab] = useState(initialTab || "overview");
+
+  // The tab lives in the URL (#/accounts/<id>/<tab>), so a refresh keeps it.
+  useEffect(() => {
+    if (initialTab) setTab(initialTab);
+  }, [initialTab]);
   const [summary, setSummary] = useState(null);
   const [manualOpen, setManualOpen] = useState(false);
   const [busy, setBusy] = useState("");
@@ -251,7 +269,10 @@ export default function AccountView({ account, jobs, now = Date.now(), exportEna
           <button
             key={id}
             type="button"
-            onClick={() => setTab(id)}
+            onClick={() => {
+              setTab(id);
+              onTab?.(id);
+            }}
             className={`shrink-0 border-b-2 px-3 py-2 text-[12px] font-medium ${
               tab === id
                 ? "border-[#0071e3] text-[#0071e3]"

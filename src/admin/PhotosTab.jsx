@@ -3,6 +3,8 @@ import { accountUrl, bytes, getJson, thumbUrl } from "./api.js";
 import { Empty, Spinner, displayName } from "./ui.jsx";
 import Lightbox from "./Lightbox.jsx";
 import RetryImage from "./RetryImage.jsx";
+import ImageMenu from "./ImageMenu.jsx";
+import { BALANCE_LABEL, markOf, useMarks } from "./marks.js";
 
 const BASE_AREAS = ["All", "Library", "Hidden", "Recently Deleted", "Drive"];
 const KINDS = [
@@ -49,6 +51,9 @@ export default function PhotosTab({ account }) {
   const [failed, setFailed] = useState({});
   const [retryTick, setRetryTick] = useState(0);
   const [tick, setTick] = useState(0);
+  const [favoriteOnly, setFavoriteOnly] = useState(false);
+  const [menu, setMenu] = useState(null);
+  const { marks, update } = useMarks(account.email);
   const pageRef = useRef(0);
   const busyRef = useRef(false);
   const sentinelRef = useRef(null);
@@ -67,6 +72,7 @@ export default function PhotosTab({ account }) {
             area,
             q: query,
             kind,
+            favorite: favoriteOnly ? 1 : "",
             page: next,
             pageSize: PAGE_SIZE,
           })
@@ -89,7 +95,7 @@ export default function PhotosTab({ account }) {
         setLoadingMore(false);
       }
     },
-    [account.id, area, query, kind]
+    [account.id, area, query, kind, favoriteOnly]
   );
 
   // The exporter writes each photo as soon as it is downloaded.  While an
@@ -138,13 +144,13 @@ export default function PhotosTab({ account }) {
     scrollRef.current?.scrollTo({ top: 0 });
     loadPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [account.id, area, query]);
+  }, [account.id, area, query, kind, favoriteOnly]);
 
   // A refresh tick reloads the first page and merges it into the head.
   useEffect(() => {
     if (!tick) return;
     let alive = true;
-    getJson(accountUrl(account.id, "gallery", { area, q: query, page: 1, pageSize: PAGE_SIZE }))
+    getJson(accountUrl(account.id, "gallery", { area, q: query, kind, page: 1, pageSize: PAGE_SIZE }))
       .then((result) => {
         if (!alive) return;
         setItems((previous) => {
@@ -159,7 +165,7 @@ export default function PhotosTab({ account }) {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tick]);
+  }, [tick, kind]);
 
   // Infinite scroll: 100 more images each time the sentinel is reached.
   useEffect(() => {
@@ -213,6 +219,18 @@ export default function PhotosTab({ account }) {
               {name}
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => setFavoriteOnly((value) => !value)}
+            title="Only the images marked as a favourite"
+            className={`h-8 rounded-full px-3 text-[12px] font-medium ${
+              favoriteOnly
+                ? "bg-[#f0b429] text-[#1d1d1f]"
+                : "border border-[#d2d2d7] bg-white text-[#424245] hover:bg-[#fafafa]"
+            }`}
+          >
+            ★ Favourites
+          </button>
         </div>
         <select
           value={kind}
@@ -253,6 +271,11 @@ export default function PhotosTab({ account }) {
               key={item.path}
               type="button"
               onClick={() => setOpen(index)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setMenu({ x: event.clientX, y: event.clientY, item });
+              }}
               style={{ contentVisibility: "auto", containIntrinsicSize: "230px" }}
               className="group overflow-hidden rounded-[10px] border border-[#e5e5ea] bg-white text-left transition hover:border-[#0071e3] hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)]"
             >
@@ -316,6 +339,29 @@ export default function PhotosTab({ account }) {
                     {item.kind}
                   </span>
                 ) : null}
+                {(() => {
+                  const entry = markOf(marks, account.email, item.path);
+                  if (!entry) return null;
+                  return (
+                    <span className="absolute right-1 top-1 flex flex-col items-end gap-0.5">
+                      {entry.mark === "checked" ? (
+                        <span className="rounded bg-[#30a14e] px-1 text-[9px] font-semibold text-white">✓</span>
+                      ) : entry.mark === "unchecked" ? (
+                        <span className="rounded bg-[#6e6e73] px-1 text-[9px] font-semibold text-white">○</span>
+                      ) : entry.mark === "good" ? (
+                        <span className="rounded bg-[#0071e3] px-1 text-[9px] font-semibold text-white">★ good</span>
+                      ) : null}
+                      {entry.favorite ? (
+                        <span className="rounded bg-[#f0b429] px-1 text-[9px] font-semibold text-[#1d1d1f]">★ fav</span>
+                      ) : null}
+                      {entry.balance ? (
+                        <span className="rounded bg-[#1d1d1f]/85 px-1 text-[9px] font-semibold text-white">
+                          {BALANCE_LABEL[entry.balance] || entry.balance}
+                        </span>
+                      ) : null}
+                    </span>
+                  );
+                })()}
               </div>
               <div className="px-2 py-1.5">
                 <div className="truncate text-[11px] font-medium text-[#1d1d1f]" title={item.name}>
@@ -364,6 +410,24 @@ export default function PhotosTab({ account }) {
           onPrev={prev}
           onNext={next}
           onClose={() => setOpen(null)}
+        />
+      ) : null}
+
+      {menu ? (
+        <ImageMenu
+          x={menu.x}
+          y={menu.y}
+          entry={markOf(marks, account.email, menu.item.path)}
+          onClose={() => setMenu(null)}
+          onPick={async (patch) => {
+            const item = menu.item;
+            setMenu(null);
+            try {
+              await update(item.path, patch);
+            } catch (failure) {
+              setError(failure.message);
+            }
+          }}
         />
       ) : null}
     </div>

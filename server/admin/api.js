@@ -26,6 +26,7 @@ import {
 import { buildCatalog, queryCatalog } from "./library.js";
 import { loadRules, saveRules } from "./visibility.js";
 import { DEFAULT_TARGET, addBlock, loadBlocks, removeBlock } from "./blocks.js";
+import { clearMark, favouritePaths, loadMarks, setMark } from "./marks.js";
 import { localStorage } from "./storage.js";
 import { ensureThumb, ensurePreview } from "./thumbs.js";
 import { s4DownloadUrl, s4Enabled, s4exists, s4Key, s4url } from "./s4.js";
@@ -417,6 +418,10 @@ export function createAdminRouter({
         kind: String(req.query.kind ?? ""),
         page: numeric(req.query.page, 1, 1, 100000),
         pageSize: numeric(req.query.pageSize, 60, 0, 200000),
+        markedPaths:
+          String(req.query.favorite ?? "") === "1"
+            ? await favouritePaths(found.account.email)
+            : null,
       });
       res.setHeader("cache-control", "no-store");
       res.json({ ok: true, ...result });
@@ -487,6 +492,53 @@ export function createAdminRouter({
     asyncRoute(async (req, res) => {
       const rules = await saveRules(req.body?.rules ?? []);
       res.json({ ok: true, rules });
+    })
+  );
+
+  /* Operator marks: checked / good / favourite / wallet balance. */
+  router.get(
+    "/marks",
+    requireSession,
+    asyncRoute(async (req, res) => {
+      let marks = await loadMarks();
+      const email = String(req.query.email ?? "").trim().toLowerCase();
+      if (email) {
+        marks = Object.fromEntries(
+          Object.entries(marks).filter(([key]) => key.startsWith(`${email}/`))
+        );
+      }
+      if (String(req.query.favorite ?? "") === "1") {
+        marks = Object.fromEntries(
+          Object.entries(marks).filter(([, entry]) => entry.favorite)
+        );
+      }
+      res.setHeader("cache-control", "no-store");
+      res.json({ ok: true, marks });
+    })
+  );
+
+  router.post(
+    "/marks",
+    requireSession,
+    asyncRoute(async (req, res) => {
+      try {
+        const { marks } = await setMark(req.body || {});
+        res.json({ ok: true, marks });
+      } catch (error) {
+        res.status(400).json({ ok: false, error: error?.message || "invalid mark" });
+      }
+    })
+  );
+
+  router.delete(
+    "/marks",
+    requireSession,
+    asyncRoute(async (req, res) => {
+      const marks = await clearMark({
+        email: String(req.query.email ?? ""),
+        path: String(req.query.path ?? ""),
+      });
+      res.json({ ok: true, marks });
     })
   );
 

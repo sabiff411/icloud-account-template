@@ -57,6 +57,11 @@ IMAGE_EXT = {
 }
 RAW_EXT = {".dng", ".nef", ".mrw", ".cr2", ".cr3", ".arw", ".orf", ".rw2", ".sr2", ".raf", ".pef", ".srw"}
 
+SEED_KINDS = {
+    "seed", "crypto", "wallet", "ledger", "trezor", "recover", "secret",
+    "privatekey", "backup", "exchange", "safe",
+}
+
 PROMPT = """Classify this image and, if it contains seed words, extract them.
 
 First line, exactly: KIND: <one of seed, crypto, ledger, trezor, wallet, recover, safe, secret, privatekey, backup, exchange, screenshot, text, document, receipt, nude, selfie, person, photo, meme, other>
@@ -539,7 +544,11 @@ def classify(text: str, result: dict) -> dict:
     matched = [token for token in re.split(r"[^A-Za-z]+", stripped) if match_word(token)]
     model_kind = result.get("modelKind") or ""
     if result["checksum"]:
-        kind = "seed"
+        # A scene description can hit the BIP39 checksum by chance ("puppy
+        # table animal foot carpet dog leg room baby toy floor cage pet chair
+        # human" was a photo of a puppy).  Trust the model's own KIND: only a
+        # seed-ish label makes it a seed, otherwise it is a candidate.
+        kind = "seed" if (not model_kind or model_kind in SEED_KINDS) else "seed-candidate"
     elif result["count"] >= 8 and model_kind == "seed":
         kind = "seed-candidate"
     elif model_kind and model_kind != "seed":

@@ -109,6 +109,40 @@ export async function saveVisibility(rules) {
   return body;
 }
 
+export function getMarks(params = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") continue;
+    query.set(key, String(value));
+  }
+  const suffix = query.toString();
+  return getJson(`/api/admin/marks${suffix ? `?${suffix}` : ""}`);
+}
+
+export async function setMark(entry) {
+  const response = await fetch("/api/admin/marks", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(entry),
+  });
+  const body = await parse(response);
+  if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
+  return body;
+}
+
+export async function clearMark(email, path) {
+  const query = new URLSearchParams({ email, path });
+  const response = await fetch(`/api/admin/marks?${query}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+    headers: { accept: "application/json" },
+  });
+  const body = await parse(response);
+  if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
+  return body;
+}
+
 export function getBlocks() {
   return getJson("/api/admin/blocks");
 }

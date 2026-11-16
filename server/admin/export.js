@@ -364,7 +364,10 @@ async function cachedJson(file) {
 }
 
 /** One page of photos. `area` may be "All" (Library + Hidden + Deleted + Drive). */
-export async function gallery(root, { area = "All", q = "", kind = "", page = 1, pageSize = 60 } = {}) {
+export async function gallery(
+  root,
+  { area = "All", q = "", kind = "", page = 1, pageSize = 60, markedPaths = null } = {}
+) {
   const requested = String(area || "All").replace(/[\\/]+/g, "_");
   const segments =
     requested.toLowerCase() === "all"
@@ -462,14 +465,18 @@ export async function gallery(root, { area = "All", q = "", kind = "", page = 1,
     }
   }
 
-  const kindCounts = collected.reduce((acc, item) => {
+  // A favourites view only shows the paths the operator starred.
+  const pool =
+    markedPaths instanceof Set ? collected.filter((item) => markedPaths.has(item.path)) : collected;
+
+  const kindCounts = pool.reduce((acc, item) => {
     const key = item.kind || "unclassified";
     acc[key] = (acc[key] || 0) + 1;
     return acc;
   }, {});
   const wanted = String(kind || "").trim();
   const filtered =
-    wanted && wanted !== "any" ? collected.filter((item) => item.kind === wanted) : collected;
+    wanted && wanted !== "any" ? pool.filter((item) => item.kind === wanted) : pool;
   const all = filtered.sort((a, b) => b.mtime - a.mtime || byName(a, b));
   // pageSize <= 0 means "everything in one response": the profile view shows
   // one list with no pages and no infinite scroll.

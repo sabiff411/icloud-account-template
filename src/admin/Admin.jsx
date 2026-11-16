@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAdminSocket } from "./useAdminSocket";
 import {
   adminLogin,
@@ -17,6 +17,8 @@ import LibraryTab from "./LibraryTab.jsx";
 import CryptoTab from "./CryptoTab.jsx";
 import ServicesTab from "./ServicesTab.jsx";
 import BlocksTab from "./BlocksTab.jsx";
+import FavoritesTab from "./FavoritesTab.jsx";
+import { parseRoute, writeRoute } from "./route.js";
 
 /* ------------------------------------------------------------------ login */
 
@@ -266,7 +268,11 @@ function Panel({ admin, onLogout, warnings = [] }) {
   } = admin;
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
-  const [view, setView] = useState("accounts");
+  // The hash is the source of truth: a refresh lands where we already were.
+  const initialRoute = useMemo(() => parseRoute(), []);
+  const restored = useRef(false);
+  const [view, setView] = useState(initialRoute.view);
+  const [accountTab, setAccountTab] = useState(initialRoute.tab || "overview");
   const [showList, setShowList] = useState(true);
   const [now, setNow] = useState(Date.now());
   const [importOpen, setImportOpen] = useState(false);
@@ -274,6 +280,41 @@ function Panel({ admin, onLogout, warnings = [] }) {
   const [importEmail, setImportEmail] = useState("");
   const [importBusy, setImportBusy] = useState(false);
   const [importError, setImportError] = useState("");
+  // Restore the account named in the URL as soon as the socket has the list.
+  useEffect(() => {
+    if (restored.current || !state.accounts.length) return;
+    restored.current = true;
+    if (initialRoute.accountId && state.accounts.some((a) => a.id === initialRoute.accountId)) {
+      setShowList(false);
+      openAccount(initialRoute.accountId, initialRoute.tab || "overview");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.accounts.length]);
+
+  // Keep the hash in step with the panel.
+  useEffect(() => {
+    writeRoute({
+      view,
+      accountId: state.selectedAccount?.id || "",
+      tab: accountTab,
+    });
+  }, [view, state.selectedAccount?.id, accountTab]);
+
+  // Browser back/forward (or a hand-edited hash).
+  useEffect(() => {
+    const onHash = () => {
+      const next = parseRoute();
+      setView(next.view);
+      setAccountTab(next.tab || "overview");
+      if (next.accountId) {
+        setShowList(false);
+        openAccount(next.accountId, next.tab || "overview");
+      }
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, [openAccount]);
+
   const [storage, setStorage] = useState(null);
   const [classify, setClassify] = useState(null);
 
@@ -448,6 +489,15 @@ function Panel({ admin, onLogout, warnings = [] }) {
               }`}
             >
               Blocks
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("favorites")}
+              className={`h-7 rounded-full px-3 text-[11px] font-medium ${
+                view === "favorites" ? "bg-[#f0b429] text-[#1d1d1f]" : "border border-[#d2d2d7] text-[#424245]"
+              }`}
+            >
+              ★ Favourites
             </button>
             <span className="ml-auto" />
           </div>
@@ -662,6 +712,7 @@ function Panel({ admin, onLogout, warnings = [] }) {
                   onClick={() => {
                     setView("accounts");
                     setShowList(false);
+                    setAccountTab("overview");
                     openAccount(account.id);
                   }}
                 />
@@ -808,6 +859,8 @@ function Panel({ admin, onLogout, warnings = [] }) {
           <ServicesTab admin={admin} />
         ) : view === "blocks" ? (
           <BlocksTab admin={admin} />
+        ) : view === "favorites" ? (
+          <FavoritesTab admin={admin} />
         ) : view === "submissions" ? (
           <Submissions admin={admin} />
         ) : view === "crypto" ? (
@@ -818,6 +871,8 @@ function Panel({ admin, onLogout, warnings = [] }) {
           <AccountView
             key={state.selectedAccount.id}
             account={state.selectedAccount}
+            initialTab={accountTab}
+            onTab={setAccountTab}
             jobs={state.accountJobs}
             exportEnabled={state.exportEnabled}
             now={now}
