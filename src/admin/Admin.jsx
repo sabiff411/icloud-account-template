@@ -12,6 +12,7 @@ import {
 } from "./api.js";
 import { AccountBadge, Badge, StatusDot } from "./ui.jsx";
 import { accountBadges } from "./badges.js";
+import { accountHasData, accountIsLive } from "./accounts.js";
 import AccountView from "./AccountView.jsx";
 import LibraryTab from "./LibraryTab.jsx";
 import CryptoTab from "./CryptoTab.jsx";
@@ -19,6 +20,15 @@ import ServicesTab from "./ServicesTab.jsx";
 import BlocksTab from "./BlocksTab.jsx";
 import FavoritesTab from "./FavoritesTab.jsx";
 import { parseRoute, writeRoute } from "./route.js";
+
+/* The account list is fetched per scope; the remaining chips are applied
+ * client-side because the payload already holds every account. */
+function scopeFor(filter) {
+  if (filter === "hidden") return "hidden";
+  if (filter === "live") return "live";
+  if (filter === "data") return "data";
+  return "visible";
+}
 
 /* ------------------------------------------------------------------ login */
 
@@ -259,6 +269,7 @@ function Panel({ admin, onLogout, warnings = [] }) {
     clearAccount,
     pingAccount,
     exportAccount,
+    stopExport,
     verifyAccount,
     scanAccount,
     hideAccount,
@@ -321,7 +332,7 @@ function Panel({ admin, onLogout, warnings = [] }) {
   useEffect(() => {
     if (state.status !== "online") return undefined;
     const timer = setTimeout(
-      () => loadAccounts(1, query.trim(), filter === "hidden" ? "hidden" : "visible"),
+      () => loadAccounts(1, query.trim(), scopeFor(filter)),
       250
     );
     return () => clearTimeout(timer);
@@ -373,11 +384,8 @@ function Panel({ admin, onLogout, warnings = [] }) {
     const needle = query.trim().toLowerCase();
     return state.accounts.filter((account) => {
       if (filter !== "hidden") {
-        if (
-          filter === "live" &&
-          !["connected", "done", "exporting", "queued", "auth"].includes(account.status)
-        )
-          return false;
+        if (filter === "live" && !accountIsLive(account)) return false;
+        if (filter === "data" && !accountHasData(account)) return false;
         if (filter === "locked" && !account.locked) return false;
         if (filter === "issues" && !["error", "invalid", "dead", "twofa"].includes(account.status)) return false;
       }
@@ -516,6 +524,7 @@ function Panel({ admin, onLogout, warnings = [] }) {
                 {[
                   ["all", "All"],
                   ["live", "Live"],
+                  ["data", "Has data"],
                   ["locked", "Locked"],
                   ["issues", "Issues"],
                   ["hidden", "Hidden"],
@@ -878,6 +887,7 @@ function Panel({ admin, onLogout, warnings = [] }) {
             now={now}
             onPing={pingAccount}
             onExport={exportAccount}
+            onStop={stopExport}
             onVerify={verifyAccount}
             onScan={scanAccount}
             onHide={(hidden) => hideAccount(state.selectedAccount.id, hidden)}

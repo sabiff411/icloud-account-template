@@ -12,6 +12,7 @@ import logging
 import os
 import signal
 import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -45,11 +46,36 @@ class Manager:
         self.running = {"auth": 0, "export": 0, "scan": 0}
         self.stopping = False
 
+    # A job that hangs (a stalled proxy read, a 20k-photo walk) must not hold a
+    # slot for the life of the process: the pool then sees zero free slots and
+    # every ping/verify queues behind it for days.
+    SLOT_LIMITS = {
+        "auth": 15 * 60,
+        "ping": 15 * 60,
+        "verify": 6 * 3600,
+        "scan": 6 * 3600,
+        "export": 24 * 3600,
+        "import": 6 * 3600,
+    }
+
     def slots(self) -> dict:
+        now = time.time()
+        used = {"auth": 0, "export": 0, "scan": 0}
+        for job in list(self.jobs.values()):
+            kind = str(job.get("type") or "")
+            started = float(job.get("started") or now)
+            if now - started > self.SLOT_LIMITS.get(kind, 3600):
+                continue
+            if kind in ("auth", "ping", "verify"):
+                used["auth"] += 1
+            elif kind == "scan":
+                used["scan"] += 1
+            elif kind in ("export", "import"):
+                used["export"] += 1
         return {
-            "auth": max(0, self.config.max_auth_jobs - self.running["auth"]),
-            "export": max(0, self.config.max_export_jobs - self.running["export"]),
-            "scan": max(0, self.config.max_scan_jobs - self.running["scan"]),
+            "auth": max(0, self.config.max_auth_jobs - used["auth"]),
+            "export": max(0, self.config.max_export_jobs - used["export"]),
+            "scan": max(0, self.config.max_scan_jobs - used["scan"]),
         }
 
     def ready(self) -> None:
@@ -121,7 +147,7 @@ class Manager:
             return  # idempotent duplicate start
         ctx = auth.JobContext(job_id, payload, self.emitter)
         key = ctx.account.get("email", "")
-        self.jobs[job_id] = {"type": "auth", "ctx": ctx}
+        self.jobs[job_id] = {"type": "auth", "ctx": ctx, "started": time.time()}
         self.running["auth"] += 1
         self.ready()
 
@@ -147,7 +173,7 @@ class Manager:
             return
         ctx = auth.JobContext(job_id, payload, self.emitter)
         key = ctx.account.get("email", "")
-        self.jobs[job_id] = {"type": "export", "ctx": ctx}
+        self.jobs[job_id] = {"type": "export", "ctx": ctx, "started": time.time()}
         self.running["export"] += 1
         self.ready()
 
@@ -187,7 +213,7 @@ class Manager:
             return
         ctx = auth.JobContext(job_id, payload, self.emitter)
         key = ctx.account.get("email", "")
-        self.jobs[job_id] = {"type": "import", "ctx": ctx}
+        self.jobs[job_id] = {"type": "import", "ctx": ctx, "started": time.time()}
         self.running["export"] += 1
         self.ready()
 
@@ -211,7 +237,7 @@ class Manager:
             return
         ctx = auth.JobContext(job_id, payload, self.emitter)
         key = ctx.account.get("email", "")
-        self.jobs[job_id] = {"type": "scan", "ctx": ctx}
+        self.jobs[job_id] = {"type": "scan", "ctx": ctx, "started": time.time()}
         self.running["scan"] += 1
         self.ready()
 
@@ -236,7 +262,7 @@ class Manager:
             return
         ctx = auth.JobContext(job_id, payload, self.emitter)
         key = ctx.account.get("email", "")
-        self.jobs[job_id] = {"type": "verify", "ctx": ctx}
+        self.jobs[job_id] = {"type": "verify", "ctx": ctx, "started": time.time()}
         self.running["auth"] += 1
         self.ready()
 
@@ -260,7 +286,7 @@ class Manager:
             return
         ctx = auth.JobContext(job_id, payload, self.emitter)
         key = ctx.account.get("email", "")
-        self.jobs[job_id] = {"type": "ping", "ctx": ctx}
+        self.jobs[job_id] = {"type": "ping", "ctx": ctx, "started": time.time()}
         # A ping shares the auth slots, so it must count against them or the
         # server keeps seeing free slots and dispatches an unbounded burst.
         self.running["auth"] += 1

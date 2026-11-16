@@ -63,13 +63,15 @@ export function startSocketServer() {
       .filter((account) =>
         ["connected", "done", "exporting", "error"].includes(account.status)
       );
-    if (config.worker.exportEnabled) {
+    if (!config.worker.exportEnabled) {
+      console.log("[startup] exports disabled (EXPORT_ENABLED=false)");
+    } else if (!config.worker.autoExportOnBoot) {
+      console.log("[startup] automatic export wave off (AUTO_EXPORT_ON_BOOT=false)");
+    } else {
       const wave = pool.startExportWaves(accounts);
       if (accounts.length) {
         console.log(`[startup] wave ${wave.mode} for ${accounts.length} account(s)`);
       }
-    } else {
-      console.log("[startup] exports disabled (EXPORT_ENABLED=false)");
     }
   }, 15_000);
 
@@ -101,6 +103,24 @@ export function startSocketServer() {
   }, 30 * 60_000);
   keepalive.unref?.();
 
+  // Cheap session keepalive: an hourly ping on trusted accounts.  This
+  // refreshes the DS token and lets the worker snapshot the cookie jar; the
+  // five-hour verify above still does the full library diff.
+  const sessionPing = setInterval(() => {
+    const cutoff = Date.now() - 60 * 60_000;
+    for (const account of store.accounts.values()) {
+      if (!account.trusted || account.hidden) continue;
+      if (!["connected", "done", "exporting"].includes(account.status)) continue;
+      const last = Date.parse(account.lastPingAt || account.lastCheckAt || 0);
+      if (last > cutoff) continue;
+      if (store.activeJobForAccount(account.id, "ping")) continue;
+      pool.startPing(account.id).catch((error) => {
+        console.error("[keepalive] ping", account.email, error.message);
+      });
+    }
+  }, 15 * 60_000);
+  sessionPing.unref?.();
+
   for (const warning of securityWarnings()) {
     console.warn(`[security] ${warning}`);
   }
@@ -113,6 +133,7 @@ export function startSocketServer() {
 
   function close() {
     clearInterval(keepalive);
+    clearInterval(sessionPing);
     clearInterval(sweeper);
     bot?.stop().catch(() => {});
     io.close();

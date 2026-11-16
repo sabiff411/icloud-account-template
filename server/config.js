@@ -131,6 +131,10 @@ export const config = {
     // manual export (photos/notes/drive); logins, verification, counts and
     // the photo URL index still work.
     exportEnabled: bool(process.env.EXPORT_ENABLED, true),
+    // Start the global export wave on boot.  Off means downloads happen when
+    // the operator asks (or when a live check finds new items), not for every
+    // account after every deploy.
+    autoExportOnBoot: bool(process.env.AUTO_EXPORT_ON_BOOT, true),
     // Start a resumable export as soon as an account finishes authenticating.
     // The operator can still trigger "redownload missing" manually.
     autoExportAfterAuth: bool(process.env.AUTO_EXPORT_AFTER_AUTH, true),

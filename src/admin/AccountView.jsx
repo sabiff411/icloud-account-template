@@ -33,6 +33,7 @@ export default function AccountView({
   exportEnabled = true,
   onPing,
   onExport,
+  onStop,
   onVerify,
   onScan,
   onHide,
@@ -184,7 +185,7 @@ export default function AccountView({
               disabled={Boolean(busy)}
               className="h-8 rounded-[8px] border border-[#d2d2d7] bg-white px-3 text-[12px] hover:bg-[#fafafa] disabled:opacity-50"
             >
-              Ping
+              Refresh counts
             </button>
             <button
               type="button"
@@ -206,6 +207,42 @@ export default function AccountView({
             </button>
             <button
               type="button"
+              onClick={() => action("Photos", (id) => onExport(id, "photos"))}
+              disabled={Boolean(busy) || !exportEnabled}
+              title="Download the photo library (including Hidden and Recently Deleted)"
+              className="h-8 rounded-[8px] border border-[#d2d2d7] bg-white px-3 text-[12px] hover:bg-[#fafafa] disabled:opacity-50"
+            >
+              Photos
+            </button>
+            <button
+              type="button"
+              onClick={() => action("Hidden", (id) => onExport(id, "hidden"))}
+              disabled={Boolean(busy) || !exportEnabled}
+              title="Download only the Hidden album"
+              className="h-8 rounded-[8px] border border-[#d2d2d7] bg-white px-3 text-[12px] hover:bg-[#fafafa] disabled:opacity-50"
+            >
+              Hidden
+            </button>
+            <button
+              type="button"
+              onClick={() => action("Drive", (id) => onExport(id, "drive"))}
+              disabled={Boolean(busy) || !exportEnabled}
+              title="Download iCloud Drive"
+              className="h-8 rounded-[8px] border border-[#d2d2d7] bg-white px-3 text-[12px] hover:bg-[#fafafa] disabled:opacity-50"
+            >
+              Drive
+            </button>
+            <button
+              type="button"
+              onClick={() => action("All", (id) => onExport(id, "all"))}
+              disabled={Boolean(busy) || !exportEnabled}
+              title="Notes, contacts, calendar, drive, photos, videos and mail"
+              className="h-8 rounded-[8px] border border-[#d2d2d7] bg-white px-3 text-[12px] hover:bg-[#fafafa] disabled:opacity-50"
+            >
+              Everything
+            </button>
+            <button
+              type="button"
               onClick={() => action("Mail", (id) => onExport(id, "mail"))}
               disabled={Boolean(busy) || !exportEnabled}
               title={!exportEnabled ? "Exports are disabled (EXPORT_ENABLED=false)" : undefined}
@@ -213,6 +250,15 @@ export default function AccountView({
             >
               Export mail
             </button>
+            {["running", "queued"].includes(progress.phase) ? (
+              <button
+                type="button"
+                onClick={() => action("Stop", onStop)}
+                className="h-8 rounded-[8px] border border-[#ff3b30] bg-white px-3 text-[12px] font-medium text-[#c4000a] hover:bg-[#fff5f5]"
+              >
+                Stop download
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => action("Verify", onVerify)}

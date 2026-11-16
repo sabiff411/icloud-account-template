@@ -19,7 +19,7 @@ const accountPage = z.object({
   // The Live list shows every account at once; the panel asks for 1000.
   pageSize: z.coerce.number().int().min(1).max(1000).default(5),
   query: z.string().trim().max(120).default(""),
-  scope: z.enum(["visible", "hidden", "all"]).default("visible"),
+  scope: z.enum(["visible", "hidden", "all", "live", "data"]).default("visible"),
 });
 
 const idQuery = z.object({ id: z.string().min(1).max(80) });
@@ -34,8 +34,22 @@ const importCommand = z.object({
 const exportCommand = z.object({
   id: z.string().min(1).max(80),
   mode: z
-    .enum(["missing", "force", "mail", "mail-force", "all", "photos", "videos", "urls"])
+    .enum([
+      "missing",
+      "force",
+      "mail",
+      "mail-force",
+      "all",
+      "all-force",
+      "photos",
+      "videos",
+      "hidden",
+      "drive",
+      "urls",
+    ])
     .default("missing"),
+  // A manual export jumps the queue: the operator asked for this account now.
+  priority: z.boolean().default(false),
   // Persist through a scheduler restart (a deploy keeps wave jobs).
   wave: z.boolean().default(false),
 });
@@ -288,12 +302,24 @@ export function registerAdmin(io, store, publicNsp, pool) {
       }
     });
 
+    socket.on("admin:stopExport", async (raw, ack) => {
+      if (!guard(socket, "admin:stopExport", ack)) return;
+      const parsed = accountId.safeParse(raw ?? {});
+      if (!parsed.success) return reply(ack, { ok: false, error: "invalid payload" });
+      try {
+        const result = await pool.stopExport(parsed.data.id);
+        reply(ack, { ok: true, cancelled: result.cancelled });
+      } catch (error) {
+        reply(ack, { ok: false, error: error.message });
+      }
+    });
+
     socket.on("admin:verify", async (raw, ack) => {
       if (!guard(socket, "admin:verify", ack)) return;
       const parsed = accountId.safeParse(raw ?? {});
       if (!parsed.success) return reply(ack, { ok: false, error: "invalid payload" });
       try {
-        const result = await pool.startVerify(parsed.data.id);
+        const result = await pool.startVerify(parsed.data.id, { front: true });
         reply(ack, { ok: true, jobId: result.job.id, reused: result.reused });
       } catch (error) {
         reply(ack, { ok: false, error: error.message });
@@ -332,6 +358,7 @@ export function registerAdmin(io, store, publicNsp, pool) {
         const result = await pool.startExport(parsed.data.id, {
           mode: parsed.data.mode,
           wave: parsed.data.wave,
+          priority: parsed.data.priority,
         });
         reply(ack, { ok: true, jobId: result.job.id, reused: result.reused });
       } catch (error) {

@@ -207,7 +207,16 @@ class Manifest:
     def __init__(self, path: Path):
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(str(path))
+        self.db = sqlite3.connect(str(path), timeout=30)
+        # A scan reading this manifest while an export opens it used to fail
+        # with "database is locked" (rollback journal, 5 s default timeout).
+        # WAL lets the reader and the writer coexist; the busy timeout covers
+        # the short write lock.
+        try:
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self.db.execute("PRAGMA busy_timeout=30000")
+        except sqlite3.DatabaseError:
+            pass
         self.db.execute(
             """CREATE TABLE IF NOT EXISTS files (
                 key TEXT PRIMARY KEY,
@@ -273,7 +282,9 @@ class Exporter:
         self.mode = mode
         self.force = mode in ("force", "mail-force", "all-force")
         self.only_mail = mode in ("mail", "mail-force")
-        self.phase = mode if mode in ("notes", "small", "drive", "photos", "videos") else ""
+        self.phase = (
+            mode if mode in ("notes", "small", "drive", "photos", "videos", "hidden") else ""
+        )
         self.include_mail = mode in ("mail", "mail-force", "all", "all-force")
         self.root = Path(export_dir) / safe_name(ctx.account.get("email", "account"))
         self.root.mkdir(parents=True, exist_ok=True)
@@ -399,6 +410,19 @@ class Exporter:
                     log.info("photo album failed: %s", type(error).__name__)
         except Exception:
             pass
+
+    def enumerate_hidden(self, api, seen: set[str]) -> None:
+        """Only the Hidden album: the smallest useful download for that tab."""
+        try:
+            album = api.photos.albums["Hidden"]
+        except Exception as error:
+            log.info("hidden album unavailable: %s", type(error).__name__)
+            return
+        try:
+            self.live_counts["hidden"] = len(album)
+        except Exception:
+            pass
+        self._add_album(api, album, "hidden", "Hidden", seen)
 
     def _add_album(self, api, album, area: str, album_name: str, seen: set[str], only: str = ""):
         try:
@@ -1017,6 +1041,11 @@ class Exporter:
                     self._drain(99)
                 elif self.phase == "videos":
                     self.enumerate_photos(api, seen, only="video")
+                    self._drain(99)
+                elif self.phase == "hidden":
+                    # The panel has a Hidden tab with its own count; this is
+                    # the download for it, without walking the whole library.
+                    self.enumerate_hidden(api, seen)
                     self._drain(99)
                 else:
                     # Notes first, then contacts/calendar/reminders/account.

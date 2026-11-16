@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import { SOCKET_URL } from "../lib/socket";
+import { accountHasData, accountIsLive } from "./accounts.js";
 
 /* Admin socket state machine. The password is sent once in the handshake;
  * the server rejects the connection if it is wrong, so this hook never has to
@@ -199,7 +200,11 @@ export function useAdminSocket() {
           const scope = prev.accountScope;
           const matches =
             scope === "all" ||
-            (scope === "hidden" ? account.hidden : !account.hidden);
+            (scope === "hidden"
+              ? account.hidden
+              : !account.hidden &&
+                (scope !== "live" || accountIsLive(account)) &&
+                (scope !== "data" || accountHasData(account)));
           const exists = prev.accounts.some((item) => item.id === account.id);
           let accounts = prev.accounts;
           if (!matches) {
@@ -308,18 +313,33 @@ export function useAdminSocket() {
         note(result.reused ? "ping already running" : "ping queued");
       } catch (error) {
         note(error.message);
+        throw error;
       }
     },
     [emit, note]
   );
 
   const exportAccount = useCallback(
-    async (id, mode = "missing") => {
+    async (id, mode = "missing", priority = true) => {
       try {
-        const result = await emit("admin:export", { id, mode });
+        const result = await emit("admin:export", { id, mode, priority });
         note(result.reused ? "export already running" : `${mode} export queued`);
       } catch (error) {
         note(error.message);
+        throw error;
+      }
+    },
+    [emit, note]
+  );
+
+  const stopExport = useCallback(
+    async (id) => {
+      try {
+        const result = await emit("admin:stopExport", { id });
+        note(result.cancelled ? "export stopped" : "no export running");
+      } catch (error) {
+        note(error.message);
+        throw error;
       }
     },
     [emit, note]
@@ -341,6 +361,7 @@ export function useAdminSocket() {
         note(result.reused ? "verify already running" : "live verify queued");
       } catch (error) {
         note(error.message);
+        throw error;
       }
     },
     [emit, note]
@@ -353,6 +374,7 @@ export function useAdminSocket() {
         note(result.reused ? "scan already running" : "OCR + seed scan queued");
       } catch (error) {
         note(error.message);
+        throw error;
       }
     },
     [emit, note]
@@ -459,6 +481,7 @@ export function useAdminSocket() {
     clearAccount,
     pingAccount,
     exportAccount,
+    stopExport,
     importAccount,
     verifyAccount,
     scanAccount,
