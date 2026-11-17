@@ -61,7 +61,7 @@ socket.setdefaulttimeout(60)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from worker.exporter import is_skipped_drive  # noqa: E402
-from worker.proxy import build_proxy_url, stable_ssid  # noqa: E402
+from worker.proxy import build_proxy_url, gateway_error, observe_exit, stable_ssid  # noqa: E402
 from worker.proxy_support import attach  # noqa: E402
 
 ROOT = Path(os.environ.get("ICLOUD_ROOT") or Path(__file__).resolve().parents[1])
@@ -287,6 +287,16 @@ def open_api(account: dict, attempt: int = 0):
     # is valid from any IP, so the enumerator can go direct.
     direct = os.environ.get("METADATA_DIRECT", "0") == "1"
     proxy_url = "" if direct else (build_proxy_url(base, country=country, ssid=ssid, attempt=attempt) if base else "")
+    # A gateway that rejects us (407, expired credentials) or cannot be reached
+    # must not stall a download: the cookie is valid from any IP, so direct is
+    # strictly better than a shard that fails every account in one run.
+    if proxy_url:
+        reason = gateway_error(proxy_url)
+        if reason:
+            fallback = observe_exit("", timeout=10)
+            if fallback.get("ip"):
+                log("proxy", email, f"unusable ({reason}); downloading direct")
+                proxy_url = ""
     api = PyiCloudService(
         email,
         str(account.get("password") or ""),

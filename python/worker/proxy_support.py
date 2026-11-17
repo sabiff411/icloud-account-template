@@ -107,6 +107,11 @@ def _patch_tunnel() -> None:
             # _RetryAdapter escalates to IP-pinning only if it ever fails.
             anyip = bool(entry) and len(entry) > 5 and entry[5] == "anyip"
             ip = _IP_PIN.get(host) if anyip else _resolve_pin(host)
+            if isinstance(ip, (list, tuple)):
+                # Per gateway addr the pin is cached as the family's A records;
+                # CONNECT wants one address, not the list (urllib3 feeds
+                # _tunnel_host straight into a regex).
+                ip = random.choice(ip) if ip else None
             if ip:
                 # The IP exists ONLY for the CONNECT line: urllib3 derives
                 # SNI, cert-verification name and the inner Host: header

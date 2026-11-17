@@ -11,9 +11,16 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import time
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
+
+# Gateway verdicts that came from the gateway itself (407, refused): keyed by
+# credentials so every account using them goes direct instead of paying the
+# probe again.  '' means the gateway answered.
+_GATEWAY_DEAD: dict[str, tuple[float, str]] = {}
+_GATEWAY_TTL = 300.0
 
 
 def stable_ssid(email: str) -> str:
@@ -199,6 +206,66 @@ def observe_exit(proxy_url: str, timeout: float = 8.0) -> dict:
 
     ip = observe_exit_ip(proxy_url, timeout=timeout)
     return {"ip": ip, "countryCode": country_for_ip(ip) if ip else ""}
+
+
+def _gateway_key(proxy_url: str) -> str:
+    """Credentials of a gateway URL, without the per-account session tag.
+
+    A 407 is a fact about the account's credentials, not about one session id,
+    so the verdict must be shared by every account that uses the gateway.
+    """
+    parts = urlsplit(proxy_url)
+    user = (parts.username or "").split(",")[0]
+    return f"{parts.hostname}:{parts.port}|{user}|{parts.password or ''}"
+
+
+def gateway_error(proxy_url: str, timeout: float = 8.0) -> str:
+    """Why the gateway is unusable: '' when it answers.
+
+    "No exit IP" hides two very different states: a gateway that works but
+    whose echo service is blocked, and a gateway that rejects us (407, wrong
+    or expired credentials) or is down.  Only the second calls for a direct
+    connection, so a dead gateway never gets to declare 300 sessions dead.
+
+    The answer is cached for a few minutes: a fleet of pings must not pay a
+    proxy timeout each time before deciding to go direct.
+    """
+    if not proxy_url:
+        return ""
+    key = _gateway_key(proxy_url)
+    now = time.time()
+    cached = _GATEWAY_DEAD.get(key)
+    if cached and now - cached[0] < _GATEWAY_TTL:
+        return cached[1]
+    try:
+        from .proxy_support import attach
+
+        session = requests.Session()
+        attach(session, proxy_url)
+    except Exception as error:
+        reason = f"{type(error).__name__}: {str(error)[:120]}"
+        _GATEWAY_DEAD[key] = (now, reason)
+        return reason
+    try:
+        response = session.get("https://api.ipify.org?format=json", timeout=timeout)
+        if response.status_code == 407:
+            reason = "proxy 407: credentials rejected"
+        else:
+            response.raise_for_status()
+            reason = ""
+    except Exception as error:
+        text = str(error)
+        if "407" in text or "Proxy Authentication" in text:
+            reason = "proxy 407: credentials rejected"
+        else:
+            reason = f"{type(error).__name__}: {text[:120]}"
+    finally:
+        session.close()
+    if reason:
+        _GATEWAY_DEAD[key] = (now, reason)
+    else:
+        _GATEWAY_DEAD.pop(key, None)
+    return reason
 
 
 def basic_proxy_header(url: str) -> str | None:

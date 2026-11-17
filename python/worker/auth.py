@@ -49,6 +49,7 @@ from .proxy import (
     apply_proxy,
     build_proxy_url,
     country_code,
+    gateway_error,
     mask_proxy_url,
     observe_exit,
     stable_ssid,
@@ -82,6 +83,7 @@ class JobContext:
         self.exit_matched = None
         self.requested_country = ""
         self.country_supported = None
+        self.direct_fallback = False
 
     def emit(self, event: str, payload: dict) -> None:
         body = dict(payload)
@@ -232,6 +234,25 @@ def ensure_services(api, ctx: JobContext) -> dict:
     data = getattr(api, "data", None) or {}
     if data.get("webservices"):
         return data
+
+    # A v2 / browser-exported token is what /validate understands, while
+    # /accountLogin only accepts the older DS-token pair and answers 421 to
+    # everything else.  Asking the wrong endpoint made 300 healthy sessions
+    # look dead, so try the one that matches the token we hold first.
+    try:
+        body = api._validate_token()
+        if body and body.get("webservices"):
+            api.data = body
+            try:
+                api._update_state()
+            except Exception:
+                pass
+            return body
+    except Exception as error:
+        log.info(
+            "validate failed: %s: %s", type(error).__name__, str(error)[:100]
+        )
+
     session_data = getattr(api.session, "data", {}) or {}
     token = session_data.get("session_token")
     if not token:
@@ -582,6 +603,31 @@ def _apply_proxy(api, ctx: JobContext) -> None:
             # gateway's own retry logic pick a peer.
             use(url, ssid)
 
+    # A dead gateway must never condemn the sessions.  Wrong or expired proxy
+    # credentials answer 407 on every request, which used to surface as
+    # "session invalid" on every account at once while the jars were fine.
+    # Prove the gateway before trusting it and go direct when it is broken.
+    if url and not ctx.exit_ip:
+        reason = gateway_error(url)
+        direct = observe_exit("", timeout=10) if reason else {}
+        if direct.get("ip"):
+            ctx.direct_fallback = True
+            ctx.proxy_url = ""
+            ctx.proxy_ssid = ""
+            try:
+                api.session.proxies.clear()
+            except Exception:
+                pass
+            ctx.exit_ip = str(direct.get("ip") or "")
+            ctx.exit_country = str(direct.get("countryCode") or "")
+            ctx.exit_matched = None
+            log.warning(
+                "proxy unusable (%s); using a direct exit %s (%s)",
+                reason,
+                ctx.exit_ip,
+                ctx.exit_country or "unknown",
+            )
+
     if url and not ctx.exit_ip and not ctx.exit_country:
         log.info("proxy exit unknown; keeping the configured country tag")
     log.info(
@@ -606,6 +652,7 @@ def _proxy_info(ctx: JobContext) -> dict:
         "exitCountry": ctx.exit_country,
         "matched": ctx.exit_matched,
         "urlMasked": mask_proxy_url(ctx.proxy_url),
+        "directFallback": bool(getattr(ctx, "direct_fallback", False)),
         "ssid": ctx.proxy_ssid
         or (ctx.payload.get("proxy") or {}).get("ssid", ""),
     }
